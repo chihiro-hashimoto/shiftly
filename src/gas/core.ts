@@ -77,7 +77,7 @@ export function doPost(e: GoogleAppsScript.Events.DoPost) {
         },
       });
     }
-    if (body.kind === 'pair') return json(pair(b, body.role === 'setup' ? 'setup' : 'admin', body.pairingCode));
+    if (body.kind === 'pair') return json(pair(b, body.role === 'setup' ? 'setup' : 'admin', body.pairingCode, body.clientKey));
     if (body.kind === 'owner') {
       // admin（店長画面）/ setup（更新関連のみ）の署名を検証
       const v = verifyEnvelope(b.p, body.envelope);
@@ -89,8 +89,12 @@ export function doPost(e: GoogleAppsScript.Events.DoPost) {
   return json({ ok: false, error: { code: 'UNKNOWN', message: 'unknown' } });
 }
 
-/** Admin / Setup との初回ペアリング（使い捨て）。成功時に役割別の HMAC 鍵を返す */
-function pair(b: Backend, role: 'admin' | 'setup', code: unknown) {
+/**
+ * Admin / Setup との初回ペアリング（使い捨て）。成功時に役割別の HMAC 鍵を返す
+ * clientKey: 呼び出し側が事前に生成・保存した鍵（64桁の16進）。指定時はそれを登録する。
+ *   応答が失われても呼び出し側は鍵を保持しているため、署名付きの呼び出しで登録済みかを確かめて再開できる（Core は鍵を再送しない）
+ */
+function pair(b: Backend, role: 'admin' | 'setup', code: unknown, clientKey?: unknown) {
   const p = b.p;
   const fails = windowCount(p, `pair-fail:${role}`);
   if (fails >= 30) return { ok: false, error: { code: 'RATE_LIMITED', message: 'too many attempts' } };
@@ -102,7 +106,7 @@ function pair(b: Backend, role: 'admin' | 'setup', code: unknown) {
   const flag = role === 'admin' ? 'SHIFTLY_ADMIN_PAIRED' : 'SHIFTLY_SETUP_PAIRED';
   return p.withLock(10000, () => {
     if (p.secrets.get(flag) === '1') return { ok: false, error: { code: 'CONFLICT', message: 'already paired' } };
-    const key = p.randomHex(32);
+    const key = typeof clientKey === 'string' && /^[0-9a-f]{64}$/.test(clientKey) ? clientKey : p.randomHex(32);
     p.secrets.set(role === 'admin' ? SECRET_KEYS.adminHmac : SECRET_KEYS.setupHmac, key);
     p.secrets.set(flag, '1');
     return { ok: true, data: { key } };
@@ -132,6 +136,20 @@ export function shiftlyAuthorize() {
   }
   writeEnvironmentFile({ envId: cfg.envId, app: 'shiftly', schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION, scriptId: ScriptApp.getScriptId(), databaseId: st.dbId, updatedAt: new Date().toISOString() });
   return { ok: r.ok, created: st.created };
+}
+
+/**
+ * 店長がスクリプトエディタで実行: 管理画面（Shiftly-Admin）との接続をリセットする（接続鍵を失った場合の復旧用）。
+ * 実行後、Shiftly-Admin のエディタで shiftlyAuthorize を実行すると再接続される
+ */
+export function shiftlyResetAdminPairing() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから店長が実行してください');
+  const p = be().p;
+  p.withLock(10000, () => {
+    p.secrets.delete(SECRET_KEYS.adminHmac);
+    p.secrets.delete('SHIFTLY_ADMIN_PAIRED');
+  });
+  return { ok: true, message: '管理画面との接続をリセットしました。Shiftly-Admin のエディタで shiftlyAuthorize を実行してください' };
 }
 
 /** エディタ実行（店長本人）か。匿名アクセスの Web アプリ経由では getActiveUser が空になる */

@@ -48,6 +48,8 @@ export interface ProjectRef {
   versionNumber?: number;
   previousVersionNumber?: number;
   title?: string;
+  /** 作成 API の呼び出し開始時刻（応答を受け取る前に保存。応答喪失時に重複作成しないための目印） */
+  creatingAt?: string;
 }
 
 export interface Registry {
@@ -72,6 +74,8 @@ export interface SecretRegistry {
   adminPairingCode: string;
   setupPairingCode: string;
   setupKey: string | null;
+  /** ペアリング送信前に保存する鍵（応答喪失時の再開用。成功後に削除） */
+  pendingSetupKey?: string;
 }
 
 export interface ReleaseBundle {
@@ -321,9 +325,23 @@ export class Installer {
       }
       case 'setup.pair': {
         if (this.sec!.setupKey) return null;
-        const r = d.postCore(this.reg!.core.url!, { kind: 'pair', role: 'setup', pairingCode: this.sec!.setupPairingCode });
-        if (!r.ok) throw new InstallerError(step, `更新用の接続設定に失敗しました（${r.error?.code ?? 'unknown'}）`, 'Shiftly-Kiosk の初期化が完了しているか確認し、再実行してください');
-        this.sec!.setupKey = (r.data as { key: string }).key;
+        // 鍵は Setup 側で生成して送信前に保存する（応答が失われても、保存済みの鍵で登録済みかを確かめて再開できる）
+        if (!this.sec!.pendingSetupKey) {
+          this.sec!.pendingSetupKey = d.randomHex(32);
+          this.persist();
+        }
+        const pending = this.sec!.pendingSetupKey;
+        const r = d.postCore(this.reg!.core.url!, { kind: 'pair', role: 'setup', pairingCode: this.sec!.setupPairingCode, clientKey: pending });
+        let key: string | null = r.ok ? (r.data as { key: string }).key : null;
+        if (!r.ok && r.error?.code === 'CONFLICT' && d.callCoreAsSetup(this.reg!.core.url!, pending, { op: 'system.info' }).ok) key = pending;
+        if (!key)
+          throw new InstallerError(
+            step,
+            `更新用の接続設定に失敗しました（${r.error?.code ?? 'unknown'}）`,
+            r.error?.code === 'CONFLICT' ? '管理画面「システム・更新」で「更新用接続のリセット」を実行してから再実行してください' : 'Shiftly-Kiosk の初期化が完了しているか確認し、再実行してください',
+          );
+        this.sec!.setupKey = key;
+        delete this.sec!.pendingSetupKey;
         this.persist();
         return null;
       }
@@ -348,8 +366,19 @@ export class Installer {
       if (this.d.api.getProject(ref.scriptId)) return null;
       this.reg![which] = {};
     }
+    const step: StepId = which === 'core' ? 'core.create' : 'admin.create';
+    if (this.reg![which].creatingAt) {
+      // 前回の作成要求の結果が不明（作成済みで応答だけ失われた可能性）。自動では作り直さない
+      throw new InstallerError(
+        step,
+        `前回の「${title}」の作成結果を確認できませんでした`,
+        `Apps Script のプロジェクト一覧（https://script.google.com/home）に「${title}」があるか確認してください。ある場合はゴミ箱に移動してから「再実行」を押してください（同じプロジェクトが二重に作られるのを防ぐため、自動では作り直しません）`,
+      );
+    }
+    this.reg![which] = { title, creatingAt: this.d.now() };
+    this.persist();
     const p = this.d.api.createProject(title);
-    // 作成直後に保存（応答喪失・再実行による重複生成を防止）
+    // 作成直後に保存（以後の再実行は既存 ID を使う）
     this.reg![which] = { scriptId: p.scriptId, title };
     this.persist();
     return null;
@@ -406,6 +435,9 @@ export class Installer {
   retry(step: StepId) {
     if (this.reg?.steps[step]?.status === 'error') {
       delete this.reg.steps[step];
+      // 作成工程の再実行は、店長が重複がないことを確認した上での明示的な操作として、作成中の目印を解除する
+      if (step === 'core.create' && !this.reg.core.scriptId) delete this.reg.core.creatingAt;
+      if (step === 'admin.create' && !this.reg.admin.scriptId) delete this.reg.admin.creatingAt;
       this.persist();
     }
   }

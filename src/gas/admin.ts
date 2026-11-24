@@ -41,14 +41,34 @@ function postCore(payload: unknown): { ok: boolean; data?: unknown; error?: { co
   }
 }
 
+const PENDING_KEY_PROP = 'SHIFTLY_ADMIN_PENDING_KEY';
+
 function ensurePaired(): string {
   const props = PropertiesService.getScriptProperties();
   const k = props.getProperty(KEY_PROP);
   if (k) return k;
-  const r = postCore({ kind: 'pair', role: 'admin', pairingCode: SHIFTLY_ADMIN_BOOTSTRAP.pairingCode });
-  if (!r.ok) throw new Error(`Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`);
-  const key = (r.data as { key: string }).key;
+  // 鍵は Admin 側で生成し、送信前に保存する（応答が失われても再試行で再開できる）
+  let pending = props.getProperty(PENDING_KEY_PROP);
+  if (!pending) {
+    pending = createGasPlatform().randomHex(32);
+    props.setProperty(PENDING_KEY_PROP, pending);
+  }
+  const r = postCore({ kind: 'pair', role: 'admin', pairingCode: SHIFTLY_ADMIN_BOOTSTRAP.pairingCode, clientKey: pending });
+  let key: string | null = null;
+  if (r.ok) key = (r.data as { key: string }).key;
+  else if (r.error?.code === 'CONFLICT') {
+    // 登録済み: 前回の応答が失われた可能性。保存済みの鍵で署名した呼び出しが通れば、その鍵が登録されている
+    const env = signOwnerEnvelope(createGasPlatform(), fromHex(pending), JSON.stringify({ op: 'settings.get', requestId: undefined }), 'admin');
+    if (postCore({ kind: 'owner', envelope: env }).ok) key = pending;
+  }
+  if (!key)
+    throw new Error(
+      r.error?.code === 'CONFLICT'
+        ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Kiosk のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
+        : `Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`,
+    );
   props.setProperty(KEY_PROP, key);
+  props.deleteProperty(PENDING_KEY_PROP);
   return key;
 }
 

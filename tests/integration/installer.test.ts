@@ -13,7 +13,8 @@ import { createHash, randomBytes } from 'node:crypto';
 
 const sha = (s: string) => toHex(sha256(utf8(s)));
 
-function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean } = {}) {
+function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; loseCreateResponseOnce?: boolean } = {}) {
+  let loseOnce = opts.loseCreateResponseOnce ?? false;
   const projects = new Map<string, { title: string; files: ScriptFile[]; versions: number; deployments: Map<string, number> }>();
   let n = 0;
   let failOnce = opts.failCreateOnce ?? false;
@@ -30,6 +31,11 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean }
       }
       const sid = `script_${++n}`;
       projects.set(sid, { title: (body as { title: string }).title, files: [], versions: 0, deployments: new Map() });
+      if (loseOnce) {
+        // 作成は成功したが応答が失われた（タイムアウト等）
+        loseOnce = false;
+        return { status: 504, body: '{"error":{"message":"gateway timeout"}}' };
+      }
       return { status: 200, body: JSON.stringify({ scriptId: sid }) };
     }
     const p = id ? projects.get(decodeURIComponent(id)) : undefined;
@@ -80,7 +86,8 @@ function fakeCore(installed: { bootstrap?: Record<string, string> }) {
       if (sha(String(body.pairingCode)) !== b[role === 'admin' ? 'adminPairingHash' : 'setupPairingHash']) return { ok: false, error: { code: 'UNAUTHENTICATED', message: '' } };
       const flag = role === 'admin' ? 'SHIFTLY_ADMIN_PAIRED' : 'SHIFTLY_SETUP_PAIRED';
       if (env.secrets.get(flag)) return { ok: false, error: { code: 'CONFLICT', message: '' } };
-      const key = env.platform.randomHex(32);
+      // 実 Core（src/gas/core.ts pair）と同じく、呼び出し側が生成した鍵（clientKey）があればそれを登録
+      const key = typeof body.clientKey === 'string' && /^[0-9a-f]{64}$/.test(body.clientKey) ? body.clientKey : env.platform.randomHex(32);
       env.secrets.set(role === 'admin' ? SECRET_KEYS.adminHmac : SECRET_KEYS.setupHmac, key);
       env.secrets.set(flag, '1');
       return { ok: true, data: { key } };
@@ -107,7 +114,8 @@ function release(version = '0.1.0'): ReleaseBundle {
   return { version, core, admin, hashes };
 }
 
-function setup(o: { apiDisabled?: boolean; failCreateOnce?: boolean; email?: string; store?: { reg: Registry | null; secrets: SecretRegistry | null } } = {}) {
+function setup(o: { apiDisabled?: boolean; failCreateOnce?: boolean; loseCreateResponseOnce?: boolean; email?: string; dropSetupPairResponseOnce?: boolean; store?: { reg: Registry | null; secrets: SecretRegistry | null } } = {}) {
+  let dropPair = !!o.dropSetupPairResponseOnce;
   const api = fakeScriptApi(o);
   const store = o.store ?? { reg: null as Registry | null, secrets: null as SecretRegistry | null };
   const installed: { bootstrap?: Record<string, string> } = {};
@@ -129,7 +137,14 @@ function setup(o: { apiDisabled?: boolean; failCreateOnce?: boolean; email?: str
       const p = [...api.projects.values()].find((x) => x.title.startsWith('Shiftly-Kiosk'));
       const bs = p?.files.find((f) => f.name === 'bootstrap');
       if (bs) installed.bootstrap = JSON.parse(bs.source.replace(/^var SHIFTLY_BOOTSTRAP = /, '').replace(/;\n$/, ''));
-      return core.post(body as Record<string, unknown>) as never;
+      const res = core.post(body as Record<string, unknown>);
+      const b = body as Record<string, unknown>;
+      // 応答の喪失を模擬（Core 側では登録済み）
+      if (dropPair && b.kind === 'pair' && b.role === 'setup' && res.ok) {
+        dropPair = false;
+        return { ok: false, error: { code: 'NETWORK', message: '応答なし' } } as never;
+      }
+      return res as never;
     },
     callCoreAsSetup: (url, keyHex, req) => {
       const envlp = signOwnerEnvelope(core.env.platform, fromHex(keyHex), JSON.stringify(req), 'setup');
@@ -168,6 +183,25 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(JSON.stringify(s.store.reg)).not.toContain(s.store.secrets!.setupKey!);
   });
 
+  it('Codex 監査1 #12: Setup のペアリング応答が失われても、再実行で再開できる', () => {
+    const s = setup({ dropSetupPairResponseOnce: true });
+    s.make().runUntilBlocked({ storeName: 'テスト店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const adminBs = [...s.api.projects.values()].find((p) => p.title.startsWith('Shiftly-Admin'))!.files.find((f) => f.name === 'bootstrap')!;
+    const code = JSON.parse(adminBs.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    let r = s.make().runUntilBlocked({}, 20);
+    expect(r.error?.step).toBe('setup.pair'); // 1 回目: 応答喪失
+    const inst = s.make();
+    inst.retry('setup.pair');
+    r = inst.runUntilBlocked({}, 20);
+    expect(r.error).toBeNull();
+    expect(r.state.complete).toBe(true);
+    expect(s.store.secrets!.setupKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(s.store.secrets!.pendingSetupKey).toBeUndefined();
+  });
+
   it('再実行・中断再開で重複生成しない（既存環境の再検出）', () => {
     const s = setup();
     s.make().runUntilBlocked({ storeName: '店' }, 20);
@@ -185,6 +219,22 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     inst.retry('core.create');
     inst.runUntilBlocked({}, 20);
     expect([...s.api.projects.values()].filter((p) => p.title.startsWith('Shiftly-Kiosk'))).toHaveLength(1);
+  });
+
+  it('Codex 監査1 #12: 作成成功の応答が失われた場合は自動で作り直さず、確認後の再実行で 1 つだけになる', () => {
+    const s = setup({ loseCreateResponseOnce: true });
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    const r = s.make().runUntilBlocked({}, 20); // 再実行しても自動では作らない
+    expect(r.error?.step).toBe('core.create');
+    expect(r.error?.fix).toContain('script.google.com/home');
+    const kiosks = () => [...s.api.projects.entries()].filter(([, p]) => p.title.startsWith('Shiftly-Kiosk'));
+    expect(kiosks()).toHaveLength(1);
+    // 店長が一覧で確認し、応答の失われたプロジェクトをゴミ箱へ移動してから再実行
+    s.api.projects.delete(kiosks()[0]![0]);
+    const inst = s.make();
+    inst.retry('core.create');
+    inst.runUntilBlocked({}, 20);
+    expect(kiosks()).toHaveLength(1);
   });
 
   it('Apps Script API 無効時は設定ページへの案内', () => {

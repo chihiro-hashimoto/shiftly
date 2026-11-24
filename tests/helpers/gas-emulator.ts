@@ -51,6 +51,7 @@ export interface GasFns {
   kioskApi: (...a: unknown[]) => any;
   shiftlyAuthorize: (...a: unknown[]) => any;
   shiftlyDailyJob: (...a: unknown[]) => any;
+  shiftlyResetAdminPairing: (...a: unknown[]) => any;
   adminApi: (...a: unknown[]) => any;
   setupApi: (...a: unknown[]) => any;
 }

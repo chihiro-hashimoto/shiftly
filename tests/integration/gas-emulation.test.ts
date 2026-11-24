@@ -102,6 +102,29 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(post(ownerEnvelope(key, { op: 'system.info' }, 'setup')).ok).toBe(false);
   });
 
+  it('Codex 監査1 #12: 呼び出し側が生成した鍵でペアリングし、応答喪失後も鍵を再送せずに登録済みを確認できる', () => {
+    const emu = new GasEmulator();
+    const code = randomBytes(32).toString('hex');
+    const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_emu3', storeName: 'x', adminPairingHash: sha(code), setupPairingHash: sha(code + 'x') } });
+    const post = (body: unknown) => JSON.parse(core.doPost({ postData: { contents: JSON.stringify(body) } }).content);
+    core.shiftlyAuthorize();
+    const clientKey = randomBytes(32).toString('hex');
+    expect(post({ kind: 'pair', role: 'admin', pairingCode: code, clientKey }).data.key).toBe(clientKey);
+    // 応答が失われたとして再試行: 2 回目は拒否され、鍵は返さない
+    const again = post({ kind: 'pair', role: 'admin', pairingCode: code, clientKey: randomBytes(32).toString('hex') });
+    expect(again.ok).toBe(false);
+    expect(JSON.stringify(again)).not.toContain(clientKey);
+    // 保存済みの鍵で署名した呼び出しは通る（登録済みの確認）
+    expect(post(ownerEnvelope(clientKey, { op: 'settings.get' })).ok).toBe(true);
+    // 店長のエディタ実行でのみリセットできる
+    emu.activeUser = '';
+    expect(() => core.shiftlyResetAdminPairing()).toThrow();
+    emu.activeUser = 'owner@example.invalid';
+    core.shiftlyResetAdminPairing();
+    expect(post(ownerEnvelope(clientKey, { op: 'settings.get' })).ok).toBe(false);
+    expect(post({ kind: 'pair', role: 'admin', pairingCode: code }).ok).toBe(true);
+  });
+
   it('大量行でもシートの行数を自動拡張して書き込める', () => {
     const emu = new GasEmulator();
     emu.defaultRows = 100; // 既定 1000 行の代わりに 100 行のグリッドで拡張処理を検証（実行時間短縮）
