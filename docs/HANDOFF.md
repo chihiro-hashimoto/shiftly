@@ -14,7 +14,7 @@
 - ブランチ: `claude/inspiring-einstein-73ks5s`（main は Initial commit のまま）
 - 最新コミット: `git log -1` で確認
 - PR: https://github.com/chihiro-hashimoto/shiftly/pull/1（ドラフト。main へのマージはユーザー承認後）
-- CI: `.github/workflows/ci.yml`。push 時に実行される（結果は GitHub Actions で確認）
+- CI: `.github/workflows/ci.yml`。コミット `58e61bf` で成功（run #18、2026-11-24）
 
 ## 確定済み仕様（主なもの）
 - 構成: Shiftly-Kiosk（= Core。匿名アクセス・店長として実行、DB 唯一の更新経路）＋ Shiftly-Admin（本人のみ、HMAC 署名で Core へ転送）＋ Shiftly Setup（Apps Script API で自動構築）。詳細は docs/architecture.md と docs/decisions.md
@@ -40,7 +40,7 @@
 
 ## 次に実行する作業
 1. （完了）管理画面全ページ・独立レビュー修正・verify・PR 作成
-2. CI の結果確認（PR #1 を購読中）
+2. （完了）CI 成功を確認
 3. Codex 監査（Codex CLI が使える環境・ユーザーの認証が必要）
 4. ユーザーの承認後: 検証用 Google アカウントで実環境検証を行い、technical-verification.md に実測結果を追記
 
