@@ -26,6 +26,8 @@ export interface TableAdapter {
   read(def: TableDef, partition: string | null): RawRow[];
   /** 存在するパーティション一覧（'YYYY-MM'） */
   partitions(def: TableDef): string[];
+  /** 複数テーブルの一括読み込み（任意。Sheets では values.batchGet で API 呼び出しを 1 回にする） */
+  readMany?(reqs: Array<{ def: TableDef; partition: string | null }>): RawRow[][];
   /** 変更をまとめて書き込む（id 一致行は上書き、なければ追加） */
   write(changes: Array<{ def: TableDef; partition: string | null; id: string; raw: RawRow }>): void;
 }
@@ -128,6 +130,30 @@ export class UnitOfWork {
       this.cache.set(k, rows);
     }
     return rows;
+  }
+
+  /** よく使うテーブルを一括で先読み（API 呼び出し回数の削減） */
+  prefetch(reqs: Array<{ table: TableName; partitions?: string[] }>) {
+    const flat: Array<{ table: TableName; partition: string | null }> = [];
+    for (const r of reqs) {
+      const def = TABLE_BY_NAME[r.table];
+      if (def.partitionBy) for (const p of r.partitions ?? []) flat.push({ table: r.table, partition: p });
+      else flat.push({ table: r.table, partition: null });
+    }
+    const todo = flat.filter((x) => !this.cache.has(this.key(x.table, x.partition)));
+    if (!todo.length) return;
+    if (!this.adapter.readMany) {
+      for (const x of todo) this.load(x.table, x.partition);
+      return;
+    }
+    const res = this.adapter.readMany(todo.map((x) => ({ def: TABLE_BY_NAME[x.table], partition: x.partition })));
+    todo.forEach((x, i) => {
+      const def = TABLE_BY_NAME[x.table];
+      this.cache.set(
+        this.key(x.table, x.partition),
+        (res[i] ?? []).filter((r) => r[0] !== '' && r[0] !== undefined).map((r) => decodeRow<Record<string, unknown>>(def, r)),
+      );
+    });
   }
 
   /** 全件（パーティションテーブルは partitions 指定、未指定なら全パーティション） */
@@ -234,7 +260,8 @@ export class UnitOfWork {
   /** started のまま残ったジャーナルを再適用（ロック取得後・処理前に呼ぶ） */
   recoverJournal(): { replayed: number; unrecoverable: number } {
     const jdef = TABLE_BY_NAME.operation_journal;
-    const rows = this.recentPartitions().flatMap((p) => this.adapter.read(jdef, p).map((r) => ({ p, ...decodeRow<{ id: string; state: string; detail: string; createdAt: string; version: number; op: string }>(jdef, r) })));
+    type J = { id: string; state: string; detail: string; createdAt: string; version: number; op: string };
+    const rows = this.recentPartitions().flatMap((p) => this.load('operation_journal', p).map((r) => ({ p, ...(r as unknown as J) })));
     let replayed = 0;
     let unrecoverable = 0;
     for (const j of rows.filter((r) => r.state === 'started')) {

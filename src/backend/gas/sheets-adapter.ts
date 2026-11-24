@@ -60,6 +60,30 @@ export class SheetsAdapter implements TableAdapter {
     return rows;
   }
 
+  readMany(reqs: Array<{ def: TableDef; partition: string | null }>): RawRow[][] {
+    const titles = this.sheetTitles();
+    const present = reqs.map((r) => ({ ...r, name: sheetNameFor(r.def, r.partition) })).filter((r) => titles.has(r.name));
+    const out = new Map<string, RawRow[]>();
+    if (present.length) {
+      const res = Sheets.Spreadsheets.Values.batchGet(this.spreadsheetId(), {
+        ranges: present.map((r) => `${q(r.name)}!A2:${colLetter(r.def.columns.length)}`),
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING',
+      });
+      present.forEach((r, i) => {
+        const rows: RawRow[] = ((res.valueRanges?.[i]?.values ?? []) as RawRow[]);
+        const idx = new Map<string, number>();
+        rows.forEach((row, j) => {
+          if (row[0] !== undefined && row[0] !== '') idx.set(String(row[0]), j + 2);
+        });
+        this.index.set(r.name, idx);
+        this.lastRow.set(r.name, rows.length + 1);
+        out.set(r.name, rows);
+      });
+    }
+    return reqs.map((r) => out.get(sheetNameFor(r.def, r.partition)) ?? []);
+  }
+
   partitions(def: TableDef): string[] {
     const prefix = `${def.name}__`;
     return [...this.sheetTitles()].filter((t) => t.startsWith(prefix)).map((t) => t.slice(prefix.length).replace('_', '-')).sort();

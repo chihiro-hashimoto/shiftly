@@ -156,6 +156,15 @@ export class GasEmulator {
             while (out.length && out[out.length - 1]!.length === 0) out.pop();
             return out.length ? { values: out } : {};
           },
+          batchGet(id: string, opts: { ranges: string[] }) {
+            self.apiCalls++;
+            const valueRanges = opts.ranges.map((range) => {
+              const r = Sheets.Spreadsheets.Values.get(id, range) as { values?: Cell[][] };
+              self.apiCalls--;
+              return { range, values: r.values };
+            });
+            return { valueRanges };
+          },
           update(body: { values: Cell[][] }, id: string, range: string, opts: { valueInputOption: string }) {
             self.apiCalls++;
             if (opts.valueInputOption !== 'RAW') throw new Error('RAW 以外は使用しない');

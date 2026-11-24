@@ -77,6 +77,14 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
     const run = (): unknown => {
       const now = p.now();
       const uow = new UnitOfWork(be.adapter(), { now: () => now, newId: (prefix) => `${prefix}_${p.randomHex(10)}` });
+      // 認証・認可・設定で毎回使うテーブルを一括先読み（Sheets API の呼び出し回数を削減）
+      uow.prefetch([
+        { table: 'system_metadata' },
+        { table: 'store_settings' },
+        ...(r.device ? [{ table: 'devices' as const }, { table: 'employees' as const }, { table: 'permissions' as const }, { table: 'credentials' as const }, { table: 'sessions' as const, partitions: uow.recentPartitions() }] : []),
+        ...(def.mutating ? [{ table: 'operation_journal' as const, partitions: uow.recentPartitions() }, { table: 'request_idempotency' as const, partitions: uow.recentPartitions() }] : []),
+        ...(r.op.startsWith('attendance.') || r.op.startsWith('auth.') ? [{ table: 'attendance_events' as const, partitions: uow.recentPartitions() }, { table: 'attendance_corrections' as const }, { table: 'manual_breaks' as const }, { table: 'shifts' as const }] : []),
+      ]);
       if (def.mutating) {
         const rec = uow.recoverJournal();
         if (rec.replayed || rec.unrecoverable) p.log('warn', 'journal recovered', { replayed: rec.replayed, unrecoverable: rec.unrecoverable });
