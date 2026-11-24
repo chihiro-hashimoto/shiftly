@@ -145,3 +145,15 @@
     padding: 8px 16px 32px;
   }
 }
+/* 狭い画面で表や見出しが横幅を押し広げないように */
+.a-content {
+  grid-template-columns: minmax(0, 1fr);
+}
+.panel-head {
+  flex-wrap: wrap;
+}
+.panel-head input.input[type='date'] {
+  max-width: 160px;
+  width: auto;
+  flex: 1 1 130px;
+}

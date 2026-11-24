@@ -26,6 +26,8 @@ test('全ページを表示してもエラーが出ない', async ({ page, isMob
 
 test('店長は勤怠を修正でき、修正履歴に理由が残る', async ({ page }) => {
   await page.goto('/preview.html?view=admin');
+  const menu = page.getByRole('button', { name: 'メニュー' });
+  if (await menu.isVisible()) await menu.click();
   await page.getByRole('navigation', { name: '管理メニュー' }).getByRole('button', { name: '勤怠', exact: true }).click();
   await page.getByRole('button', { name: '明細・修正' }).first().click();
   await page.getByRole('button', { name: '打刻を追加' }).click();
