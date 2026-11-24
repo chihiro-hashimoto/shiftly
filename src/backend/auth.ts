@@ -281,7 +281,7 @@ export function verifyEnvelope(p: Platform, env: unknown): { body: string; role:
   if (p.cache.get(nk)) throw E.unauthenticated();
   p.cache.put(nk, '1', Math.ceil((OWNER_SIG_WINDOW_MS * 2) / 1000));
   if (e.role === 'setup') {
-    let op = '';
+    let op: string;
     try {
       op = String((JSON.parse(e.body) as { op?: unknown }).op ?? '');
     } catch {

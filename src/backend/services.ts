@@ -11,6 +11,7 @@ import type {
   DeductionEntry,
   Employee,
   EmploymentHistory,
+  LeaveGrant,
   LeaveTransaction,
   ManualBreak,
   PayrollAdjustment,
@@ -28,6 +29,7 @@ import { addDays, monthKey, type LocalDate } from '../shared/time';
 import { computePayroll, type PayrollInput, type PayrollOutput } from '../shared/payroll';
 import { weekStartOf, overtime60WindowStart } from '../shared/labor';
 import { periodForKey } from '../shared/period';
+import { leaveBalance } from '../shared/leave';
 import { TABLE_BY_NAME } from './schema';
 
 export function monthsBetween(from: LocalDate, to: LocalDate): string[] {
@@ -135,6 +137,7 @@ export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod
     leaveTakes: by(ctx.uow.list<LeaveTransaction>('leave_transactions')).filter((l) => l.kind === 'take' && l.date >= period.from && l.date <= period.to),
     shifts: by(ctx.uow.list<Shift>('shifts')).filter((x) => x.date >= period.from && x.date <= period.to),
     pendingCorrectionCount: pendingCorrections,
+    leaveOverdrawnDays: leaveBalance(by(ctx.uow.list<LeaveGrant>('leave_grants')), by(ctx.uow.list<LeaveTransaction>('leave_transactions')), period.to).overdrawn,
     averageDailyWage: s.paidLeaveWageMethod === 'average' ? averageDailyWage(ctx, employee, period.from) : null,
   };
 }

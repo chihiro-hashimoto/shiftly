@@ -64,7 +64,7 @@ export interface Registry {
   /** ペアリングコードのハッシュ（非秘密）。平文コードは SecretRegistry に保持 */
   adminPairingHash: string;
   setupPairingHash: string;
-  update: null | { target: string; stage: string; backupId?: string; startedAt: string; message?: string };
+  update: null | { target: string; stage: string; backupId?: string; startedAt: string; message?: string; prevCore?: number; prevAdmin?: number };
 }
 
 /** 秘密情報（UserProperties のみ。Drive のレジストリファイルには書かない） */
@@ -428,23 +428,32 @@ export class Installer {
     if (!this.state().complete) return { ok: false, message: '初期セットアップが完了していません' };
     const target = this.d.release.version;
     const reg = this.reg!;
-    const prevCore = reg.core.versionNumber;
-    const prevAdmin = reg.admin.versionNumber;
+    // 更新開始前のバージョン番号を保持（承認待ちから再開した場合も、更新前の版へ戻せるように）
+    const resuming = reg.update && reg.update.target === target && reg.update.prevCore !== undefined && reg.update.stage !== 'failed';
+    const prevCore = resuming ? reg.update!.prevCore : reg.core.versionNumber;
+    const prevAdmin = resuming ? reg.update!.prevAdmin : reg.admin.versionNumber;
+    if (!resuming) {
+      reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin };
+      this.persist();
+    }
     const step = (stage: string) => {
       reg.update = { ...(reg.update ?? { target, startedAt: this.d.now() }), target, stage };
       this.persist();
     };
     try {
-      step('prepare');
-      const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
-      if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
-      reg.update!.backupId = (prep.data as { backupId: string }).backupId;
-      step('code');
-      this.upload('core');
-      this.upload('admin');
-      step('deploy');
-      this.deploy('core');
-      this.deploy('admin');
+      // 承認待ちからの再開では、バックアップ・コード更新・デプロイは完了済み（DB 更新から再開）
+      if (!(resuming && reg.update!.stage === 'awaiting_approval')) {
+        step('prepare');
+        const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
+        if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
+        reg.update!.backupId = (prep.data as { backupId: string }).backupId;
+        step('code');
+        this.upload('core');
+        this.upload('admin');
+        step('deploy');
+        this.deploy('core');
+        this.deploy('admin');
+      }
       step('migrate');
       const mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
       if (!mig.ok) throw new Error(`DB 更新に失敗しました（${mig.error?.message ?? ''}）`);

@@ -74,6 +74,8 @@ defineOps([
       const employeeId = v.id(a, 'employeeId');
       const emp = ctx.uow.get<Employee>('employees', employeeId);
       if (!emp || emp.status !== 'active') throw E.notFound('スタッフ');
+      // 公開シフトは給与計算（固定休憩・所定時間）に影響するため、スタッフは自分のシフトを編集できない
+      if (!isOwner(ctx) && staff(ctx).employeeId === employeeId) throw E.forbidden('自分自身のシフトの編集');
       const d = readShift(a);
       const id = typeof a.id === 'string' && a.id ? v.id(a, 'id') : null;
       const others = ctx.uow.list<Shift>('shifts').filter((s) => s.employeeId === employeeId && s.id !== id && s.status !== 'cancelled' && Math.abs(Date.parse(s.date) - Date.parse(d.date)) <= 86400000);
@@ -102,6 +104,7 @@ defineOps([
       const id = v.id(v.obj(raw), 'id');
       const cur = ctx.uow.get<Shift>('shifts', id);
       if (!cur) throw E.notFound('シフト');
+      if (!isOwner(ctx) && staff(ctx).employeeId === cur.employeeId) throw E.forbidden('自分自身のシフトの取消');
       if (cur.status === 'published' && !has(ctx, 'shift_publish')) throw E.forbidden('公開済みシフトの削除');
       // 物理削除はせず取消状態で残す（変更履歴の追跡のため）
       ctx.uow.update('shifts', { ...cur, status: 'cancelled' });
@@ -147,13 +150,20 @@ defineOps([
     handler: (ctx, raw) => {
       const { from, to } = v.range(v.obj(raw), 62);
       let n = 0;
+      let skippedOwn = 0;
+      const self = isOwner(ctx) ? null : staff(ctx).employeeId;
       for (const s of ctx.uow.list<Shift>('shifts').filter((x) => x.date >= from && x.date <= to && x.status === 'draft')) {
+        // スタッフは自分のシフトを公開できない（店長が公開）
+        if (self && s.employeeId === self) {
+          skippedOwn++;
+          continue;
+        }
         const next = ctx.uow.update('shifts', { ...s, status: 'published', publishedAt: ctx.uow.nowIso() });
         history(ctx, s.id, 'publish', s, next);
         n++;
       }
       audit(ctx, 'shift.publish', 'shift', null, `${from}〜${to} ${n}件公開`);
-      return { published: n };
+      return { published: n, skippedOwn };
     },
   },
   {
@@ -269,7 +279,8 @@ defineOps([
       const grants = ctx.uow.list<LeaveGrant>('leave_grants').filter((g) => g.employeeId === employeeId);
       const txs = ctx.uow.list<LeaveTransaction>('leave_transactions').filter((t) => t.employeeId === employeeId);
       if (txs.some((t) => t.kind === 'take' && t.date === date)) throw E.invalid('同じ日の有給がすでに登録されています');
-      const bal = leaveBalance(grants, txs, date);
+      // 登録済みの未来日の取得も差し引いた残日数で判定（日付順を入れ替えた超過登録の防止）
+      const bal = leaveBalance(grants, txs.map((t) => (t.kind === 'take' && t.date > date ? { ...t, date } : t)), date);
       if (bal.total < days) throw E.invalid(`有給残日数が不足しています（残 ${bal.total}日）`);
       const t = ctx.uow.insert<LeaveTransaction>('leave_transactions', { employeeId, date, days, kind: 'take', scheduledMinutes, grantId: null, reason: v.optStr(a, 'reason', 200), actorId: isOwner(ctx) ? 'owner' : staff(ctx).employeeId }, 'ltx');
       audit(ctx, 'leave.take', 'leave_transaction', t.id, `取得 ${days}日 対象=${employeeId}`);

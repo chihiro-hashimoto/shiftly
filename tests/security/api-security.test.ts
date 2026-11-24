@@ -271,3 +271,18 @@ describe('秘密値の非保存（レビュー指摘 #3 の回帰テスト）', 
     expect(r2.ok).toBe(false);
   });
 });
+
+describe('シフトの自己編集禁止（レビュー指摘 #9）', () => {
+  it('シフト権限を持つスタッフでも自分のシフトは編集・取消・公開できない', () => {
+    const { h, a, b } = setup();
+    h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'shift_edit', 'shift_publish'] });
+    const own = h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 60, applyFixedBreak: true, fixedBreakStart: '20:00' });
+    h.ownerOk('shifts.upsert', { employeeId: b, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 0 });
+    h.login(a, '482913');
+    expect(code(h.kiosk('shifts.upsert', { id: own.id, employeeId: a, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 0 }))).toBe('FORBIDDEN');
+    expect(code(h.kiosk('shifts.delete', { id: own.id }))).toBe('FORBIDDEN');
+    const pub = h.kioskOk('shifts.publish', { from: '2026-11-01', to: '2026-11-30' });
+    expect(pub.published).toBe(1);
+    expect(pub.skippedOwn).toBe(1);
+  });
+});

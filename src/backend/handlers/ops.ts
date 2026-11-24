@@ -225,12 +225,17 @@ defineOps([
       const status = budgetStatus(month, budget, actualByDate, forecast.total, d);
       const individual = canSeeIndividualPay(isOwner(ctx) ? 'all' : staff(ctx).permissions);
       // 給与閲覧権限がない場合、個人の給与を推定できる内訳（スタッフ別・1名のみの日/時間帯）を返さない
+      // 閲覧者本人を除いた人数が 3 名以上の日のみ金額を表示（本人の給与を差し引いて同僚の給与を推定されないように）
+      const viewer = isOwner(ctx) ? null : staff(ctx).employeeId;
+      const othersOn = (d: string) => [...(contributors[d] ?? [])].filter((id) => id !== viewer).length;
+      const allContributors = new Set(Object.values(contributors).flatMap((x) => [...x]));
       const mask = (r: typeof actualReport) => {
         if (individual) return r;
         return {
           ...r,
           byEmployee: [],
-          byDate: Object.fromEntries(Object.entries(r.byDate).map(([k, c]) => [k, (contributors[k]?.size ?? 0) >= 2 ? c : { amount: null as unknown as number, minutes: c.minutes }])),
+          byDate: Object.fromEntries(Object.entries(r.byDate).map(([k, c]) => [k, othersOn(k) >= 3 ? c : { amount: null as unknown as number, minutes: c.minutes }])),
+          byWeekday: allContributors.size - (viewer ? 1 : 0) >= 3 ? r.byWeekday : r.byWeekday.map((c) => ({ amount: null as unknown as number, minutes: c.minutes })),
           byHour: r.byHour.map(() => ({ amount: null as unknown as number, minutes: 0 })),
           incomplete: r.incomplete.map((x) => ({ ...x, name: '（非表示）', employeeId: '' })),
         };

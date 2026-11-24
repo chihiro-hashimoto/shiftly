@@ -105,6 +105,8 @@ export interface PayrollInput {
   leaveTakes: LeaveTransaction[];
   shifts: Shift[];
   pendingCorrectionCount: number;
+  /** 期間末時点で付与日数を超えて取得登録された有給の日数（0 なら問題なし） */
+  leaveOverdrawnDays?: number;
   /** 平均賃金方式の場合の1日平均賃金（円, 分数）。算出不能なら null */
   averageDailyWage: { n: string; d: string } | null;
 }
@@ -187,6 +189,7 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
   if (!settings.payrollRulesConfirmedAt) add('blocking', 'PAYROLL_RULES_UNCONFIRMED', '給与規定（店舗設定）の確認が完了していません');
   if (settings.agreement36 !== 'concluded')
     add('info', 'AGREEMENT36_NOT_CONCLUDED', '36協定が締結済みとして登録されていません（計算は実労働時間どおりに行います）');
+  if ((input.leaveOverdrawnDays ?? 0) > 0) add('blocking', 'LEAVE_OVERDRAWN', `有給休暇が付与日数を${input.leaveOverdrawnDays}日超えて登録されています`);
   if (input.pendingCorrectionCount > 0) add('blocking', 'PENDING_CORRECTIONS', `未処理の勤怠修正が${input.pendingCorrectionCount}件あります`);
 
   const weeklyLimit = settings.weekly44Confirmed ? rs.weeklyLimitSpecialMinutes : rs.weeklyLimitMinutes;
@@ -346,7 +349,8 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
         if (p.night && !r.nightIncluded) c = c.add(pb.mul(h).mul(pct(rs.nightPct)));
         pieceCosts.push({ laborDate: p.laborDate, businessDate: p.businessDate, start: p.start, minutes: p.minutes, amount: c.toNumber() });
       }
-      minWageCheck(Frac.of(r.premiumBase).add(minWageAllowHourly), p.laborDate);
+      // 最低賃金は実際に働いた暦日で判定（日付をまたぐ勤務の午前0時以降は翌日の最低賃金が適用される）
+      minWageCheck(Frac.of(r.premiumBase).add(minWageAllowHourly), p.calendarDate);
     }
     for (const g of groups.values()) {
       basis.push({ label: '基本賃金（時給）', detail: `${g.rate}円 × ${fmtSec(g.seconds)}`, amount: g.amount.round(rnd) });

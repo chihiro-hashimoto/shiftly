@@ -28,9 +28,14 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     const post = (body: unknown) => JSON.parse(core.doPost({ postData: { contents: JSON.stringify(body) } }).content);
 
     expect(post({ kind: 'ping' }).data.initialized).toBe(false);
+    // 匿名の訪問者（getActiveUser が空）は初期化関数を呼べない
+    emu.activeUser = '';
+    expect(() => core.shiftlyAuthorize()).toThrow();
+    emu.activeUser = 'owner@example.invalid';
     const auth = core.shiftlyAuthorize();
     expect(auth.ok).toBe(true);
     expect(core.shiftlyAuthorize().created).toBe(false); // 冪等
+    expect([...emu.files.values()].filter((f) => f.appProperties?.shiftly === 'database')).toHaveLength(1);
     expect(emu.triggers).toEqual(['shiftlyDailyJob']);
     const dbId = emu.scriptProps.getProperty('SHIFTLY_DB_ID')!;
     expect(emu.spreadsheets.get(dbId)!.props.timeZone).toBe('Asia/Tokyo');
@@ -78,8 +83,14 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(dump).not.toContain(emu.scriptProps.getProperty('SHIFTLY_PIN_PEPPER')!);
 
     // 日次ジョブ（バックアップ: DB の複製を 05_Backup に作成）
+    // google.script.run 経由（トリガーではない）の呼び出しは無視される
     core.shiftlyDailyJob();
+    core.shiftlyDailyJob({ triggerUid: 'forged' });
+    expect(owner('backup.list')).toHaveLength(0);
+    core.shiftlyDailyJob({ triggerUid: 'trg0' });
+    core.shiftlyDailyJob({ triggerUid: 'trg0' }); // 同日 2 回目は作らない
     const backups = owner('backup.list');
+    expect(backups.filter((b: { kind: string }) => b.kind === 'daily')).toHaveLength(1);
     expect(backups[0].status).toBe('ok');
     expect(emu.spreadsheets.has(backups[0].driveFileId)).toBe(true);
 

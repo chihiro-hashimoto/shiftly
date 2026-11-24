@@ -181,26 +181,42 @@ export function createGasPlatform(): Platform {
 /** 初回: フォルダ構成と DB スプレッドシートを作成（冪等） */
 export function provisionStorage(storeLabel: string): { rootId: string; dbId: string; created: boolean } {
   const props = PropertiesService.getScriptProperties();
-  const existingDb = props.getProperty(PROP.dbId);
-  const existingRoot = props.getProperty(PROP.rootFolder);
-  if (existingDb && existingRoot) return { rootId: existingRoot, dbId: existingDb, created: false };
   const FOLDER = 'application/vnd.google-apps.folder';
-  const root = existingRoot ? { id: existingRoot } : Drive.Files.create({ name: 'Shiftly', mimeType: FOLDER, appProperties: { shiftly: 'root' } }, null, { fields: 'id' });
-  props.setProperty(PROP.rootFolder, root.id);
-  const fmap: Record<string, string> = {};
-  for (const k of FOLDER_KEYS) {
-    const f = Drive.Files.create({ name: k, mimeType: FOLDER, parents: [root.id], appProperties: { shiftly: k } }, null, { fields: 'id' });
-    fmap[k] = f.id;
+  // 途中失敗からの再実行でも重複作成しないよう、1 つ作るごとに ID を保存し、既存は appProperties で再検出する
+  const findOne = (q: string): string | null => {
+    try {
+      const r = Drive.Files.list({ q: `${q} and trashed = false`, fields: 'files(id)', pageSize: 2 });
+      return r.files?.[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+  let created = false;
+  let rootId = props.getProperty(PROP.rootFolder) ?? findOne("appProperties has { key='shiftly' and value='root' }");
+  if (!rootId) {
+    rootId = Drive.Files.create({ name: 'Shiftly', mimeType: FOLDER, appProperties: { shiftly: 'root' } }, null, { fields: 'id' }).id as string;
+    created = true;
   }
-  props.setProperty(PROP.folders, JSON.stringify(fmap));
-  const db = Drive.Files.create(
-    { name: `Shiftly Database - ${storeLabel}`.slice(0, 100), mimeType: 'application/vnd.google-apps.spreadsheet', parents: [fmap['01_Database']], appProperties: { shiftly: 'database' } },
-    null,
-    { fields: 'id' },
-  );
-  Sheets.Spreadsheets.batchUpdate({ requests: [{ updateSpreadsheetProperties: { properties: { timeZone: 'Asia/Tokyo', locale: 'ja_JP' }, fields: 'timeZone,locale' } }] }, db.id);
-  props.setProperty(PROP.dbId, db.id);
-  return { rootId: root.id, dbId: db.id, created: true };
+  props.setProperty(PROP.rootFolder, rootId);
+  const fmap: Record<string, string> = JSON.parse(props.getProperty(PROP.folders) ?? '{}') as Record<string, string>;
+  for (const k of FOLDER_KEYS) {
+    if (fmap[k]) continue;
+    fmap[k] = findOne(`'${rootId}' in parents and appProperties has { key='shiftly' and value='${k}' }`) ?? (Drive.Files.create({ name: k, mimeType: FOLDER, parents: [rootId], appProperties: { shiftly: k } }, null, { fields: 'id' }).id as string);
+    props.setProperty(PROP.folders, JSON.stringify(fmap));
+  }
+  let dbId = props.getProperty(PROP.dbId) ?? findOne(`'${fmap['01_Database']}' in parents and appProperties has { key='shiftly' and value='database' }`);
+  if (!dbId) {
+    dbId = Drive.Files.create(
+      { name: `Shiftly Database - ${storeLabel}`.slice(0, 100), mimeType: 'application/vnd.google-apps.spreadsheet', parents: [fmap['01_Database']], appProperties: { shiftly: 'database' } },
+      null,
+      { fields: 'id' },
+    ).id as string;
+    created = true;
+  }
+  props.setProperty(PROP.dbId, dbId);
+  // タイムゾーン設定（冪等）
+  Sheets.Spreadsheets.batchUpdate({ requests: [{ updateSpreadsheetProperties: { properties: { timeZone: 'Asia/Tokyo', locale: 'ja_JP' }, fields: 'timeZone,locale' } }] }, dbId);
+  return { rootId, dbId, created };
 }
 
 /** 環境情報ファイル（00_System）。端末キャッシュではなく Drive 上の情報で初回/既存を判定する */

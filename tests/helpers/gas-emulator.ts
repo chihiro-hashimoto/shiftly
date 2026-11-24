@@ -62,6 +62,8 @@ export class GasEmulator {
   files = new Map<string, { name: string; mimeType: string; parents: string[]; data: Buffer | null; appProperties?: Record<string, string>; trashed?: boolean }>();
   spreadsheets = new Map<string, Spreadsheet>();
   triggers: string[] = [];
+  /** エディタ実行（店長）を模す場合は店長のメール。匿名 Web アプリ経由は空文字 */
+  activeUser = 'owner@example.invalid';
   apiCalls = 0;
   private seq = 0;
   now = Date.now();
@@ -107,6 +109,7 @@ export class GasEmulator {
   }
 
   globals(extra: Record<string, unknown>) {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- 模擬 API の各メソッドから参照するため
     const self = this;
     const blob = (data: Buffer, mime: string, name: string) => ({
       getBytes: () => toSigned(data),
@@ -199,7 +202,8 @@ export class GasEmulator {
         list(q: { q: string }) {
           const parent = /'([^']+)' in parents/.exec(q.q)?.[1];
           const name = /name = '([^']+)'/.exec(q.q)?.[1];
-          const files = [...self.files.entries()].filter(([, f]) => !f.trashed && (!parent || f.parents.includes(parent)) && (!name || f.name === name)).map(([id, f]) => ({ id, name: f.name, createdTime: new Date().toISOString(), size: f.data ? String(f.data.length) : null }));
+          const ap = /appProperties has \{ key='([^']+)' and value='([^']+)' \}/.exec(q.q);
+          const files = [...self.files.entries()].filter(([, f]) => !f.trashed && (!parent || f.parents.includes(parent)) && (!name || f.name === name) && (!ap || f.appProperties?.[ap[1]!] === ap[2])).map(([id, f]) => ({ id, name: f.name, createdTime: new Date().toISOString(), size: f.data ? String(f.data.length) : null }));
           return { files };
         },
         get(id: string) {
@@ -232,11 +236,11 @@ export class GasEmulator {
         computeHmacSha256Signature: (v: number[], k: number[]) => toSigned(createHmac('sha256', fromSigned(k)).update(fromSigned(v)).digest()),
         newBlob: (d: string | number[], mime: string, name: string) => blob(typeof d === 'string' ? Buffer.from(d, 'utf8') : fromSigned(d), mime, name),
       },
-      Session: { getEffectiveUser: () => ({ getEmail: () => 'owner@example.invalid' }), getActiveUser: () => ({ getEmail: () => '' }) },
+      Session: { getEffectiveUser: () => ({ getEmail: () => 'owner@example.invalid' }), getActiveUser: () => ({ getEmail: () => self.activeUser }) },
       ScriptApp: {
         getOAuthToken: () => 'emu-token',
         getScriptId: () => 'emu-script',
-        getProjectTriggers: () => self.triggers.map((h) => ({ getHandlerFunction: () => h })),
+        getProjectTriggers: () => self.triggers.map((h, i) => ({ getHandlerFunction: () => h, getUniqueId: () => `trg${i}` })),
         newTrigger: (h: string) => {
           const chain = { timeBased: () => chain, everyDays: () => chain, atHour: () => chain, inTimezone: () => chain, create: () => self.triggers.push(h) };
           return chain;

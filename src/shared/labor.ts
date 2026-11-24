@@ -87,7 +87,8 @@ export function weekStartOf(d: LocalDate, weekStartDay: number): LocalDate {
 }
 
 export function overtime60WindowStart(d: LocalDate, cfg: LaborConfig): LocalDate {
-  if (cfg.overtime60StartDay === null) return cfg.periodFrom;
+  // 起算日が未設定の場合は給与期間の初日から。期間より前（週判定用に読み込んだ勤務）は当期の 60 時間に算入しない
+  if (cfg.overtime60StartDay === null) return d >= cfg.periodFrom ? cfg.periodFrom : `before:${cfg.periodFrom}`;
   const day = cfg.overtime60StartDay === 0 ? 1 : cfg.overtime60StartDay;
   const y = Number(d.slice(0, 4));
   const m = Number(d.slice(5, 7));
