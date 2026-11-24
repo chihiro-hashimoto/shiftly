@@ -6,7 +6,7 @@
  */
 import { defineOps } from '../api';
 import { audit, metaValue, setMeta, today, type Ctx } from '../context';
-import { E } from '../errors';
+import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import { SCHEMA_VERSION } from '../schema';
 import { plan } from '../migrations';
@@ -61,12 +61,20 @@ defineOps([
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
-    handler: (ctx) => {
+    handler: (ctx, raw) => {
+      const accept = v.bool(v.obj(raw ?? {}), 'acceptIntegrityIssues');
+      // DB のスキーマとアプリの版が一致しない場合は、承認があっても完了しない（互換性のない組み合わせで打刻を再開しない）
+      const sv = Number(metaValue(ctx, 'schemaVersion') ?? '0');
+      if (sv !== SCHEMA_VERSION)
+        throw new ApiError('UPDATE_INTEGRITY_FAILED', `DB のスキーマ（${sv}）とアプリ（${SCHEMA_VERSION}）が一致しないため、更新を完了できません（メンテナンスを継続します）`, 409);
       const check = integrityCheck(ctx);
+      // 整合性に問題がある場合はメンテナンスを継続し、店長が内容を確認して明示的に承認した場合のみ完了する
+      if (!check.ok && !accept)
+        throw new ApiError('UPDATE_INTEGRITY_FAILED', `整合性チェックで問題が見つかったため、更新を完了していません（メンテナンスを継続します）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
       setMeta(ctx, 'appVersion', APP_VERSION);
       setMeta(ctx, 'pendingUpdate', '');
       setMeta(ctx, 'maintenance', 'off');
-      audit(ctx, 'update.finish', 'system', null, `更新完了 ${APP_VERSION} 整合性=${check.ok}`);
+      audit(ctx, 'update.finish', 'system', null, `更新完了 ${APP_VERSION} 整合性=${check.ok}${!check.ok ? '（店長が問題を確認して完了）' : ''}`);
       return { appVersion: APP_VERSION, integrity: check };
     },
   },

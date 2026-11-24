@@ -242,6 +242,7 @@ function ResumeUpdate({ onChanged }: { onChanged: () => void }) {
   const [mig, setMig] = useState<MigrateResult | null>(null);
   const [approve, setApprove] = useState(false);
   const [fin, setFin] = useState<FinishResult | null>(null);
+  const [acceptIssues, setAcceptIssues] = useState(false);
 
   const migrate = async (approveDestructive: boolean) => {
     const r = await run(() => client.call<MigrateResult>('system.migrate', { approveDestructive }));
@@ -253,7 +254,7 @@ function ResumeUpdate({ onChanged }: { onChanged: () => void }) {
     }
   };
   const finish = async () => {
-    const r = await run(() => client.call<FinishResult>('system.finishUpdate'), '更新を完了しました');
+    const r = await run(() => client.call<FinishResult>('system.finishUpdate', { acceptIntegrityIssues: acceptIssues }), '更新を完了しました');
     if (r) {
       setFin(r);
       onChanged();
@@ -319,7 +320,11 @@ function ResumeUpdate({ onChanged }: { onChanged: () => void }) {
               更新を完了する
             </button>
           </div>
-          <p className="small muted">整合性チェックを行い、アプリのバージョンを記録してメンテナンスを解除します。</p>
+          <p className="small muted">整合性チェックを行い、アプリのバージョンを記録してメンテナンスを解除します。問題が見つかった場合はメンテナンスを継続します。</p>
+          <label className="check" style={{ marginTop: 6 }}>
+            <input type="checkbox" checked={acceptIssues} onChange={(e) => setAcceptIssues(e.target.checked)} />
+            <span className="small">整合性チェックで問題が見つかっても完了する（表示された問題の内容を確認済み。スキーマ版の不一致は対象外）</span>
+          </label>
           {fin && (
             <div style={{ marginTop: 6 }}>
               <p className="small">バージョン {fin.appVersion} として更新を完了しました。</p>

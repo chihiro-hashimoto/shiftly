@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Harness } from '../helpers/harness';
+import { UnitOfWork } from '../../src/backend/store';
 
 const code = (r: any) => (r.ok ? 'OK' : r.error.code);
 
@@ -209,5 +210,25 @@ describe('Codex 監査1 #1・#2: 復元', () => {
     const perms = h.ownerOk<any[]>('employees.list').find((e: any) => e.id === a);
     expect(JSON.stringify(perms)).not.toContain('payslip_view_others');
     expect(h.ownerOk<any[]>('employees.list', { includeRetired: true }).find((e: any) => e.id === c).status).toBe('retired');
+  });
+});
+
+describe('Codex 監査1 #13: 整合性 NG での更新完了', () => {
+  it('整合性チェックが不合格ならメンテナンスを継続し、店長の明示的な承認があれば完了する', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913');
+    // 存在しないスタッフを参照する行（不整合）を直接書き込む
+    const raw = new UnitOfWork(h.env.adapter, { now: () => h.env.clock.now, newId: (p) => `${p}_orphan01` });
+    raw.insert('permissions', { employeeId: 'emp_missing0001', permissions: [] } as never);
+    raw.flush();
+    h.login(a, '482913');
+    h.ownerOk('system.prepareUpdate', { targetVersion: '0.2.0' });
+    h.ownerOk('system.migrate', {});
+    expect(code(h.owner('system.finishUpdate'))).toBe('UPDATE_INTEGRITY_FAILED');
+    expect(code(h.punch('clock_in'))).toBe('MAINTENANCE');
+    const r = h.ownerOk('system.finishUpdate', { acceptIntegrityIssues: true });
+    expect(r.integrity.ok).toBe(false);
+    expect(code(h.punch('clock_in'))).toBe('OK');
   });
 });
