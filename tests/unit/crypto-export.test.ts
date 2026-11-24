@@ -90,3 +90,20 @@ except ImportError:
     expect(toBase64(new Uint8Array([1, 2, 3, 4]))).toBe(Buffer.from([1, 2, 3, 4]).toString('base64'));
   });
 });
+
+import { sha256, hmacSha256 } from '../../src/shared/sha256';
+import { createHash } from 'node:crypto';
+describe('SHA-256 / HMAC（純TS実装）', () => {
+  it('Node crypto と一致（長さ境界を網羅）', () => {
+    for (const len of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000]) {
+      const buf = new Uint8Array(len).map((_, i) => (i * 31 + 7) & 0xff);
+      expect(toHex(sha256(buf))).toBe(createHash('sha256').update(buf).digest('hex'));
+      const key = new Uint8Array(len % 100).map((_, i) => i);
+      expect(toHex(hmacSha256(key, buf))).toBe(createHmac('sha256', key).update(buf).digest('hex'));
+    }
+    const longKey = new Uint8Array(131).fill(0xaa);
+    expect(toHex(hmacSha256(longKey, utf8('Test Using Larger Than Block-Size Key - Hash Key First')))).toBe(
+      '60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54',
+    );
+  });
+});
