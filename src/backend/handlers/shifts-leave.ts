@@ -128,7 +128,13 @@ defineOps([
       const existing = ctx.uow.list<Shift>('shifts').filter((s) => s.date >= dst && s.date <= addDays(dst, 6) && s.status !== 'cancelled');
       let created = 0;
       let skipped = 0;
+      const activeIds = new Set(ctx.uow.list<Employee>('employees').filter((e) => e.status === 'active').map((e) => e.id));
       for (const s of srcShifts) {
+        // 退職者のシフトは複製しない
+        if (!activeIds.has(s.employeeId)) {
+          skipped++;
+          continue;
+        }
         const nd = { ...s, date: addDays(s.date, diff) };
         if (existing.some((e) => e.employeeId === s.employeeId && overlaps(e, nd))) {
           skipped++;
