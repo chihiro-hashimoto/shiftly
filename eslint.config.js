@@ -20,6 +20,8 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'warn',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-eval': 'error',
+      // 日本語の全角スペースを文字列・JSX テキスト内で許可
+      'no-irregular-whitespace': ['error', { skipStrings: true, skipTemplates: true, skipJSXText: true, skipComments: true }],
       'no-implied-eval': 'error',
       'no-new-func': 'error',
     },
