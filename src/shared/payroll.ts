@@ -271,9 +271,10 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
 
   // 割増算定基礎へ加算する手当の時間単価（分数）
   const allowancesInPeriod = overlapsPeriod(input.allowances, period.from, period.to);
-  const premiumAllowanceHourly = (monthlyMinutes: number | null, dailyMinutes: number | null): Frac => {
+  // d を指定した場合はその日に有効な手当のみ（期間途中で有効になる手当を適用前の勤務に使わない）
+  const premiumAllowanceHourly = (monthlyMinutes: number | null, dailyMinutes: number | null, d?: LocalDate): Frac => {
     let f = ZERO;
-    for (const a of allowancesInPeriod) {
+    for (const a of d ? effectiveAt(allowancesInPeriod, d) : allowancesInPeriod) {
       if (a.premiumBaseCategory !== 'include') continue;
       if (a.kind === 'fixed_monthly') {
         if (!monthlyMinutes) {
@@ -308,15 +309,25 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
 
   if (employee.payType === 'hourly') {
     // ================================================ 時給制
-    const allowHourly = premiumAllowanceHourly(emp?.monthlyAverageScheduledMinutes ?? null, emp?.dailyScheduledMinutes ?? null);
-    const minWageAllowHourly = (() => {
+    // 設定不備（所定時間の未設定等）の検出は期間内の全手当で行い、金額は勤務日ごとに有効な手当で求める
+    premiumAllowanceHourly(emp?.monthlyAverageScheduledMinutes ?? null, emp?.dailyScheduledMinutes ?? null);
+    const allowCache = new Map<LocalDate, Frac>();
+    const allowHourlyAt = (d: LocalDate): Frac => {
+      let f = allowCache.get(d);
+      if (!f) {
+        f = premiumAllowanceHourly(emp?.monthlyAverageScheduledMinutes ?? null, emp?.dailyScheduledMinutes ?? null, d);
+        allowCache.set(d, f);
+      }
+      return f;
+    };
+    const minWageAllowHourlyAt = (d: LocalDate): Frac => {
       let f = ZERO;
-      for (const a of allowancesInPeriod) {
+      for (const a of effectiveAt(allowancesInPeriod, d)) {
         if (!a.includeInMinimumWage) continue;
         if (a.kind === 'per_hour') f = f.add(Frac.of(a.amount));
       }
       return f;
-    })();
+    };
     const groups = new Map<string, { rate: number; seconds: number; amount: Frac }>();
     for (const p of inPeriod) {
       const r = resolveRateForPiece(input.wageRules, p, cutoffMin, settings.publicHolidays);
@@ -335,7 +346,19 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
       g.seconds += p.seconds;
       g.amount = g.amount.add(amt);
       groups.set(key, g);
-      const pb = Frac.of(r.premiumBase).add(allowHourly);
+      // 手当の支給（per_hour）は労働日で判定しているため、割増算定基礎・最低賃金も労働日で有効な手当を使う
+      const pb = Frac.of(r.premiumBase).add(allowHourlyAt(p.laborDate));
+      // 深夜割増込み時給: 時給に含まれる割増額が、手当を含む算定基礎に対する法定の深夜割増に満たない場合は差額を支給
+      let nightTopUp = ZERO;
+      if (p.night && r.nightIncluded) {
+        const required = pb.mul(h).mul(pct(rs.nightPct));
+        const included = Frac.of(r.rate - r.premiumBase).mul(h);
+        if (required.cmp(included) > 0) {
+          nightTopUp = required.sub(included);
+          add('info', 'NIGHT_INCLUDED_TOPUP', '深夜割増込み時給に含まれる割増額が、手当を含む割増算定基礎に対する深夜割増に満たないため、差額を深夜割増として支給しています', p.laborDate);
+        }
+      }
+      nightPrem = nightPrem.add(nightTopUp);
       if (p.overtime !== 'none') {
         if (p.over60) ot60Prem = ot60Prem.add(pb.mul(h).mul(pct(rs.over60Pct)));
         else otPrem = otPrem.add(pb.mul(h).mul(pct(rs.overtimePct)));
@@ -347,10 +370,11 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
         if (p.overtime !== 'none') c = c.add(pb.mul(h).mul(pct(p.over60 ? rs.over60Pct : rs.overtimePct)));
         if (p.holiday) c = c.add(pb.mul(h).mul(pct(rs.holidayPct)));
         if (p.night && !r.nightIncluded) c = c.add(pb.mul(h).mul(pct(rs.nightPct)));
+        c = c.add(nightTopUp);
         pieceCosts.push({ laborDate: p.laborDate, businessDate: p.businessDate, start: p.start, minutes: p.minutes, amount: c.toNumber() });
       }
       // 最低賃金は実際に働いた暦日で判定（日付をまたぐ勤務の午前0時以降は翌日の最低賃金が適用される）
-      minWageCheck(Frac.of(r.premiumBase).add(minWageAllowHourly), p.calendarDate);
+      minWageCheck(Frac.of(r.premiumBase).add(minWageAllowHourlyAt(p.laborDate)), p.calendarDate);
     }
     for (const g of groups.values()) {
       basis.push({ label: '基本賃金（時給）', detail: `${g.rate}円 × ${fmtSec(g.seconds)}`, amount: g.amount.round(rnd) });
@@ -422,6 +446,9 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
       const msm = sr.monthlyScheduledMinutes;
       if (!msm) add('blocking', 'MONTHLY_SCHEDULED_UNSET', '1か月平均所定労働時間が未設定のため、時間単価を算出できません');
       const allowHourly = premiumAllowanceHourly(msm, sr.scheduledDailyMinutes);
+      // 月給制: 割増算定基礎・最低賃金に算入する手当が期間途中で変わる場合の按分規定は未対応（確定不可）
+      if (allowancesInPeriod.some((a) => (a.premiumBaseCategory === 'include' || a.includeInMinimumWage) && (a.effectiveFrom > period.from || (a.effectiveTo !== null && a.effectiveTo < period.to))))
+        add('blocking', 'ALLOWANCE_CHANGED_MID_PERIOD', '割増算定基礎または最低賃金に算入する手当が期間途中で変更されています（月給制の按分規定の確認が必要）');
       const hourlyBase = msm ? Frac.of(sr.monthlySalary * 60, msm).add(allowHourly) : ZERO;
 
       // 最低賃金（月給 + 最低賃金算入手当）÷ 所定労働時間

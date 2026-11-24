@@ -133,3 +133,34 @@ describe('Codex 監査1 #5: 月60時間の起算週の遡り', () => {
     expect(emp.totals.grossPay).toBe(19800);
   });
 });
+
+describe('Codex 監査1 #6・#7: 手当を含む割増算定基礎', () => {
+  const grossFor = (h: Harness, a: string) => {
+    const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
+    h.setNow('2026-12-01', '06:00');
+    return h.ownerOk('payroll.compute', { periodId: p.id }).employees.find((x: any) => x.employeeId === a).totals.grossPay;
+  };
+
+  it('#6 深夜割増込み時給（1,500円、算定基礎1,200円）＋算入手当（時間給200円）: 22〜23時の1時間は 1,750円', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('試験', '482913', { rate: 1200 });
+    h.ownerOk('payconf.upsertWageRule', { employeeId: a, kind: 'timeband', hourlyRate: 1500, timeFrom: '22:00', timeTo: '29:00', effectiveFrom: '2025-01-01', priority: 10, includesNightPremium: true, premiumBaseRate: 1200 });
+    h.ownerOk('payconf.upsertAllowance', { employeeId: a, name: '資格手当', kind: 'per_hour', amount: 200, effectiveFrom: '2025-01-01', premiumBaseCategory: 'include', includeInMinimumWage: false });
+    h.punchAt(a, '482913', '2026-11-02', '22:00', 'clock_in');
+    h.punchAt(a, '482913', '2026-11-02', '23:00', 'clock_out');
+    // 1,500（深夜込み時給）＋200（手当）＋差額 (1,200＋200)×25% − 300 = 50 → 1,750
+    expect(grossFor(h, a)).toBe(1750);
+  });
+
+  it('#7 11/15 から有効な算入手当（時間給200円）を 11/2 の時間外割増に使わない: 9時間勤務は 11,100円', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('試験', '482913', { rate: 1200 });
+    h.ownerOk('payconf.upsertAllowance', { employeeId: a, name: '資格手当', kind: 'per_hour', amount: 200, effectiveFrom: '2026-11-15', premiumBaseCategory: 'include', includeInMinimumWage: false });
+    h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
+    h.punchAt(a, '482913', '2026-11-02', '18:00', 'clock_out');
+    // 9h×1,200=10,800 ＋ 時間外1h×1,200×25%=300（手当は適用前のため算入しない・支給もしない）
+    expect(grossFor(h, a)).toBe(11100);
+  });
+});
