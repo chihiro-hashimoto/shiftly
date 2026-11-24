@@ -232,3 +232,23 @@ describe('Codex 監査1 #13: 整合性 NG での更新完了', () => {
     expect(code(h.punch('clock_in'))).toBe('OK');
   });
 });
+
+describe('Codex 監査1 #11: 保存結果が不明な打刻の再送', () => {
+  it('業務データの書き込み途中で失敗しても、同じ requestId で再送すれば打刻は1件だけ（二重登録しない）', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913');
+    h.setNow('2026-11-02', '09:00');
+    h.login(a, '482913');
+    const ad = h.env.adapter as any;
+    ad.failOnWrite = ad.writes + 2; // ジャーナル（started）の次＝業務データの書き込みで失敗
+    const r1 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' });
+    expect(code(r1)).toBe('INTERNAL');
+    ad.failOnWrite = null;
+    h.advance(5_000);
+    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' }) as any;
+    expect(r2.ok).toBe(true);
+    const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
+    expect(det.originals.filter((x: any) => x.type === 'clock_in')).toHaveLength(1);
+  });
+});

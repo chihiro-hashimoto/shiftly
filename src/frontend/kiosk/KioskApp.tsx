@@ -309,6 +309,8 @@ function PersonScreen({ client, me, setMe, idleSec, onLogout }: { client: KioskC
   const [done, setDone] = useState<{ label: string; at: string } | null>(null);
   const [err, setErr] = useState('');
   const [confirmBreakOut, setConfirmBreakOut] = useState(false);
+  // 保存結果を確認できなかった打刻（同じ requestId で再送するためメモリにのみ保持。端末には保存しない）
+  const [unknown, setUnknown] = useState<{ type: PunchType; requestId: string; endBreakConfirmed: boolean } | null>(null);
   const [stepUp, setStepUp] = useState<null | ((ok: boolean) => void)>(null);
   const [remain, setRemain] = useState(idleSec);
   const last = useRef(Date.now());
@@ -338,29 +340,38 @@ function PersonScreen({ client, me, setMe, idleSec, onLogout }: { client: KioskC
 
   const has = (p: string) => me.permissions.includes(p);
 
-  const punch = async (type: PunchType, endBreakConfirmed = false) => {
+  const punch = async (type: PunchType, endBreakConfirmed = false, retryOf?: { requestId: string }) => {
     if (sending) return;
     setSending(type);
     setErr('');
-    const requestId = newRequestId();
+    // 結果不明の打刻を再送する場合は同じ requestId を使う（サーバー側で未完了の書き込みを回収し、保存済みなら同じ結果を返す＝二重登録しない）
+    const requestId = retryOf?.requestId ?? newRequestId();
     const finish = (label: string, at: string) => {
       setDone({ label, at });
       setTimeout(onLogout, 2500);
     };
     try {
       const r = await client.raw<{ label: string; at: string }>('attendance.punch', { type, endBreakConfirmed }, { requestId });
-      if (r.ok) return finish(r.data.label, r.data.at);
+      if (r.ok) {
+        setUnknown(null);
+        return finish(r.data.label, r.data.at);
+      }
       if (r.error.code === 'BREAK_END_CONFIRM_REQUIRED') {
         setConfirmBreakOut(true);
         return;
       }
-      if (r.error.code === 'NETWORK' || r.error.code === 'BAD_RESPONSE') {
-        // 保存結果が不明: サーバー上の記録を確認（同じ requestId）
+      if (r.error.code === 'NETWORK' || r.error.code === 'BAD_RESPONSE' || r.error.code === 'INTERNAL') {
+        // 保存結果が不明: サーバー上の記録を確認（同じ requestId）。見つからなくても「未保存」とは断定しない
         const chk = await client.raw<{ saved: boolean; at?: string }>('attendance.lookup', { requestId });
-        if (chk.ok && chk.data.saved) return finish(PUNCH_UI.find((p) => p.type === type)!.label, chk.data.at ?? '');
-        setErr('通信に失敗したため打刻は保存されていません。もう一度お試しください（つながらない場合は紙のタイムカードに記録）');
+        if (chk.ok && chk.data.saved) {
+          setUnknown(null);
+          return finish(PUNCH_UI.find((p) => p.type === type)!.label, chk.data.at ?? '');
+        }
+        setUnknown({ type, requestId, endBreakConfirmed });
+        setErr('打刻が保存できたか確認できませんでした。下の「同じ打刻をもう一度送信」を押してください（同じ打刻として扱うため二重には記録されません）。つながらない場合は紙のタイムカードに記録し、店長に伝えてください');
         return;
       }
+      if (retryOf) setUnknown(null);
       setErr(r.error.message);
       const m = await client.raw<Me>('auth.me');
       if (m.ok) setMe({ ...me, ...m.data });
@@ -421,6 +432,13 @@ function PersonScreen({ client, me, setMe, idleSec, onLogout }: { client: KioskC
         {tab === 'punch' && (
           <>
             {err && <div className="callout callout-bull" role="alert" style={{ color: 'var(--ink)' }}>{err}</div>}
+            {unknown && (
+              <div style={{ margin: '8px 0' }}>
+                <button className="btn btn-primary" disabled={!!sending} onClick={() => void punch(unknown.type, unknown.endBreakConfirmed, unknown)}>
+                  {sending ? '送信中…' : `同じ打刻（${PUNCH_UI.find((p) => p.type === unknown.type)!.label}）をもう一度送信`}
+                </button>
+              </div>
+            )}
             <div className="k-actions">
               {PUNCH_UI.map((p) => {
                 const allowed = me.allowedPunches.includes(p.type) || (p.type === 'clock_out' && me.state === 'on_break');
