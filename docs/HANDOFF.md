@@ -4,16 +4,16 @@
 > 元の指示は統合マスタープロンプト v1.2。要点は `docs/requirements.md` にあり、再入力は不要。
 
 ## 現在の工程
-- 工程 A〜J の実装はおおむね完了（モック／エミュレーションで検証済み）
-- 工程 K（総合テスト）の途中。管理画面ページ A（シフト・有給・スタッフ・給与条件）と B（給与計算・明細・人件費・出力）は並行で作業中（作業ツリーに未コミットの差分あり）
-- 工程 L（Codex 監査・PR）は未着手。Codex CLI はこの環境にない
+- 工程 A〜K 完了（実装・モック／エミュレーション検証・E2E・独立レビュー修正）
+- 工程 L: PR 作成済み（ドラフト）。Codex 監査は Codex CLI がないため未実施
+- 残: Google 実環境・iPad 実機での検証（ユーザー承認・実機が必要）
 
 ## リポジトリ / ブランチ / PR / CI
 - リポジトリ: https://github.com/chihiro-hashimoto/shiftly（Private）
   - 指示書の記載は `chihirohashimotoac-coder/shiftly`。本セッションが操作できるのは `chihiro-hashimoto/shiftly` のみ（**ユーザー確認事項**）
 - ブランチ: `claude/inspiring-einstein-73ks5s`（main は Initial commit のまま）
 - 最新コミット: `git log -1` で確認
-- PR: 未作成
+- PR: https://github.com/chihiro-hashimoto/shiftly/pull/1（ドラフト。main へのマージはユーザー承認後）
 - CI: `.github/workflows/ci.yml`。push 時に実行される（結果は GitHub Actions で確認）
 
 ## 確定済み仕様（主なもの）
@@ -39,9 +39,9 @@
   - E2E は Kiosk・Setup・管理画面全 16 ページ（iPad 横・縦／PC 1440／スマホ 390、Chromium）
 
 ## 次に実行する作業
-1. 管理画面ページ A・B の取り込み → lint・typecheck・ビルド・E2E（管理画面の巡回テストを追加）
-2. （完了）独立レビュー R-1 の指摘修正
-3. `npm run verify` の全通し → CI の確認 → PR 作成（main へのマージはしない）
+1. （完了）管理画面全ページ・独立レビュー修正・verify・PR 作成
+2. CI の結果確認（PR #1 を購読中）
+3. Codex 監査（Codex CLI が使える環境・ユーザーの認証が必要）
 4. ユーザーの承認後: 検証用 Google アカウントで実環境検証を行い、technical-verification.md に実測結果を追記
 
 ## レビュー
