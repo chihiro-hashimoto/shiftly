@@ -251,6 +251,7 @@ defineOps([
     name: 'kiosk.enroll',
     auth: 'public',
     mutating: true,
+    secretResponse: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
       return enrollDevice(ctx, v.str(a, 'code', { max: 20, label: '登録コード' }), v.str(a, 'userAgent', { optional: true, max: 300 }));
@@ -276,6 +277,7 @@ defineOps([
     name: 'auth.login',
     auth: 'device',
     mutating: true,
+    secretResponse: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
       if (ctx.principal.kind !== 'device') throw E.deviceNotRegistered();

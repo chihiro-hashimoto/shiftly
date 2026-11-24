@@ -8,7 +8,7 @@
 import { handleRequest, verifyEnvelope, SECRET_KEYS, APP_VERSION, type Backend } from '../backend/index';
 import { createGasPlatform, provisionStorage, writeEnvironmentFile } from '../backend/gas/platform';
 import { SheetsAdapter } from '../backend/gas/sheets-adapter';
-import { ensureSecrets } from '../backend/auth';
+import { ensureSecrets, windowBump, windowCount } from '../backend/auth';
 import { timingSafeEqualHex } from '../shared/crypto';
 import { SCHEMA_VERSION } from '../backend/schema';
 
@@ -92,11 +92,11 @@ export function doPost(e: GoogleAppsScript.Events.DoPost) {
 /** Admin / Setup との初回ペアリング（使い捨て）。成功時に役割別の HMAC 鍵を返す */
 function pair(b: Backend, role: 'admin' | 'setup', code: unknown) {
   const p = b.p;
-  const fails = Number(p.cache.get('pair-fail') ?? '0');
-  if (fails >= 10) return { ok: false, error: { code: 'RATE_LIMITED', message: 'too many attempts' } };
+  const fails = windowCount(p, `pair-fail:${role}`);
+  if (fails >= 30) return { ok: false, error: { code: 'RATE_LIMITED', message: 'too many attempts' } };
   const expected = role === 'admin' ? SHIFTLY_BOOTSTRAP.adminPairingHash : SHIFTLY_BOOTSTRAP.setupPairingHash;
   if (typeof code !== 'string' || code.length < 32 || !timingSafeEqualHex(p.sha256Hex(code), expected)) {
-    p.cache.put('pair-fail', String(fails + 1), 3600);
+    windowBump(p, `pair-fail:${role}`, 3600);
     return { ok: false, error: { code: 'UNAUTHENTICATED', message: 'pairing failed' } };
   }
   const flag = role === 'admin' ? 'SHIFTLY_ADMIN_PAIRED' : 'SHIFTLY_SETUP_PAIRED';
@@ -114,6 +114,8 @@ function pair(b: Backend, role: 'admin' | 'setup', code: unknown) {
  * フォルダ・DB 作成、秘密情報生成、初期データ、日次トリガー登録（すべて冪等）
  */
 export function shiftlyAuthorize() {
+  // 匿名の Web アプリ訪問者が google.script.run で呼ぶことを拒否（エディタから店長が実行した場合のみ）
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから店長が実行してください');
   const b = be();
   const cfg = SHIFTLY_BOOTSTRAP;
   // ロックは入れ子にしない（handleRequest 内で再度ロックを取得するため）
@@ -132,7 +134,24 @@ export function shiftlyAuthorize() {
   return { ok: r.ok, created: st.created };
 }
 
-export function shiftlyDailyJob() {
+/** エディタ実行（店長本人）か。匿名アクセスの Web アプリ経由では getActiveUser が空になる */
+function isOwnerExecution(): boolean {
+  try {
+    const active = Session.getActiveUser().getEmail();
+    const eff = Session.getEffectiveUser().getEmail();
+    return !!active && !!eff && active.toLowerCase() === eff.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+export function shiftlyDailyJob(e?: { triggerUid?: string }) {
+  // 時間主導トリガーからの呼び出しのみ受け付ける（google.script.run 経由の匿名呼び出しを拒否）
+  const uid = e && typeof e.triggerUid === 'string' ? e.triggerUid : '';
+  if (!uid || !ScriptApp.getProjectTriggers().some((t) => t.getUniqueId() === uid && t.getHandlerFunction() === 'shiftlyDailyJob')) {
+    console.log(JSON.stringify({ level: 'warn', message: 'dailyJob rejected (not a trigger invocation)' }));
+    return;
+  }
   const r = handleRequest(be(), { op: 'system.dailyJob' }, 'system');
   if (!r.ok) console.log(JSON.stringify({ level: 'error', message: 'dailyJob failed', code: r.error.code }));
 }

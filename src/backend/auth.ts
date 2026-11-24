@@ -36,6 +36,33 @@ export const DEVICE_FAIL_LIMIT = 20;
 export const DEVICE_FAIL_WINDOW_SEC = 15 * 60;
 export const OWNER_SIG_WINDOW_MS = 60_000;
 
+/** 固定ウィンドウの失敗回数（失敗のたびに期限を延長しない） */
+export function windowCount(p: Platform, key: string): number {
+  const v = p.cache.get(key);
+  if (!v) return 0;
+  try {
+    const o = JSON.parse(v) as { n: number; until: number };
+    return o.until > p.now() ? o.n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function windowBump(p: Platform, key: string, windowSec: number) {
+  const v = p.cache.get(key);
+  let o = { n: 0, until: p.now() + windowSec * 1000 };
+  try {
+    if (v) {
+      const prev = JSON.parse(v) as { n: number; until: number };
+      if (prev.until > p.now()) o = prev;
+    }
+  } catch {
+    /* 破損時は新しいウィンドウ */
+  }
+  o.n += 1;
+  p.cache.put(key, JSON.stringify(o), Math.max(1, Math.ceil((o.until - p.now()) / 1000)));
+}
+
 export function ensureSecrets(p: Platform) {
   if (!p.secrets.get(SECRET_KEYS.pepper)) p.secrets.set(SECRET_KEYS.pepper, p.randomHex(32));
 }
@@ -107,12 +134,13 @@ export function enrollDevice(ctx: Ctx, code: string, userAgentHint: string): { d
   const normalized = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const h = tokenHash(ctx.p, normalized);
   // 端末未登録状態での総当たり対策: キャッシュで全体の失敗回数を制限
+  // 登録コードは 32 文字種×10 桁（約 10^15 通り）のため、全体での上限は妨害耐性を優先して緩めに設定
   const failKey = 'enroll-fail';
-  const fails = Number(ctx.p.cache.get(failKey) ?? '0');
-  if (fails >= 30) throw E.rateLimited('登録コードの入力失敗が多すぎます。時間をおいてから再度お試しください');
+  const fails = windowCount(ctx.p, failKey);
+  if (fails >= 100) throw E.rateLimited('登録コードの入力失敗が多すぎます。時間をおいてから再度お試しください');
   const en = ctx.uow.list<DeviceEnrollment>('device_enrollments').find((e) => timingSafeEqualHex(e.codeHash, h));
   if (!en || en.usedAt || parseIso(en.expiresAt) < ctx.now) {
-    ctx.p.cache.put(failKey, String(fails + 1), 900);
+    windowBump(ctx.p, failKey, 900);
     throw E.invalid('登録コードが無効か、有効期限が切れています');
   }
   const raw = newToken(ctx.p);
@@ -147,17 +175,17 @@ export function permissionsOf(ctx: Ctx, employeeId: string): PermissionKey[] {
 
 export function login(ctx: Ctx, dev: Device, employeeId: string, pin: string): { sessionToken: string; employee: Employee; permissions: PermissionKey[] } {
   const devFailKey = `pin-fail:${dev.id}`;
-  const devFails = Number(ctx.p.cache.get(devFailKey) ?? '0');
+  const devFails = windowCount(ctx.p, devFailKey);
   if (devFails >= DEVICE_FAIL_LIMIT) throw E.rateLimited('この端末でのPIN入力失敗が多すぎます。しばらくしてから再度お試しください');
   const emp = ctx.uow.get<Employee>('employees', employeeId);
   if (!emp || emp.status !== 'active') {
-    ctx.p.cache.put(devFailKey, String(devFails + 1), DEVICE_FAIL_WINDOW_SEC);
+    windowBump(ctx.p, devFailKey, DEVICE_FAIL_WINDOW_SEC);
     throw E.invalid('スタッフが見つかりません');
   }
   try {
     verifyCredential(ctx, employeeId, 'pin', pin);
   } catch (e) {
-    ctx.p.cache.put(devFailKey, String(devFails + 1), DEVICE_FAIL_WINDOW_SEC);
+    windowBump(ctx.p, devFailKey, DEVICE_FAIL_WINDOW_SEC);
     throw e;
   }
   const raw = newToken(ctx.p);

@@ -84,6 +84,13 @@ export class SheetsAdapter implements TableAdapter {
     return reqs.map((r) => out.get(sheetNameFor(r.def, r.partition)) ?? []);
   }
 
+  reset() {
+    this.titles = null;
+    this.index.clear();
+    this.lastRow.clear();
+    this.gridRows.clear();
+  }
+
   partitions(def: TableDef): string[] {
     const prefix = `${def.name}__`;
     return [...this.sheetTitles()].filter((t) => t.startsWith(prefix)).map((t) => t.slice(prefix.length).replace('_', '-')).sort();
@@ -133,9 +140,6 @@ export class SheetsAdapter implements TableAdapter {
         appends.set(name, a);
       }
     }
-    if (updates.length) {
-      Sheets.Spreadsheets.Values.batchUpdate({ valueInputOption: 'RAW', data: updates }, this.spreadsheetId());
-    }
     for (const [name, a] of appends) {
       // ロック内のため行番号を計算して書き込む（append の自動範囲検出に依存しない）
       const start = (this.lastRow.get(name) ?? 1) + 1;
@@ -144,6 +148,10 @@ export class SheetsAdapter implements TableAdapter {
       Sheets.Spreadsheets.Values.update({ values: a.rows }, this.spreadsheetId(), `${q(name)}!A${start}:${colLetter(a.def.columns.length)}${end}`, { valueInputOption: 'RAW' });
       a.rows.forEach((r, i) => this.index.get(name)!.set(String(r[0]), start + i));
       this.lastRow.set(name, end);
+    }
+    // 追記を先に行い、既存行の更新を後にする（途中失敗時に「旧版を無効化したが新版がない」状態を避ける）
+    if (updates.length) {
+      Sheets.Spreadsheets.Values.batchUpdate({ valueInputOption: 'RAW', data: updates }, this.spreadsheetId());
     }
   }
 

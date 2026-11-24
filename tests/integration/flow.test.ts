@@ -349,3 +349,31 @@ describe('書き込み途中失敗からの復旧（ジャーナル）', () => {
     expect(h.ownerOk('system.integrityCheck').ok).toBe(true);
   });
 });
+
+describe('大きな書き込み（給与確定・訂正）の途中失敗からの復旧（レビュー指摘 #5）', () => {
+  it('訂正の業務データ書き込みが失敗しても、次の処理でジャーナルから再適用され確定版が失われない', () => {
+    const h = new Harness();
+    h.setupStore();
+    const ids = [h.addStaff('A', '482913', { rate: 1100 }), h.addStaff('B', '582914', { rate: 1200 }), h.addStaff('C', '682915', { rate: 1300 })];
+    h.setNow('2026-12-05', '10:00');
+    for (const id of ids) {
+      for (let d = 2; d <= 20; d++) {
+        const day = `2026-11-${String(d).padStart(2, '0')}`;
+        h.ownerOk('attendance.correct', { employeeId: id, action: 'add', type: 'clock_in', at: `${day}T10:00`, reason: 'テストデータ' });
+        h.ownerOk('attendance.correct', { employeeId: id, action: 'add', type: 'clock_out', at: `${day}T15:00`, reason: 'テストデータ' });
+      }
+    }
+    const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
+    for (const id of ids) h.ownerOk('deductions.upsert', { employeeId: id, periodId: p.id, status: 'explicit_none' });
+    h.ownerOk('payroll.confirm', { periodId: p.id });
+    // 訂正の業務データ書き込み（flush 内 2 回目の write）で失敗させる
+    h.env.adapter.failOnWrite = (h.env.adapter as any).writes + 2;
+    expect(h.owner('payroll.correct', { periodId: p.id, employeeId: ids[0], reason: '再計算' }).ok).toBe(false);
+    h.env.adapter.failOnWrite = null;
+    h.ownerOk('system.setMaintenance', { on: false }); // 任意の更新系処理でジャーナル再適用
+    const res = h.ownerOk<any[]>('payroll.results', { periodId: p.id }).filter((r) => r.employeeId === ids[0]);
+    expect(res.find((r) => r.status === 'confirmed')?.revision).toBe(2);
+    expect(res.find((r) => r.status === 'superseded')?.revision).toBe(1);
+    expect(h.ownerOk('system.integrityCheck').ok).toBe(true);
+  });
+});

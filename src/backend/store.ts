@@ -28,6 +28,8 @@ export interface TableAdapter {
   partitions(def: TableDef): string[];
   /** 複数テーブルの一括読み込み（任意。Sheets では values.batchGet で API 呼び出しを 1 回にする） */
   readMany?(reqs: Array<{ def: TableDef; partition: string | null }>): RawRow[][];
+  /** 接続先 DB の切替後にキャッシュ（シート一覧・行番号）を破棄する */
+  reset?(): void;
   /** 変更をまとめて書き込む（id 一致行は上書き、なければ追加） */
   write(changes: Array<{ def: TableDef; partition: string | null; id: string; raw: RawRow }>): void;
 }
@@ -235,53 +237,90 @@ export class UnitOfWork {
     const changes = [...this.pending.values()];
     const journalId = this.newId('jnl');
     const now = this.nowIso();
-    const detail = JSON.stringify(changes.map((c) => ({ t: c.table, p: c.partition, r: c.row })));
-    const journalable = detail.length <= MAX_CELL_CHARS;
     const jdef = TABLE_BY_NAME.operation_journal;
-    const journalRow = (state: string) => ({
-      id: journalId, createdAt: now, updatedAt: this.nowIso(), version: state === 'started' ? 1 : 2,
-      op: 'flush', state, detail: journalable ? detail : JSON.stringify({ tooLarge: true, tables: changes.map((c) => c.table) }),
-    });
     const jpart = now.slice(0, 7);
-    this.adapter.write([{ def: jdef, partition: jpart, id: journalId, raw: encodeRow(jdef, journalRow('started')) }]);
+    // 変更内容をセル上限内のチャンクに分割してジャーナルへ記録（大きな給与確定でも必ず記録する）
+    const LIMIT = 40000;
+    const chunks: string[][] = [];
+    let cur: string[] = [];
+    let size = 2;
+    for (const c of changes) {
+      const item = JSON.stringify({ t: c.table, p: c.partition, r: c.row });
+      if (item.length + 2 > LIMIT) throw new Error(`${c.table} の 1 行が大きすぎるため書き込めません`);
+      if (size + item.length + 1 > LIMIT && cur.length) {
+        chunks.push(cur);
+        cur = [];
+        size = 2;
+      }
+      cur.push(item);
+      size += item.length + 1;
+    }
+    if (cur.length) chunks.push(cur);
+    const rowsFor = (state: 'started' | 'committed') =>
+      chunks.map((items, i) => ({
+        def: jdef,
+        partition: jpart,
+        id: `${journalId}_${i}`,
+        raw: encodeRow(jdef, { id: `${journalId}_${i}`, createdAt: now, updatedAt: this.nowIso(), version: state === 'started' ? 1 : 2, op: `flush:${journalId}:${i}/${chunks.length}`, state, detail: `[${items.join(',')}]` }),
+      }));
+    // 1) ジャーナル（started）→ 2) 業務データ → 3) ジャーナル（committed）
+    this.adapter.write(rowsFor('started'));
     this.adapter.write(
       changes.map((c) => {
         const def = TABLE_BY_NAME[c.table];
         return { def, partition: c.partition, id: c.row.id as string, raw: encodeRow(def, c.row) };
       }),
     );
-    this.adapter.write([{ def: jdef, partition: jpart, id: journalId, raw: encodeRow(jdef, journalRow('committed')) }]);
+    this.adapter.write(rowsFor('committed'));
     const n = this.pending.size;
     this.pending.clear();
     this.updatedKeys.clear();
     return n;
   }
 
-  /** started のまま残ったジャーナルを再適用（ロック取得後・処理前に呼ぶ） */
+  /** started のまま残ったジャーナルを再適用（ロック取得後・処理前に呼ぶ）。分割記録はすべて揃っている場合のみ再適用 */
   recoverJournal(): { replayed: number; unrecoverable: number } {
     const jdef = TABLE_BY_NAME.operation_journal;
     type J = { id: string; state: string; detail: string; createdAt: string; version: number; op: string };
     const rows = this.recentPartitions().flatMap((p) => this.load('operation_journal', p).map((r) => ({ p, ...(r as unknown as J) })));
+    const started = rows.filter((r) => r.state === 'started');
+    const groups = new Map<string, { total: number; parts: Array<J & { p: string }> }>();
+    for (const r of started) {
+      const m = /^flush:([^:]+):(\d+)\/(\d+)$/.exec(r.op);
+      const key = m ? m[1]! : r.id;
+      const g = groups.get(key) ?? { total: m ? Number(m[3]) : 1, parts: [] };
+      g.parts.push(r);
+      groups.set(key, g);
+    }
     let replayed = 0;
     let unrecoverable = 0;
-    for (const j of rows.filter((r) => r.state === 'started')) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(j.detail);
-      } catch {
-        parsed = null;
-      }
-      if (!Array.isArray(parsed)) {
+    const mark = (parts: Array<J & { p: string }>, state: string) =>
+      this.adapter.write(parts.map((j) => ({ def: jdef, partition: j.p, id: j.id, raw: encodeRow(jdef, { ...j, state, updatedAt: this.nowIso(), version: j.version + 1 }) })));
+    for (const g of groups.values()) {
+      // 記録が揃っていない＝ジャーナル書き込み自体が失敗し、業務データは書かれていない
+      if (g.parts.length !== g.total) {
         unrecoverable++;
-        this.adapter.write([{ def: jdef, partition: j.p, id: j.id, raw: encodeRow(jdef, { ...j, state: 'failed', updatedAt: this.nowIso(), version: j.version + 1 }) }]);
+        mark(g.parts, 'failed');
         continue;
       }
-      const writes = (parsed as Array<{ t: TableName; p: string | null; r: Record<string, unknown> }>).map((c) => {
-        const def = TABLE_BY_NAME[c.t];
-        return { def, partition: c.p, id: c.r.id as string, raw: encodeRow(def, c.r) };
-      });
-      this.adapter.write(writes);
-      this.adapter.write([{ def: jdef, partition: j.p, id: j.id, raw: encodeRow(jdef, { ...j, state: 'committed', updatedAt: this.nowIso(), version: j.version + 1 }) }]);
+      const items: Array<{ t: TableName; p: string | null; r: Record<string, unknown> }> = [];
+      let ok = true;
+      for (const j of g.parts) {
+        try {
+          const parsed = JSON.parse(j.detail) as unknown;
+          if (!Array.isArray(parsed)) ok = false;
+          else items.push(...(parsed as typeof items));
+        } catch {
+          ok = false;
+        }
+      }
+      if (!ok) {
+        unrecoverable++;
+        mark(g.parts, 'failed');
+        continue;
+      }
+      this.adapter.write(items.map((c) => ({ def: TABLE_BY_NAME[c.t], partition: c.p, id: c.r.id as string, raw: encodeRow(TABLE_BY_NAME[c.t], c.r) })));
+      mark(g.parts, 'committed');
       replayed++;
     }
     if (replayed || unrecoverable) this.cache.clear();

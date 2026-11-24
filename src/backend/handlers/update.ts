@@ -95,8 +95,10 @@ defineOps([
 /** 日次の定期処理（時間主導トリガーから system 権限で実行） */
 export function dailyJob(ctx: Ctx) {
   const d = today(ctx);
-  const daily = runBackup(ctx, 'daily');
-  const monthly = d.endsWith('-01') ? runBackup(ctx, 'monthly') : null;
+  // 同日の日次・月次バックアップがあれば作らない（多重実行による容量消費の防止）
+  const existing = ctx.uow.list<{ kind: string; status: string; createdAt: string }>('backup_history').filter((b) => b.status === 'ok' && b.createdAt.slice(0, 10) === d);
+  const daily = existing.some((b) => b.kind === 'daily') ? { status: 'skipped' } : runBackup(ctx, 'daily');
+  const monthly = d.endsWith('-01') && !existing.some((b) => b.kind === 'monthly') ? runBackup(ctx, 'monthly') : null;
   const created = scanNotifications(ctx);
   return { backup: daily.status, monthlyBackup: monthly?.status ?? null, notificationsCreated: created };
 }

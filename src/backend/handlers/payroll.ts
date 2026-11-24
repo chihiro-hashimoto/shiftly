@@ -11,7 +11,8 @@ import { issueKey, unacknowledged, type PayrollIssue, type PayrollOutput, type P
 import { employeesInPeriod, getOrCreatePeriod, latestResult, periodConfig, runPayroll } from '../services';
 import { periodForDate } from '../../shared/period';
 import { buildPayslip, payslipHtml, type PayslipData } from '../../shared/payslip';
-import { MAX_CELL_CHARS } from '../store';
+/** スナップショットの上限（1 行がジャーナルの 1 チャンクに収まる大きさ） */
+const SNAPSHOT_LIMIT = 30000;
 import { toBase64 } from '../../shared/xlsx';
 
 function period(ctx: Ctx, id: string): PayrollPeriod {
@@ -24,11 +25,11 @@ function period(ctx: Ctx, id: string): PayrollPeriod {
 function snapshotOf(input: PayrollInput, out: PayrollOutput): string {
   const full = { input, daily: out.daily, basis: out.basis, issues: out.issues, calcVersion: out.calcVersion, rulesetId: out.rulesetId };
   let s = JSON.stringify(full);
-  if (s.length > MAX_CELL_CHARS) {
+  if (s.length > SNAPSHOT_LIMIT) {
     const compact = { ...full, input: { ...input, sessions: input.sessions.map((x) => ({ l: x.laborDate, s: x.start, e: x.end, b: x.breaks.map((b) => [b.start, b.end]) })) } };
     s = JSON.stringify(compact);
   }
-  if (s.length > MAX_CELL_CHARS) s = JSON.stringify({ truncated: true, daily: out.daily, basis: out.basis, calcVersion: out.calcVersion, rulesetId: out.rulesetId });
+  if (s.length > SNAPSHOT_LIMIT) s = JSON.stringify({ truncated: true, daily: out.daily, basis: out.basis, calcVersion: out.calcVersion, rulesetId: out.rulesetId });
   return s;
 }
 

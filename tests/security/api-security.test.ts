@@ -253,3 +253,21 @@ describe('入力検証・情報漏えい', () => {
     expect(dump).not.toContain(h.device);
   });
 });
+
+describe('秘密値の非保存（レビュー指摘 #3 の回帰テスト）', () => {
+  it('端末トークン・セッショントークンの平文が DB のどのセルにも残らない', () => {
+    const { h, a } = setup();
+    h.login(a, '482913');
+    h.punch('clock_in');
+    const dump = JSON.stringify(h.env.adapter.snapshot());
+    expect(dump).not.toContain(h.device);
+    expect(dump).not.toContain(h.session);
+  });
+  it('秘密値を返す操作の再送は保存済み応答を返さない', () => {
+    const { h, a } = setup();
+    const r1 = h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '', requestId: 'login_rid_0001' });
+    expect(r1.ok).toBe(true);
+    const r2 = h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '', requestId: 'login_rid_0001' });
+    expect(r2.ok).toBe(false);
+  });
+});

@@ -435,6 +435,8 @@ defineOps([
       ctx.uow.flush();
       // 3) DB 切替（バックアップの複製を新 DB として有効化）
       const sw = ctx.p.database.activateCopyOf(b.driveFileId);
+      // 旧 DB のシート一覧・行番号のキャッシュを破棄（新 DB に対して読み書きする）
+      ctx.uow.adapter.reset?.();
       const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
       const ctx2: Ctx = { ...ctx, uow: uow2 };
       // 4) 退避データを再投入（id 一致は上書き＝冪等）

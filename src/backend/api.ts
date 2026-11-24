@@ -26,6 +26,8 @@ export interface OpDef {
   sensitive?: boolean;
   /** メンテナンス中も許可 */
   allowInMaintenance?: boolean;
+  /** 応答に秘密値（端末トークン・セッショントークン）を含む: 冪等性テーブル・ジャーナルに応答を保存しない */
+  secretResponse?: boolean;
   handler: (ctx: Ctx, args: unknown) => unknown;
 }
 
@@ -104,6 +106,7 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
           .find((x) => x.requestId === r.requestId);
         if (prev) {
           if (prev.principalKey !== pkey || prev.op !== r.op) throw E.conflict('requestId が別の操作で使用されています');
+          if (def.secretResponse) throw E.conflict('この操作はすでに処理されています。最初からやり直してください');
           return { ...(JSON.parse(prev.responseJson) as object), replayed: true };
         }
       }
@@ -111,7 +114,7 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
       if (def.mutating) {
         if (r.requestId) {
           const json = JSON.stringify(data ?? null);
-          uow.insert<RequestIdempotency>('request_idempotency', { requestId: r.requestId, op: r.op, principalKey: pkey, responseJson: json.length < 40000 ? json : '{"stored":false}' }, 'idm');
+          uow.insert<RequestIdempotency>('request_idempotency', { requestId: r.requestId, op: r.op, principalKey: pkey, responseJson: def.secretResponse ? '{"redacted":true}' : json.length < 30000 ? json : '{"stored":false}' }, 'idm');
         }
         uow.flush();
       } else if (uow.hasPending()) {
@@ -122,6 +125,8 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
       return data;
     };
 
+    // 更新系で端末認証が必要な操作は、ロック取得前に読み取りのみで認証する（未認証リクエストでロックを占有させない）
+    if (def.mutating && !trusted && def.auth !== 'public') preAuthenticate(be, def, r);
     const data = def.mutating ? p.withLock(15000, run) : run();
     return { ok: true, data };
   } catch (e) {
@@ -131,6 +136,16 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
     p.log('error', 'unhandled', { op: opName, err: e instanceof Error ? e.message.slice(0, 200) : 'unknown' });
     return { ok: false, error: { code: 'INTERNAL', message: '処理中にエラーが発生しました。時間をおいて再度お試しください' } };
   }
+}
+
+function preAuthenticate(be: Backend, def: OpDef, r: ApiRequest) {
+  const now = be.p.now();
+  const uow = new UnitOfWork(be.adapter(), { now: () => now, newId: (prefix) => `${prefix}_${be.p.randomHex(10)}` });
+  uow.prefetch([{ table: 'system_metadata' }, { table: 'store_settings' }, { table: 'devices' }, { table: 'employees' }, { table: 'sessions', partitions: uow.recentPartitions() }]);
+  const ctx: Ctx = { p: be.p, uow, principal: { kind: 'anonymous' }, now, requestId: null, op: def.name };
+  if (def.auth === 'owner') throw E.forbidden();
+  const dev = authenticateDevice(ctx, r.device);
+  if (def.auth === 'session' || def.auth === 'staff_or_owner') authenticateSession(ctx, dev, r.session);
 }
 
 function principalKey(pr: Principal): string {
