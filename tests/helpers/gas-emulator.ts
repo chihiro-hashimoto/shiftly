@@ -67,6 +67,8 @@ export class GasEmulator {
   apiCalls = 0;
   private seq = 0;
   now = Date.now();
+  /** 新規シートの行数（Google Sheets の既定は 1000 行。テストでは行の自動拡張を少ない件数で確認するため変更可能） */
+  defaultRows = 1000;
 
   private newId(p: string) {
     return `${p}${++this.seq}`;
@@ -133,7 +135,7 @@ export class GasEmulator {
             if (r.addSheet) {
               const t = r.addSheet.properties.title;
               if (ss.sheets.some((s) => s.title === t)) throw new Error(`A sheet with the name "${t}" already exists.`);
-              ss.sheets.push({ title: t, sheetId: self.seq++, rowCount: 1000, rows: [] });
+              ss.sheets.push({ title: t, sheetId: self.seq++, rowCount: self.defaultRows, rows: [] });
             } else if (r.appendDimension) {
               const sh = ss.sheets.find((s) => s.sheetId === r.appendDimension.sheetId)!;
               sh.rowCount += r.appendDimension.length;

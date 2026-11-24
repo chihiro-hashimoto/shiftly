@@ -104,17 +104,18 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
 
   it('大量行でもシートの行数を自動拡張して書き込める', () => {
     const emu = new GasEmulator();
+    emu.defaultRows = 100; // 既定 1000 行の代わりに 100 行のグリッドで拡張処理を検証（実行時間短縮）
     const code = randomBytes(32).toString('hex');
     const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_emu2', storeName: 'x', adminPairingHash: sha(code), setupPairingHash: sha(code + 'x') } });
     const post = (body: unknown) => JSON.parse(core.doPost({ postData: { contents: JSON.stringify(body) } }).content);
     core.shiftlyAuthorize();
     const key = post({ kind: 'pair', role: 'admin', pairingCode: code }).data.key as string;
     const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}` }));
-    // 1 操作で登録コード 1 行・ジャーナル 1 行が増える。既定のグリッド（1000 行）を超えるまで実行
-    for (let i = 0; i < 1050; i++) expect(owner('devices.createEnrollment', { deviceName: `d${i}` }).ok).toBe(true);
+    // 1 操作で登録コード 1 行・ジャーナル 1 行が増える。グリッド（100 行）を超えるまで実行
+    for (let i = 0; i < 150; i++) expect(owner('devices.createEnrollment', { deviceName: `d${i}` }).ok).toBe(true);
     const dbId = emu.scriptProps.getProperty('SHIFTLY_DB_ID')!;
     const enr = emu.spreadsheets.get(dbId)!.sheets.find((s) => s.title === 'device_enrollments')!;
-    expect(enr.rows.length).toBe(1051);
-    expect(enr.rowCount).toBeGreaterThan(1000);
+    expect(enr.rows.length).toBe(151);
+    expect(enr.rowCount).toBeGreaterThan(100);
   });
 });
