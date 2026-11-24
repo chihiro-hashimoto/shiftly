@@ -45,7 +45,7 @@ function ensurePaired(): string {
   const props = PropertiesService.getScriptProperties();
   const k = props.getProperty(KEY_PROP);
   if (k) return k;
-  const r = postCore({ kind: 'pair', pairingCode: SHIFTLY_ADMIN_BOOTSTRAP.pairingCode });
+  const r = postCore({ kind: 'pair', role: 'admin', pairingCode: SHIFTLY_ADMIN_BOOTSTRAP.pairingCode });
   if (!r.ok) throw new Error(`Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`);
   const key = (r.data as { key: string }).key;
   props.setProperty(KEY_PROP, key);
@@ -59,7 +59,7 @@ export function adminApi(reqJson: string): string {
     // ブラウザ由来のフィールドは op / args / requestId のみ転送
     const body = JSON.stringify({ op: parsed.op, args: parsed.args, requestId: parsed.requestId });
     const key = fromHex(ensurePaired());
-    const env = signOwnerEnvelope(createGasPlatform(), key, body);
+    const env = signOwnerEnvelope(createGasPlatform(), key, body, 'admin');
     return JSON.stringify(postCore({ kind: 'owner', envelope: env }));
   } catch (e) {
     return JSON.stringify({ ok: false, error: { code: 'ADMIN_ERROR', message: e instanceof Error ? e.message.slice(0, 200) : 'エラー' } });

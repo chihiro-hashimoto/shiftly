@@ -5,7 +5,7 @@
  * - doPost: 店長用 Admin からの署名付きリクエスト／Admin との初回ペアリング／死活確認
  * - 公開関数: doGet, doPost, kioskApi, shiftlyAuthorize, shiftlyDailyJob（ビルド時にトップレベル関数として生成）
  */
-import { handleRequest, verifyOwnerEnvelope, SECRET_KEYS, APP_VERSION, type Backend } from '../backend/index';
+import { handleRequest, verifyEnvelope, SECRET_KEYS, APP_VERSION, type Backend } from '../backend/index';
 import { createGasPlatform, provisionStorage, writeEnvironmentFile } from '../backend/gas/platform';
 import { SheetsAdapter } from '../backend/gas/sheets-adapter';
 import { ensureSecrets } from '../backend/auth';
@@ -17,6 +17,8 @@ interface BootstrapConfig {
   storeName: string;
   /** Admin とのペアリングコードの SHA-256（平文は Admin 側のみ） */
   adminPairingHash: string;
+  /** Shiftly Setup とのペアリングコードの SHA-256（平文は Setup 側のみ） */
+  setupPairingHash: string;
 }
 declare const SHIFTLY_BOOTSTRAP: BootstrapConfig;
 
@@ -62,12 +64,24 @@ export function doPost(e: GoogleAppsScript.Events.DoPost) {
   try {
     if (body.kind === 'ping') {
       // 公開情報のみ（初期化状態・バージョン）
-      return json({ ok: true, data: { app: 'shiftly-core', version: APP_VERSION, schemaVersion: SCHEMA_VERSION, initialized: !!b.p.secrets.get('SHIFTLY_DB_ID'), envId: SHIFTLY_BOOTSTRAP.envId } });
+      return json({
+        ok: true,
+        data: {
+          app: 'shiftly-core',
+          version: APP_VERSION,
+          schemaVersion: SCHEMA_VERSION,
+          initialized: !!b.p.secrets.get('SHIFTLY_DB_ID'),
+          envId: SHIFTLY_BOOTSTRAP.envId,
+          adminPaired: b.p.secrets.get('SHIFTLY_ADMIN_PAIRED') === '1',
+          setupPaired: b.p.secrets.get('SHIFTLY_SETUP_PAIRED') === '1',
+        },
+      });
     }
-    if (body.kind === 'pair') return json(pair(b, body.pairingCode));
+    if (body.kind === 'pair') return json(pair(b, body.role === 'setup' ? 'setup' : 'admin', body.pairingCode));
     if (body.kind === 'owner') {
-      const inner = verifyOwnerEnvelope(b.p, body.envelope);
-      return json(handleRequest(b, JSON.parse(inner), 'owner'));
+      // admin（店長画面）/ setup（更新関連のみ）の署名を検証
+      const v = verifyEnvelope(b.p, body.envelope);
+      return json(handleRequest(b, JSON.parse(v.body), 'owner'));
     }
   } catch {
     return json({ ok: false, error: { code: 'UNAUTHENTICATED', message: '認証に失敗しました' } });
@@ -75,20 +89,22 @@ export function doPost(e: GoogleAppsScript.Events.DoPost) {
   return json({ ok: false, error: { code: 'UNKNOWN', message: 'unknown' } });
 }
 
-/** Admin との初回ペアリング（使い捨て）。成功時に Admin 用 HMAC 鍵を返す */
-function pair(b: Backend, code: unknown) {
+/** Admin / Setup との初回ペアリング（使い捨て）。成功時に役割別の HMAC 鍵を返す */
+function pair(b: Backend, role: 'admin' | 'setup', code: unknown) {
   const p = b.p;
   const fails = Number(p.cache.get('pair-fail') ?? '0');
   if (fails >= 10) return { ok: false, error: { code: 'RATE_LIMITED', message: 'too many attempts' } };
-  if (typeof code !== 'string' || code.length < 32 || !timingSafeEqualHex(p.sha256Hex(code), SHIFTLY_BOOTSTRAP.adminPairingHash)) {
+  const expected = role === 'admin' ? SHIFTLY_BOOTSTRAP.adminPairingHash : SHIFTLY_BOOTSTRAP.setupPairingHash;
+  if (typeof code !== 'string' || code.length < 32 || !timingSafeEqualHex(p.sha256Hex(code), expected)) {
     p.cache.put('pair-fail', String(fails + 1), 3600);
     return { ok: false, error: { code: 'UNAUTHENTICATED', message: 'pairing failed' } };
   }
+  const flag = role === 'admin' ? 'SHIFTLY_ADMIN_PAIRED' : 'SHIFTLY_SETUP_PAIRED';
   return p.withLock(10000, () => {
-    if (p.secrets.get('SHIFTLY_ADMIN_PAIRED') === '1') return { ok: false, error: { code: 'CONFLICT', message: 'already paired' } };
+    if (p.secrets.get(flag) === '1') return { ok: false, error: { code: 'CONFLICT', message: 'already paired' } };
     const key = p.randomHex(32);
-    p.secrets.set(SECRET_KEYS.adminHmac, key);
-    p.secrets.set('SHIFTLY_ADMIN_PAIRED', '1');
+    p.secrets.set(role === 'admin' ? SECRET_KEYS.adminHmac : SECRET_KEYS.setupHmac, key);
+    p.secrets.set(flag, '1');
     return { ok: true, data: { key } };
   });
 }

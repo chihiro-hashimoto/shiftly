@@ -71,6 +71,19 @@ defineOps([
     },
   },
   {
+    name: 'system.resetSetupPairing',
+    auth: 'owner',
+    mutating: true,
+    allowInMaintenance: true,
+    handler: (ctx) => {
+      // Shiftly Setup の更新用接続（鍵）を無効化し、再ペアリングを可能にする（店長専用）
+      ctx.p.secrets.delete('SHIFTLY_SETUP_HMAC_KEY');
+      ctx.p.secrets.delete('SHIFTLY_SETUP_PAIRED');
+      audit(ctx, 'update.reset_setup_pairing', 'system', null, '更新用接続のリセット');
+      return { ok: true };
+    },
+  },
+  {
     name: 'system.dailyJob',
     auth: 'owner',
     mutating: true,

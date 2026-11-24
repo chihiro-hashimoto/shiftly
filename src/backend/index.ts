@@ -10,5 +10,5 @@ import './handlers/payroll';
 import './handlers/ops';
 import './handlers/update';
 export { handleRequest, listOps, type ApiRequest, type ApiResponse, type Backend } from './api';
-export { verifyOwnerEnvelope, signOwnerEnvelope, SECRET_KEYS, ensureSecrets } from './auth';
+export { verifyOwnerEnvelope, verifyEnvelope, signOwnerEnvelope, SECRET_KEYS, SETUP_ALLOWED_OPS, ensureSecrets } from './auth';
 export { APP_VERSION } from './version';

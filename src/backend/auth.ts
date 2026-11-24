@@ -21,6 +21,8 @@ import { DEFAULT_STAFF_PERMISSIONS, sanitizePermissions } from '../shared/permis
 export const SECRET_KEYS = {
   pepper: 'SHIFTLY_PIN_PEPPER',
   adminHmac: 'SHIFTLY_ADMIN_HMAC_KEY',
+  /** Shiftly Setup 用（更新関連の操作のみ許可） */
+  setupHmac: 'SHIFTLY_SETUP_HMAC_KEY',
   envId: 'SHIFTLY_ENV_ID',
 } as const;
 
@@ -212,32 +214,52 @@ export function stepUp(ctx: Ctx, sessionId: string, employeeId: string, secret: 
 }
 
 // ------------------------------------------------------------------ owner (Admin → Core) 署名
+export type EnvelopeRole = 'admin' | 'setup';
+
 export interface OwnerEnvelope {
   v: 1;
+  role: EnvelopeRole;
   ts: number;
   nonce: string;
   body: string; // JSON 文字列（ApiRequest）
-  sig: string; // hex HMAC-SHA256(adminKey, `${v}.${ts}.${nonce}.${body}`)
+  sig: string; // hex HMAC-SHA256(key(role), `${v}.${role}.${ts}.${nonce}.${body}`)
 }
 
-export function signOwnerEnvelope(p: Platform, key: Uint8Array, body: string): OwnerEnvelope {
+/** Setup 用の鍵で実行できる操作（最小権限） */
+export const SETUP_ALLOWED_OPS = new Set(['system.info', 'system.integrityCheck', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.setMaintenance', 'backup.list']);
+
+export function signOwnerEnvelope(p: Platform, key: Uint8Array, body: string, role: EnvelopeRole = 'admin'): OwnerEnvelope {
   const ts = p.now();
   const nonce = p.randomHex(16);
-  const sig = toHex(p.hmacSha256(key, utf8(`1.${ts}.${nonce}.${body}`)));
-  return { v: 1, ts, nonce, body, sig };
+  const sig = toHex(p.hmacSha256(key, utf8(`1.${role}.${ts}.${nonce}.${body}`)));
+  return { v: 1, role, ts, nonce, body, sig };
 }
 
-/** 署名・有効期限・リプレイを検証し、body を返す */
+/** 署名・有効期限・リプレイを検証し、body と role を返す */
 export function verifyOwnerEnvelope(p: Platform, env: unknown): string {
+  return verifyEnvelope(p, env).body;
+}
+
+export function verifyEnvelope(p: Platform, env: unknown): { body: string; role: EnvelopeRole } {
   const e = env as Partial<OwnerEnvelope>;
-  const keyHex = p.secrets.get(SECRET_KEYS.adminHmac);
+  if (!e || e.v !== 1 || (e.role !== 'admin' && e.role !== 'setup')) throw E.unauthenticated();
+  const keyHex = p.secrets.get(e.role === 'admin' ? SECRET_KEYS.adminHmac : SECRET_KEYS.setupHmac);
   if (!keyHex) throw E.unauthenticated();
-  if (!e || e.v !== 1 || typeof e.ts !== 'number' || typeof e.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(e.nonce) || typeof e.body !== 'string' || typeof e.sig !== 'string') throw E.unauthenticated();
+  if (typeof e.ts !== 'number' || typeof e.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(e.nonce) || typeof e.body !== 'string' || typeof e.sig !== 'string') throw E.unauthenticated();
   if (Math.abs(p.now() - e.ts) > OWNER_SIG_WINDOW_MS) throw E.unauthenticated();
-  const expect = toHex(p.hmacSha256(fromHex(keyHex), utf8(`1.${e.ts}.${e.nonce}.${e.body}`)));
+  const expect = toHex(p.hmacSha256(fromHex(keyHex), utf8(`1.${e.role}.${e.ts}.${e.nonce}.${e.body}`)));
   if (!timingSafeEqualHex(expect, e.sig)) throw E.unauthenticated();
   const nk = `nonce:${e.nonce}`;
   if (p.cache.get(nk)) throw E.unauthenticated();
   p.cache.put(nk, '1', Math.ceil((OWNER_SIG_WINDOW_MS * 2) / 1000));
-  return e.body;
+  if (e.role === 'setup') {
+    let op = '';
+    try {
+      op = String((JSON.parse(e.body) as { op?: unknown }).op ?? '');
+    } catch {
+      throw E.unauthenticated();
+    }
+    if (!SETUP_ALLOWED_OPS.has(op)) throw E.forbidden();
+  }
+  return { body: e.body, role: e.role };
 }
