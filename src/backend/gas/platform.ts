@@ -13,6 +13,7 @@
 import type { Cache, DatabaseControl, FileStore, FolderKey, Platform, SecretStore } from '../platform';
 import { FOLDER_KEYS } from '../platform';
 import { toHex, type Bytes } from '../../shared/crypto';
+import { SheetsAdapter } from './sheets-adapter';
 
 declare const Drive: any;
 declare const Sheets: any;
@@ -125,13 +126,22 @@ class GasFiles implements FileStore, DatabaseControl {
     if (!id) throw new Error('DB が未作成です');
     return id;
   }
-  activateCopyOf(backupFileId: string) {
+  prepareRestoreCopy(backupFileId: string) {
+    const f = Drive.Files.copy({ name: `Shiftly Database (restore candidate ${new Date().toISOString().slice(0, 19)})`, parents: [folders()['01_Database']] }, backupFileId, { fields: 'id' });
+    const id = f.id as string;
+    return { candidateId: id, adapter: new SheetsAdapter(() => id) };
+  }
+  activate(candidateId: string) {
     const prev = this.currentId();
-    const f = Drive.Files.copy({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})`, parents: [folders()['01_Database']] }, backupFileId, { fields: 'id' });
     // 旧 DB は削除せず名前を変更して保持（ロールバック可能）
     Drive.Files.update({ name: `Shiftly Database (replaced ${new Date().toISOString().slice(0, 19)})` }, prev);
-    PropertiesService.getScriptProperties().setProperty(PROP.dbId, f.id);
-    return { newId: f.id as string, previousId: prev };
+    Drive.Files.update({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})` }, candidateId);
+    PropertiesService.getScriptProperties().setProperty(PROP.dbId, candidateId);
+    return { previousId: prev };
+  }
+  discard(candidateId: string) {
+    if (candidateId === this.currentId()) throw new Error('稼働中の DB は破棄できません');
+    this.trashFile('01_Database', candidateId);
   }
 }
 

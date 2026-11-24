@@ -3,6 +3,7 @@
  * すべて同期 API（GAS が同期実行のため）。
  */
 import type { Bytes } from '../shared/crypto';
+import type { TableAdapter } from './store';
 
 export interface SecretStore {
   /** Script Properties 等、業務DB・バックアップと分離されたサーバー側の保存場所 */
@@ -38,8 +39,15 @@ export const FOLDER_KEYS: FolderKey[] = ['00_System', '01_Database', '02_Payslip
 export interface DatabaseControl {
   /** 現在の DB 識別子 */
   currentId(): string;
-  /** バックアップ（fileId）の複製を新しい DB として有効化する（バックアップ自体は変更しない） */
-  activateCopyOf(backupFileId: string): { newId: string; previousId: string };
+  /**
+   * 復元候補の作成: バックアップ（fileId）を複製し、稼働中の DB を切り替えずに読み書き用アダプタを返す。
+   * 候補への再投入と整合性確認が終わるまで稼働先は変えない（バックアップ自体は変更しない）
+   */
+  prepareRestoreCopy(backupFileId: string): { candidateId: string; adapter: TableAdapter };
+  /** 復元候補を稼働中の DB に切り替える（旧 DB は削除せず保持） */
+  activate(candidateId: string): { previousId: string };
+  /** 使わなかった復元候補を破棄（ゴミ箱へ。アプリ管理フォルダ内のみ） */
+  discard(candidateId: string): void;
 }
 
 export interface Platform {

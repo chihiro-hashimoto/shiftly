@@ -164,3 +164,50 @@ describe('Codex 監査1 #6・#7: 手当を含む割増算定基礎', () => {
     expect(grossFor(h, a)).toBe(11100);
   });
 });
+
+describe('Codex 監査1 #1・#2: 復元', () => {
+  it('#1 バックアップと同じ秒に保存した退勤、バックアップ後に追加したスタッフの打刻も復元後に残る', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913');
+    h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
+    h.setNow('2026-11-02', '18:00');
+    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    h.advance(400); // 同じ秒（18:00:00.400）
+    h.login(a, '482913');
+    expect(h.punch('clock_out').ok).toBe(true);
+    h.kiosk('auth.logout');
+    h.session = '';
+    h.setNow('2026-11-02', '18:30');
+    const b = h.addStaff('佐藤', '582914');
+    h.punchAt(b, '582914', '2026-11-02', '19:00', 'clock_in');
+    h.setNow('2026-11-02', '19:10');
+    const r = h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    expect(r.integrity.ok).toBe(true);
+    const detA = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
+    expect(detA.originals.map((x: any) => x.type)).toEqual(['clock_in', 'clock_out']);
+    const detB = h.ownerOk('attendance.detail', { employeeId: b, from: '2026-11-02', to: '2026-11-02' });
+    expect(detB.originals.map((x: any) => x.type)).toEqual(['clock_in']);
+  });
+
+  it('#2 復元しても変更後の PIN・取り消した権限・退職状態はバックアップ時点に戻らない', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913', { perms: ['punch_self', 'payslip_view_self', 'payslip_view_others'] });
+    const c = h.addStaff('鈴木', '682915');
+    h.setNow('2026-11-02', '10:00');
+    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    h.setNow('2026-11-02', '11:00');
+    h.ownerOk('credentials.setPin', { employeeId: a, pin: '739154' });
+    h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'payslip_view_self'] });
+    h.ownerOk('employees.retire', { employeeId: c, retireDate: '2026-11-02', reason: '退職' });
+    h.setNow('2026-11-02', '12:00');
+    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    expect(code(h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).not.toBe('OK');
+    h.setNow('2026-11-02', '12:01');
+    h.login(a, '739154');
+    const perms = h.ownerOk<any[]>('employees.list').find((e: any) => e.id === a);
+    expect(JSON.stringify(perms)).not.toContain('payslip_view_others');
+    expect(h.ownerOk<any[]>('employees.list', { includeRetired: true }).find((e: any) => e.id === c).status).toBe('retired');
+  });
+});

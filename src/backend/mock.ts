@@ -94,13 +94,27 @@ export class MemoryFiles implements FileStore, DatabaseControl {
   currentId() {
     return this.dbId;
   }
-  activateCopyOf(backupFileId: string) {
+  private readonly candidates = new Map<string, MemoryAdapter>();
+  prepareRestoreCopy(backupFileId: string) {
     const f = this.files.get(backupFileId);
     if (!f || !f.dbSnapshot || f.trashed) throw new Error('バックアップが見つかりません');
+    const adapter = new MemoryAdapter();
+    adapter.restore(f.dbSnapshot);
+    const candidateId = `db_${this.rnd()}`;
+    this.candidates.set(candidateId, adapter);
+    return { candidateId, adapter };
+  }
+  activate(candidateId: string) {
+    const c = this.candidates.get(candidateId);
+    if (!c) throw new Error('復元候補が見つかりません');
     const prev = this.dbId;
-    this.adapter.restore(f.dbSnapshot);
-    this.dbId = `db_${this.rnd()}`;
-    return { newId: this.dbId, previousId: prev };
+    this.adapter.restore(c.snapshot());
+    this.candidates.delete(candidateId);
+    this.dbId = candidateId;
+    return { previousId: prev };
+  }
+  discard(candidateId: string) {
+    this.candidates.delete(candidateId);
   }
 }
 

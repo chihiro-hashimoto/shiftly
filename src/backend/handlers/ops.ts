@@ -4,9 +4,9 @@
  */
 import { defineOps } from '../api';
 import { audit, has, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
-import { E } from '../errors';
+import { ApiError, E } from '../errors';
 import * as v from '../validate';
-import type { BackupHistory, Budget, Device, Employee, NotificationRow, PayrollPeriod, PayrollResult, Shift, WorkSession } from '../../shared/types';
+import type { BackupHistory, Budget, Credential, Device, Employee, PermissionRow, NotificationRow, PayrollPeriod, PayrollResult, Shift, WorkSession } from '../../shared/types';
 import { toCsv, type Cell } from '../../shared/csv';
 import { buildXlsx, toBase64, type XSheet } from '../../shared/xlsx';
 import { utf8 } from '../../shared/crypto';
@@ -431,42 +431,60 @@ defineOps([
       // 1) 復元前バックアップ
       const pre = runBackup(ctx, 'manual', `復元前の自動バックアップ（復元元 ${b.id}）`);
       if (pre.status !== 'ok') throw E.conflict('復元前のバックアップに失敗したため中止しました');
-      // 2) バックアップ作成後に追加された追記専用データ（打刻原本・修正・監査ログ等）を退避
-      const since = b.createdAt;
-      const preserved: Record<string, Record<string, unknown>[]> = {};
-      for (const t of APPEND_ONLY_TABLES) preserved[t] = ctx.uow.list<Record<string, unknown>>(t).filter((r) => String(r.createdAt) > since);
-      const revokedDevices = ctx.uow.list<Device>('devices').filter((d) => d.status === 'revoked');
-      const backupHistory = ctx.uow.list<BackupHistory>('backup_history');
       ctx.uow.flush();
-      // 3) DB 切替（バックアップの複製を新 DB として有効化）
-      const sw = ctx.p.database.activateCopyOf(b.driveFileId);
-      // 旧 DB のシート一覧・行番号のキャッシュを破棄（新 DB に対して読み書きする）
+      // 2) 復元候補を作成（稼働中の DB はまだ切り替えない）
+      const cand = ctx.p.database.prepareRestoreCopy(b.driveFileId);
+      const uowC = new UnitOfWork(cand.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
+      const ctxC: Ctx = { ...ctx, uow: uowC };
+      let restored = 0;
+      try {
+        // 3) 追記専用データ（打刻原本・修正・手動休憩・監査ログ）は、時刻ではなく ID で突合し、候補にない行をすべて再投入
+        //    （バックアップと同じ秒に保存された打刻も取りこぼさない）
+        for (const t of APPEND_ONLY_TABLES) {
+          const have = new Set(uowC.list<{ id: string }>(t).map((r) => r.id));
+          for (const r of ctx.uow.list<Record<string, unknown>>(t)) {
+            if (!have.has(r.id as string)) {
+              uowC.insert(t, r as never);
+              restored++;
+            }
+          }
+        }
+        // 4) スタッフ・認証情報・権限・端末は現行の状態を引き継ぐ（PIN・管理用パスコード・委任権限・退職・端末失効を巻き戻さない）
+        const carry = <T extends { id: string; version: number }>(t: 'employees' | 'credentials' | 'permissions' | 'devices', key: (r: T) => string) => {
+          const candRows = new Map(uowC.list<T>(t).map((r) => [key(r), r]));
+          for (const cur of ctx.uow.list<T>(t)) {
+            const c = candRows.get(key(cur));
+            if (c) uowC.update(t, { ...cur, id: c.id, version: c.version } as never);
+            else uowC.insert(t, cur as never);
+          }
+        };
+        carry<Employee & { version: number }>('employees', (r) => r.id);
+        carry<Credential>('credentials', (r) => `${r.employeeId}|${r.kind}`);
+        carry<PermissionRow>('permissions', (r) => r.employeeId);
+        carry<Device>('devices', (r) => r.id);
+        // 5) 全セッション失効・バックアップ履歴は現行を引き継ぐ
+        revokeSessionsWhere(ctxC, () => true);
+        for (const h of ctx.uow.list<BackupHistory>('backup_history')) if (!uowC.get<BackupHistory>('backup_history', h.id)) uowC.insert('backup_history', h as never);
+        uowC.flush();
+        // 6) 候補の整合性を確認してから切り替える。不合格なら稼働中の DB はそのまま
+        const check = integrityCheck(ctxC);
+        if (!check.ok) throw new ApiError('RESTORE_INTEGRITY_FAILED', `復元候補の整合性確認に失敗したため、復元を中止しました（稼働中のデータは変更していません）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
+      } catch (e) {
+        try {
+          ctx.p.database.discard(cand.candidateId);
+        } catch {
+          /* 候補の破棄に失敗しても稼働中の DB には影響しない */
+        }
+        throw e;
+      }
+      // 7) 切替（候補は検証済み）。切替後は新 DB に対して読み書きする
+      const sw = ctx.p.database.activate(cand.candidateId);
       ctx.uow.adapter.reset?.();
       const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
       const ctx2: Ctx = { ...ctx, uow: uow2 };
-      // 4) 退避データを再投入（id 一致は上書き＝冪等）
-      let restored = 0;
-      for (const t of APPEND_ONLY_TABLES) {
-        for (const r of preserved[t]!) {
-          const existing = uow2.list<Record<string, unknown>>(t).find((x) => x.id === r.id);
-          if (!existing) {
-            uow2.insert(t, r as never);
-            restored++;
-          }
-        }
-      }
-      // 5) 失効情報の維持: 現行で失効済みの端末は失効のまま。全セッション失効
-      for (const d of revokedDevices) {
-        const cur = uow2.get<Device>('devices', d.id);
-        if (cur && cur.status !== 'revoked') uow2.update('devices', { ...cur, status: 'revoked', revokedAt: d.revokedAt });
-      }
-      revokeSessionsWhere(ctx2, () => true);
-      // バックアップ履歴は現行のものを引き継ぐ
-      for (const h of backupHistory) if (!uow2.get<BackupHistory>('backup_history', h.id)) uow2.insert('backup_history', h as never);
-      audit(ctx2, 'backup.restore', 'backup', b.id, `復元 新DB=${sw.newId} 旧DB=${sw.previousId} 再投入=${restored}`);
+      audit(ctx2, 'backup.restore', 'backup', b.id, `復元 新DB=${cand.candidateId} 旧DB=${sw.previousId} 再投入=${restored}`);
       uow2.flush();
-      const check = integrityCheck(ctx2);
-      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: check, note: '全スタッフのセッションを失効しました。端末は失効済みのものを除き引き続き利用できます' };
+      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフのセッションを失効しました。スタッフ・PIN・権限・端末は復元前の状態を引き継いでいます' };
     },
   },
 ]);
