@@ -10,7 +10,7 @@
 
 ## リポジトリ / ブランチ / PR / CI
 - リポジトリ: https://github.com/chihiro-hashimoto/shiftly（Private）
-  - 指示書の記載は `chihirohashimotoac-coder/shiftly`。本セッションが操作できるのは `chihiro-hashimoto/shiftly` のみ（**ユーザー確認事項**）
+  - 指示書の記載は `chihirohashimotoac-coder/shiftly` だが、2026-11-24 ユーザーが本リポジトリを正式な対象と確認
 - ブランチ: `claude/inspiring-einstein-73ks5s`（main は Initial commit のまま）
 - 最新コミット: `git log -1` で確認
 - PR: https://github.com/chihiro-hashimoto/shiftly/pull/1（ドラフト。main へのマージはユーザー承認後）
@@ -26,10 +26,10 @@
 - 未実装として明示しているもの: 変形労働時間制等、時間単位年休、標準報酬日額方式、出来高払の割増、日割の規定、環境間のデータ移行の自動化
 
 ## 未解決・未確認
-1. Google 実環境での検証（docs/technical-verification.md §4 の 11 項目）: **ユーザーの承認と検証用アカウントが必要**
+1. Google 実環境での検証: 2026-11-24 ユーザー承認済み。検証用アカウントでユーザーが実施（手順と記録表: docs/live-verification.md）。結果待ち
 2. iPad 実機（Safari、ホーム画面）での検証: **ユーザーの実機が必要**
-3. Codex 独立監査: この環境に Codex CLI がない（`codex: command not found`）。**未実施**
-4. 対象リポジトリ名の差異（D-001）
+3. Codex 独立監査: この環境に Codex CLI がないため、ユーザーが Codex を実行する。手順とプロンプト: docs/codex-audit-prompt.md。結果待ち
+4. （解決）対象リポジトリ名（D-001）
 5. 未確定の業務条件（docs/requirements.md「未確定事項」）は店長が設定画面で登録する
 
 ## テスト結果（直近の実行）
@@ -41,7 +41,8 @@
 ## 次に実行する作業
 1. （完了）管理画面全ページ・独立レビュー修正・verify・PR 作成
 2. （完了）CI 成功を確認
-3. Codex 監査（Codex CLI が使える環境・ユーザーの認証が必要）
+3. ユーザーから Codex 監査結果（codex-audit-result-1.md）を受け取り、指摘を確認・修正・再検証し、review-log.md と累計回数を更新
+3b. ユーザーから実環境検証の記録（docs/live-verification.md の表）を受け取り、technical-verification.md に反映・NG を修正
 4. ユーザーの承認後: 検証用 Google アカウントで実環境検証を行い、technical-verification.md に実測結果を追記
 
 ## レビュー

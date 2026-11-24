@@ -5,7 +5,7 @@
 ## D-001 対象リポジトリ
 - 背景: 指示書の Repository は `chihirohashimotoac-coder/shiftly`。本セッションで操作権限があるのは `chihiro-hashimoto/shiftly`（Private・push 可）のみ
 - 決定: `chihiro-hashimoto/shiftly` で作業。別リポジトリの新規作成・公開設定の変更はしていない
-- 影響: **ユーザー確認事項**（同一リポジトリか、移管の必要があるか）
+- 影響: 2026-11-24 ユーザーが `chihiro-hashimoto/shiftly` を正式な対象リポジトリとして確認（解決済み）
 
 ## D-002 セットアップ配信方式: GAS の Setup Web アプリ（GitHub Pages は不採用）
 - 背景: GitHub Free の非公開リポジトリでは Pages を使えず、Pages は商用 SaaS・機密情報のやり取りに使用不可（official-sources §11）
