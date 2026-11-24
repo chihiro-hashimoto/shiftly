@@ -28,7 +28,7 @@
 ## 未解決・未確認
 1. Google 実環境での検証: 2026-11-24 ユーザー承認済み。検証用アカウントでユーザーが実施（手順と記録表: docs/live-verification.md）。結果待ち
 2. iPad 実機（Safari、ホーム画面）での検証: **ユーザーの実機が必要**
-3. Codex 独立監査: この環境に Codex CLI がないため、ユーザーが Codex を実行する。手順とプロンプト: docs/codex-audit-prompt.md。結果待ち
+3. Codex 独立監査: 1 回目を開発コンテナで実行中（プロンプト: docs/codex-audit-prompt.md）
 4. （解決）対象リポジトリ名（D-001）
 5. 未確定の業務条件（docs/requirements.md「未確定事項」）は店長が設定画面で登録する
 
@@ -49,4 +49,4 @@
 - 独立レビュー R-1（Claude エージェント、Codex ではない）: 指摘 12 件をすべて修正（docs/review-log.md）
 
 ## 累計 Codex 監査回数
-- **0 回**（Codex CLI を利用できないため未実施。上限は 5 回）
+- **1 回目を実行中**（2026-11-24。開発コンテナに Codex CLI 0.167.0 を一時導入し、ユーザー本人がブラウザでデバイス認証。`codex exec --sandbox read-only`。上限は 5 回）
