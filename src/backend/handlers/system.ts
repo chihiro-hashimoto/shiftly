@@ -243,6 +243,7 @@ defineOps([
       const d = ctx.uow.get<Device>('devices', v.id(a, 'deviceId'));
       if (!d) throw E.notFound('端末');
       ctx.uow.update('devices', { ...d, name: v.str(a, 'name', { max: 40, label: '端末名' }) });
+      audit(ctx, 'device.rename', 'device', d.id, '端末名の変更');
       return { ok: true };
     },
   },

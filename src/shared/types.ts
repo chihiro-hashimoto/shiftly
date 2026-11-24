@@ -541,7 +541,8 @@ export interface BackupHistory extends RowMeta {
   kind: 'daily' | 'monthly' | 'pre_update' | 'manual';
   driveFileId: string;
   schemaVersion: number;
-  status: 'ok' | 'failed';
+  /** pruned: 世代管理により削除済み */
+  status: 'ok' | 'failed' | 'pruned';
   sizeBytes: number | null;
   note: string;
 }

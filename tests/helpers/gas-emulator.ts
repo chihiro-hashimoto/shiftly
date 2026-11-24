@@ -44,6 +44,17 @@ interface Spreadsheet {
   props: Record<string, unknown>;
 }
 
+/** バンドルが公開するトップレベル関数（テストで呼び出すもの） */
+export interface GasFns {
+  doGet: (...a: unknown[]) => any;
+  doPost: (...a: unknown[]) => any;
+  kioskApi: (...a: unknown[]) => any;
+  shiftlyAuthorize: (...a: unknown[]) => any;
+  shiftlyDailyJob: (...a: unknown[]) => any;
+  adminApi: (...a: unknown[]) => any;
+  setupApi: (...a: unknown[]) => any;
+}
+
 export class GasEmulator {
   scriptProps = new Props();
   userProps = new Props();
@@ -239,10 +250,10 @@ export class GasEmulator {
   }
 
   /** ビルド済み Code.js を読み込み、トップレベル関数を返す */
-  load(project: 'core' | 'admin' | 'setup', extra: Record<string, unknown>) {
+  load(project: 'core' | 'admin' | 'setup', extra: Record<string, unknown>): GasFns {
     const ctx = vm.createContext(this.globals(extra));
     const code = readFileSync(`dist/gas/${project}/Code.js`, 'utf8');
     vm.runInContext(code, ctx, { filename: `${project}/Code.js` });
-    return ctx as unknown as Record<string, (...a: unknown[]) => any>;
+    return ctx as unknown as GasFns;
   }
 }

@@ -388,7 +388,7 @@ function pruneBackups(ctx: Ctx, kind: BackupHistory['kind']) {
   for (const old of rows.slice(keep)) {
     try {
       ctx.p.files.trashFile('05_Backup', old.driveFileId);
-      ctx.uow.update('backup_history', { ...old, status: 'failed', note: `世代管理により削除 ${nowIso(ctx)}` });
+      ctx.uow.update('backup_history', { ...old, status: 'pruned', note: `世代管理により削除 ${nowIso(ctx)}` });
     } catch {
       /* 削除失敗は次回再試行 */
     }
