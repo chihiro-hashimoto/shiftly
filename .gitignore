@@ -1,0 +1,15 @@
+node_modules/
+dist/
+gas/dist/
+playwright-report/
+test-results/
+coverage/
+*.log
+.env
+.env.*
+.clasprc.json
+.clasp.json
+credentials*.json
+*.pem
+*.key
+.DS_Store
