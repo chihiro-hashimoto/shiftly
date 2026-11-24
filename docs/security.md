@@ -77,3 +77,8 @@
 | Drive 所有者の直接編集 | DB を直接編集できる | 原本・修正の分離、監査ログ、整合性チェック。完全防止はできない |
 | Google アカウント喪失 | 同一アカウント内のバックアップでは不十分 | docs/operations-guide.md の別管理アカウントへの保護されたバックアップ手順（店長の承認後に実施） |
 | GAS 実行時の制約 | HTTP ヘッダー（CSP 等）を設定できない | React のエスケープ、外部スクリプトは Google Fonts の CSS のみ |
+
+## 10. 依存パッケージの脆弱性（npm audit, 2026-11-24）
+
+- 本番に含まれる依存（`npm audit --omit=dev`）: **0 件**
+- 開発用のみ: moderate 8 件（eslint / typescript-eslint が依存する minimatch の ReDoS: GHSA-g3hv-75wg-m249）。lint 実行時のみ使用され、配布物（GAS・HTML）には含まれない。修正は破壊的な版上げ（`npm audit fix --force`）が必要なため保留し、上流の修正版リリース後に更新する
