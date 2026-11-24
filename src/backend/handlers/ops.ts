@@ -240,7 +240,7 @@ defineOps([
           incomplete: r.incomplete.map((x) => ({ ...x, name: '（非表示）', employeeId: '' })),
         };
       };
-      return { month, actual: mask(actualReport), planned: { total: planned.total, employerCostEstimate: planned.employerCostEstimate }, forecast: { total: forecast.total }, budget: status, method, individualVisible: individual };
+      return { month, actual: mask(actualReport), planned: { total: planned.total, employerCostEstimate: planned.employerCostEstimate }, forecast: { total: forecast.total, employerCostEstimate: forecast.employerCostEstimate }, budget: status, method, individualVisible: individual };
     },
   },
   {

@@ -664,7 +664,7 @@ function SalarySection({ rules, today, onEdit, note }: { rules: SalaryRule[]; to
                   </td>
                   <td>{r.inLegalOvertimeRate !== null ? `${r.inLegalOvertimeRate}%` : <Unset text="未設定（該当月は確定不可）" />}</td>
                   <td className="small">{r.fixedOvertime?.enabled ? <>
-                      <Yen v={r.fixedOvertime.amount} />（{hmText(r.fixedOvertime.coveredMinutes)}分）
+                      <Yen v={r.fixedOvertime.amount} />（対象 {hmText(r.fixedOvertime.coveredMinutes)}）
                     </> : 'なし'}</td>
                   <td className="small">{r.absenceDeduction === null ? <Unset text="規定未確認" /> : r.absenceDeduction.enabled ? `控除する（月給÷${r.absenceDeduction.divisorDays ?? '—'}日）` : '控除しない'}</td>
                   <td className="small">{r.lateEarlyDeduction === null ? <Unset text="規定未確認" /> : r.lateEarlyDeduction.enabled ? '控除する' : '控除しない'}</td>

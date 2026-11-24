@@ -94,14 +94,14 @@
 | `payconf.upsertSalaryRule` | 店長／委任スタッフ | `pay_conditions_edit` | 必要 | ○ |
 | `payconf.upsertTransport` | 店長／委任スタッフ | `pay_conditions_edit` | 必要 | ○ |
 | `payconf.upsertWageRule` | 店長／委任スタッフ | `pay_conditions_edit` | 必要 | ○ |
-| `payroll.compute` | 店長／委任スタッフ | `payroll_view_all` | 必要 | ○ |
+| `payroll.compute` | 店長／委任スタッフ | `payroll_view_all`, `payroll_confirm` | 必要 | ○ |
 | `payroll.confirm` | 店長／委任スタッフ | `payroll_confirm` | 必要 | ○ |
 | `payroll.correct` | 店長／委任スタッフ | `payroll_confirm` | 必要 | ○ |
 | `payroll.mine` | スタッフ本人（端末＋PIN） | `payroll_view_self` |  |  |
 | `payroll.openPeriod` | 店長／委任スタッフ | `payroll_confirm`, `pay_conditions_edit` | 必要 | ○ |
-| `payroll.periods` | 店長／委任スタッフ | `payroll_view_all`, `payroll_confirm`, `pay_conditions_edit` | 必要 |  |
+| `payroll.periods` | 店長／委任スタッフ | `payroll_view_all`, `payroll_confirm`, `pay_conditions_edit`, `payslip_view_others`, `export_payroll` | 必要 |  |
 | `payroll.resultDetail` | 店長／委任スタッフ | `payroll_view_all` | 必要 |  |
-| `payroll.results` | 店長／委任スタッフ | `payroll_view_all` | 必要 |  |
+| `payroll.results` | 店長／委任スタッフ | `payroll_view_all`, `payroll_confirm` | 必要 |  |
 | `payroll.submitReview` | 店長／委任スタッフ | `payroll_confirm` | 必要 | ○ |
 | `payslips.issue` | 店長／委任スタッフ | `payroll_confirm` | 必要 | ○ |
 | `payslips.list` | 店長／委任スタッフ | `payslip_view_others` | 必要 |  |

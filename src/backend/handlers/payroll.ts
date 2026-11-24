@@ -59,7 +59,8 @@ function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], rea
     const msgs = output.issues.filter((i) => i.severity === 'blocking').map((i) => (i.date ? `${i.message}（${i.date}）` : i.message));
     throw new ApiError('PAYROLL_BLOCKED', `${e.displayName}さん: 確定できません — ${msgs.slice(0, 5).join(' / ')}`, 409);
   }
-  const un = unacknowledged(output.issues, acks);
+  // 確認（acknowledge）はスタッフごと（他のスタッフの同じ項目の確認は流用しない）
+  const un = unacknowledged(output.issues, acks.filter((k) => k.startsWith(`${e.id}|`)).map((k) => k.slice(e.id.length + 1)));
   if (un.length) throw new ApiError('ACK_REQUIRED', `${e.displayName}さん: 確認が必要な項目があります — ${un.map((i) => i.message).slice(0, 5).join(' / ')}`, 409);
   const revision = isCorrection && prev ? prev.revision + 1 : 1;
   if (prev) ctx.uow.update('payroll_results', { ...prev, status: 'superseded' });
@@ -88,6 +89,11 @@ function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], rea
   return r;
 }
 
+/** 確認項目のキー（スタッフID | 課題コード@日付） */
+export function ackKey(employeeId: string, i: PayrollIssue): string {
+  return `${employeeId}|${issueKey(i)}`;
+}
+
 function payslipData(ctx: Ctx, slip: PaySlip): PayslipData {
   const r = ctx.uow.get<PayrollResult>('payroll_results', slip.payrollResultId);
   const p = ctx.uow.get<PayrollPeriod>('payroll_periods', slip.periodId);
@@ -101,7 +107,7 @@ defineOps([
   {
     name: 'payroll.periods',
     auth: 'staff_or_owner',
-    perms: ['payroll_view_all', 'payroll_confirm', 'pay_conditions_edit'],
+    perms: ['payroll_view_all', 'payroll_confirm', 'pay_conditions_edit', 'payslip_view_others', 'export_payroll'],
     sensitive: true,
     mutating: false,
     handler: (ctx) => {
@@ -128,7 +134,7 @@ defineOps([
   {
     name: 'payroll.compute',
     auth: 'staff_or_owner',
-    perms: ['payroll_view_all'],
+    perms: ['payroll_view_all', 'payroll_confirm'],
     sensitive: true,
     mutating: true,
     handler: (ctx, raw) => {
@@ -149,7 +155,7 @@ defineOps([
           savedStatus: prev?.status ?? 'uncomputed',
           revision: prev?.revision ?? 0,
           totals: output.totals,
-          issues: output.issues.map((i) => ({ ...i, key: issueKey(i) })),
+          issues: output.issues.map((i) => ({ ...i, key: ackKey(e.id, i) })),
           canConfirm: output.canConfirm,
           basis: output.basis,
           daily: output.daily,
@@ -217,7 +223,7 @@ defineOps([
   {
     name: 'payroll.results',
     auth: 'staff_or_owner',
-    perms: ['payroll_view_all'],
+    perms: ['payroll_view_all', 'payroll_confirm'],
     sensitive: true,
     mutating: false,
     handler: (ctx, raw) => {
