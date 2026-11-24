@@ -1,0 +1,147 @@
+.admin {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  min-height: 100vh;
+}
+.a-side {
+  background: var(--ink);
+  color: #dfe6e2;
+  padding: 18px 12px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+.a-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 18px;
+}
+.a-menu-btn {
+  display: none;
+  background: transparent;
+  border: 1px solid #3a4655;
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  min-height: 36px;
+}
+.a-group {
+  margin-bottom: 14px;
+}
+.a-group-label {
+  font-size: 0.75rem;
+  color: #8995a3;
+  padding: 4px 10px;
+}
+.a-nav {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: #dfe6e2;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-height: 38px;
+}
+.a-nav:hover {
+  background: #263241;
+}
+.a-nav[aria-current='page'] {
+  background: var(--board);
+  color: #fff;
+  font-weight: 700;
+}
+.a-main {
+  min-width: 0;
+}
+.a-head {
+  padding: 20px 28px 8px;
+}
+.a-content {
+  padding: 8px 28px 40px;
+  display: grid;
+  gap: 18px;
+}
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  padding: 14px 16px;
+}
+.kpi .label {
+  color: var(--ink-2);
+  font-size: 0.86rem;
+}
+.kpi .value {
+  font-family: var(--font-num);
+  font-size: 2.2rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.kpi .sub {
+  color: var(--ink-3);
+  font-size: 0.82rem;
+}
+.bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line-2);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--board);
+}
+.bar.over > i {
+  background: var(--bull);
+}
+.two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 18px;
+}
+@media (max-width: 1100px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 820px) {
+  .admin {
+    grid-template-columns: 1fr;
+  }
+  .a-side {
+    position: sticky;
+    height: auto;
+    z-index: 20;
+    padding: 10px 12px;
+  }
+  .a-brand {
+    padding: 0;
+  }
+  .a-menu-btn {
+    display: inline-block;
+  }
+  .a-side nav {
+    display: none;
+    padding-top: 10px;
+  }
+  .a-side.open nav {
+    display: block;
+  }
+  .a-head {
+    padding: 16px 16px 4px;
+  }
+  .a-content {
+    padding: 8px 16px 32px;
+  }
+}
