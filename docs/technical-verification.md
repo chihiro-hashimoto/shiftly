@@ -48,6 +48,7 @@
 | スコープ | drive.file は非機密・ファイル単位。drive は制限付き。spreadsheets は機密。openById は spreadsheets が必要 | §4 |
 | Web アプリ | IFRAME のみ。USER_DEPLOYING ではアクセス者のメール取得不可 | §5 |
 | 割当 | 6分/実行、同時30/ユーザー、トリガー90分/日、UrlFetch 2万/日、Properties 9KB/値・500KB、Cache 100KB・最長6時間 | §6 |
+| Sheets API の分単位の割当 | **未確認**。Codex 監査1 #15 は「書き込み 1 ユーザー毎分60回」を前提にしたが、公式ページ（developers.google.com/workspace/sheets/api/limits）はこの開発環境から取得できず未確認。書き込み呼び出しは 1 人分（ログイン→打刻→ログアウト）で 15 回 → 9 回以下に削減済み（GAS エミュレーションで計測）。実環境で開店・閉店時の集中を測定する（live-verification.md L8） | — |
 | LockService | getScriptLock は実行ユーザーにかかわらず同一スクリプト内で排他 | §7 |
 | OAuth 同意 | テスト状態はテストユーザー100人・7日で失効。未検証アプリは新規100人まで。個人用途は検証不要 | §8 |
 | Drive 容量 | 15GB を Gmail・フォトと共有 | §10 |
