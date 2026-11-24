@@ -14,7 +14,7 @@
 - ブランチ: `claude/inspiring-einstein-73ks5s`（main は Initial commit のまま）
 - 最新コミット: `git log -1` で確認
 - PR: https://github.com/chihiro-hashimoto/shiftly/pull/1（ドラフト。main へのマージはユーザー承認後）
-- CI: `.github/workflows/ci.yml`。コミット `58e61bf` で成功（run #18、2026-11-24）
+- CI: `.github/workflows/ci.yml`。コミット `3946c56`（Codex 監査1 の修正後）で成功（2026-11-24）
 
 ## 確定済み仕様（主なもの）
 - 構成: Shiftly-Kiosk（= Core。匿名アクセス・店長として実行、DB 唯一の更新経路）＋ Shiftly-Admin（本人のみ、HMAC 署名で Core へ転送）＋ Shiftly Setup（Apps Script API で自動構築）。詳細は docs/architecture.md と docs/decisions.md
