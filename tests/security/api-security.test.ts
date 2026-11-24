@@ -188,6 +188,29 @@ describe('認可・IDOR・なりすまし', () => {
     expect(r.actual.byEmployee).toEqual([]);
     expect(r.actual.byDate['2026-11-02'].amount).toBeNull();
   });
+  it('人件費分析（Codex 監査1 #9）: 本人以外の人件費発生者が3名未満の月は、合計・予定・予測・予算比較の金額も返さない', () => {
+    const { h, a, b } = setup();
+    h.punchAt(b, '582914', '2026-11-02', '09:00', 'clock_in');
+    h.punchAt(b, '582914', '2026-11-02', '13:00', 'clock_out');
+    h.ownerOk('budgets.upsert', { month: '2026-11', monthlyAmount: 100000, laborCostAllocation: 'by_worked_minutes' });
+    h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'labor_cost_view', 'budget_manage'] });
+    h.ownerOk('credentials.setStepUp', { employeeId: a, passcode: 'Kanri2026pass' });
+    h.login(a, '482913');
+    h.kioskOk('auth.stepUp', { passcode: 'Kanri2026pass' });
+    const r = h.kioskOk('analytics.laborCost', { month: '2026-11' });
+    // 人件費が発生したのは佐藤さん 1 名のみ → 合計は佐藤さんの給与そのものになるため非表示
+    expect(r.actual.total).toBeNull();
+    expect(r.planned.total).toBeNull();
+    expect(r.forecast.total).toBeNull();
+    expect(r.budget.actualToDate).toBeNull();
+    expect(r.budget.consumptionRate).toBeNull();
+    expect(r.budget.forecast).toBeNull();
+    expect(r.budget.over).toBeNull();
+    expect(r.actual.byWeekday.every((c: any) => c.amount === null)).toBe(true);
+    expect(JSON.stringify(r)).not.toContain('"amount":4');
+    // 店長は全額を見られる
+    expect(h.ownerOk('analytics.laborCost', { month: '2026-11' }).actual.total).toBeGreaterThan(0);
+  });
   it('スタッフ端末からの出力はファイル本体を返さず店長の Drive に保存のみ', () => {
     const { h, a } = setup();
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'export_attendance'] });

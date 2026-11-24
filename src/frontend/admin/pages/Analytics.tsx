@@ -14,7 +14,8 @@ interface Cell {
 interface Report {
   from: string;
   to: string;
-  total: number;
+  /** 給与閲覧権限がなく、個人の給与が推定できる場合は null（非表示） */
+  total: number | null;
   byDate: Record<string, Cell>;
   byWeekday: Cell[];
   byHour: Cell[];
@@ -25,22 +26,24 @@ interface Report {
 interface BudgetStatusView {
   month: string;
   budget: number | null;
-  actualToDate: number;
-  plannedRemaining: number;
-  forecast: number;
+  actualToDate: number | null;
+  plannedRemaining: number | null;
+  forecast: number | null;
   consumptionRate: number | null;
   forecastRate: number | null;
-  over: boolean;
+  over: boolean | null;
   dailyOver: string[];
 }
 interface LaborResp {
   month: string;
   actual: Report;
-  planned: { total: number; employerCostEstimate: number | null };
-  forecast: { total: number };
+  planned: { total: number | null; employerCostEstimate: number | null };
+  forecast: { total: number | null };
   budget: BudgetStatusView;
   method: Budget['laborCostAllocation'];
   individualVisible: boolean;
+  /** 個人の給与が推定できるため、一部の金額を非表示にしている */
+  amountsHidden?: boolean;
 }
 
 const METHOD: Record<Budget['laborCostAllocation'], string> = {
@@ -136,7 +139,7 @@ function CostReport({ d, budget, today }: { d: LaborResp; budget: Budget | null;
   const b = d.budget;
   const a = d.actual;
   const employer = a.employerCostEstimate;
-  const overBy = b.budget !== null ? d.forecast.total - b.budget : 0;
+  const overBy = b.budget !== null && d.forecast.total !== null ? d.forecast.total - b.budget : null;
   const isPast = d.month < today.slice(0, 7);
   const isFuture = d.month > today.slice(0, 7);
   return (
@@ -170,12 +173,15 @@ function CostReport({ d, budget, today }: { d: LaborResp; budget: Budget | null;
         </div>
         <div className="kpi">
           <div className="label">会社負担込みの概算（実績）</div>
-          <div className="value">{employer === null ? '—' : <Yen v={a.total + employer} />}</div>
+          <div className="value">{employer === null || a.total === null ? '—' : <Yen v={a.total + employer} />}</div>
           <div className="sub">{employer === null ? '会社負担率が未設定のため算出できません（店舗設定）' : <>うち会社負担の概算 <Yen v={employer} /></>}</div>
         </div>
       </div>
 
-      {b.over && (
+      {d.amountsHidden && (
+        <div className="callout callout-board small">人件費が発生したスタッフが少ないため、個人の給与が推定できる金額（合計・予測・日別・曜日別の一部またはすべて）を表示していません。</div>
+      )}
+      {b.over === true && (
         <div className="callout callout-bull" role="alert">
           <strong>予算超過の見込み</strong>　着地予測が予算を <Yen v={overBy} /> 上回る見込みです。
           {b.dailyOver.length > 0 && <div className="small">日別予算を超えた日: {b.dailyOver.map((x) => `${Number(x.slice(8))}日`).join('、')}</div>}
@@ -402,7 +408,7 @@ function DailyChart({ d, budget, today }: { d: LaborResp; budget: Budget | null;
           </table>
         </div>
       </details>
-      {!d.individualVisible && <p className="small muted" style={{ margin: 0 }}>勤務者が1名のみの日と時間帯別・スタッフ別は、個人の給与が推定できるため金額を表示しません。</p>}
+      {!d.individualVisible && <p className="small muted" style={{ margin: 0 }}>時間帯別・スタッフ別と、本人以外に人件費が発生したスタッフが3名未満の集計は、個人の給与が推定できるため金額を表示しません。</p>}
     </div>
   );
 }
