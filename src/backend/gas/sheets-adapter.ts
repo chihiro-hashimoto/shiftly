@@ -140,18 +140,23 @@ export class SheetsAdapter implements TableAdapter {
         appends.set(name, a);
       }
     }
+    const data: Array<{ range: string; values: RawRow[] }> = [];
+    const placed: Array<{ name: string; rows: RawRow[]; start: number; end: number }> = [];
     for (const [name, a] of appends) {
       // ロック内のため行番号を計算して書き込む（append の自動範囲検出に依存しない）
       const start = (this.lastRow.get(name) ?? 1) + 1;
       const end = start + a.rows.length - 1;
       this.ensureRows(name, end);
-      Sheets.Spreadsheets.Values.update({ values: a.rows }, this.spreadsheetId(), `${q(name)}!A${start}:${colLetter(a.def.columns.length)}${end}`, { valueInputOption: 'RAW' });
-      a.rows.forEach((r, i) => this.index.get(name)!.set(String(r[0]), start + i));
-      this.lastRow.set(name, end);
+      data.push({ range: `${q(name)}!A${start}:${colLetter(a.def.columns.length)}${end}`, values: a.rows });
+      placed.push({ name, rows: a.rows, start, end });
     }
-    // 追記を先に行い、既存行の更新を後にする（途中失敗時に「旧版を無効化したが新版がない」状態を避ける）
-    if (updates.length) {
-      Sheets.Spreadsheets.Values.batchUpdate({ valueInputOption: 'RAW', data: updates }, this.spreadsheetId());
+    // 追記と既存行の更新を 1 回の batchUpdate にまとめる（Sheets API の書き込み回数＝割当の消費を抑える）。
+    // 途中失敗時はジャーナル（UnitOfWork.flush）による再適用で回復する
+    data.push(...updates);
+    if (data.length) Sheets.Spreadsheets.Values.batchUpdate({ valueInputOption: 'RAW', data }, this.spreadsheetId());
+    for (const x of placed) {
+      x.rows.forEach((r, i) => this.index.get(x.name)!.set(String(r[0]), x.start + i));
+      this.lastRow.set(x.name, x.end);
     }
   }
 

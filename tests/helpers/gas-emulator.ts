@@ -66,6 +66,8 @@ export class GasEmulator {
   /** エディタ実行（店長）を模す場合は店長のメール。匿名 Web アプリ経由は空文字 */
   activeUser = 'owner@example.invalid';
   apiCalls = 0;
+  /** Sheets API の書き込み系呼び出し回数（割当の消費の目安） */
+  writeCalls = 0;
   private seq = 0;
   now = Date.now();
   /** 新規シートの行数（Google Sheets の既定は 1000 行。テストでは行の自動拡張を少ない件数で確認するため変更可能） */
@@ -131,6 +133,7 @@ export class GasEmulator {
         },
         batchUpdate(body: { requests: Array<Record<string, any>> }, id: string) {
           self.apiCalls++;
+          self.writeCalls++;
           const ss = self.spreadsheets.get(id)!;
           for (const r of body.requests) {
             if (r.addSheet) {
@@ -173,12 +176,14 @@ export class GasEmulator {
           },
           update(body: { values: Cell[][] }, id: string, range: string, opts: { valueInputOption: string }) {
             self.apiCalls++;
+            self.writeCalls++;
             if (opts.valueInputOption !== 'RAW') throw new Error('RAW 以外は使用しない');
             self.writeValues(id, range, body.values);
             return {};
           },
           batchUpdate(body: { valueInputOption: string; data: Array<{ range: string; values: Cell[][] }> }, id: string) {
             self.apiCalls++;
+            self.writeCalls++;
             if (body.valueInputOption !== 'RAW') throw new Error('RAW 以外は使用しない');
             for (const d of body.data) self.writeValues(id, d.range, d.values);
             return {};

@@ -100,6 +100,15 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(post(ownerEnvelope(skey, { op: 'employees.list' }, 'setup')).ok).toBe(false);
     // 管理者鍵で setup 役割を名乗っても不可
     expect(post(ownerEnvelope(key, { op: 'system.info' }, 'setup')).ok).toBe(false);
+    // Codex 監査1 #15: 共用 iPad の 1 人分（ログイン→打刻→ログアウト）の Sheets 書き込み回数
+    // （シート作成済みの状態で計測。1 回の保存＝ジャーナル開始・業務データ・ジャーナル完了の 3 回 × 3 操作）
+    const e2 = owner('employees.create', { displayName: '計測', kana: 'けいそく', payType: 'hourly', hireDate: '2025-01-01' });
+    owner('credentials.setPin', { employeeId: e2.id, pin: '582914' });
+    const w0 = emu.writeCalls;
+    const login2 = kiosk({ op: 'auth.login', args: { employeeId: e2.id, pin: '582914' }, device, requestId: 'emu_login_02' });
+    expect(kiosk({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login2.data.sessionToken, requestId: 'emu_punch_02' }).ok).toBe(true);
+    expect(kiosk({ op: 'auth.logout', device, session: login2.data.sessionToken, requestId: 'emu_logout_02' }).ok).toBe(true);
+    expect(emu.writeCalls - w0).toBeLessThanOrEqual(9);
   });
 
   it('Codex 監査1 #12: 呼び出し側が生成した鍵でペアリングし、応答喪失後も鍵を再送せずに登録済みを確認できる', () => {
