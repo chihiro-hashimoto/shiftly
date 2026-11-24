@@ -154,8 +154,15 @@ export function buildSessions(
     switch (e.type) {
       case 'clock_in':
         if (cur) {
-          cur.anomalies.push('duplicate_clock_in');
-          continue; // 二重出勤: 後の出勤は無視（原本は残る）
+          if (e.at - cur.start > opt.missingClockOutHours * HOUR_MS) {
+            // 前回の退勤打刻漏れ: 前の勤務は未退勤（打刻漏れ）のまま確定し、新しい勤務を開始
+            if (openBreak) cur.anomalies.push('break_not_ended');
+            cur.anomalies.push('missing_clock_out');
+            close(cur);
+          } else {
+            cur.anomalies.push('duplicate_clock_in');
+            continue; // 二重出勤: 後の出勤は無視（原本は残る）
+          }
         }
         cur = {
           employeeId,
@@ -308,9 +315,14 @@ export function workIntervals(s: WorkSession): Array<[Instant, Instant]> {
 export function validatePunch(
   events: EffectiveEvent[],
   punch: PunchType,
-  opts: { endBreakConfirmed?: boolean } = {},
-): { ok: true; autoBreakEnd: boolean } | { ok: false; code: string; message: string } {
+  opts: { endBreakConfirmed?: boolean; now?: Instant; staleHours?: number } = {},
+): { ok: true; autoBreakEnd: boolean; staleOpenSession?: boolean } | { ok: false; code: string; message: string } {
   const st = currentState(events);
+  // 長時間（既定16時間超）退勤されていない勤務がある場合の出勤は、前回の打刻漏れとして新しい勤務を開始する
+  if (punch === 'clock_in' && (st === 'working' || st === 'on_break') && opts.now !== undefined) {
+    const os = openSessionStart(events);
+    if (os !== null && opts.now - os > (opts.staleHours ?? 16) * HOUR_MS) return { ok: true, autoBreakEnd: false, staleOpenSession: true };
+  }
   if (punch === 'clock_out' && st === 'on_break') {
     if (!opts.endBreakConfirmed) {
       return { ok: false, code: 'BREAK_END_CONFIRM_REQUIRED', message: '休憩中です。休憩を終了して退勤しますか？' };
@@ -341,4 +353,14 @@ export function openSessionStart(events: EffectiveEvent[]): Instant | null {
     s = n;
   }
   return start;
+}
+
+/** 表示・操作用の状態: 長時間未退勤の勤務は「打刻漏れ」とみなし未出勤として扱う */
+export function effectiveState(events: EffectiveEvent[], now: Instant, staleHours = 16): { state: WorkState; staleOpenSince: Instant | null } {
+  const st = currentState(events);
+  if (st === 'working' || st === 'on_break') {
+    const os = openSessionStart(events);
+    if (os !== null && now - os > staleHours * HOUR_MS) return { state: 'off', staleOpenSince: os };
+  }
+  return { state: st, staleOpenSince: null };
 }

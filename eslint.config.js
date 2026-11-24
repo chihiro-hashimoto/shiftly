@@ -25,6 +25,11 @@ export default tseslint.config(
     },
   },
   {
+    // テストでは API 応答の検証のため any を許可
+    files: ['tests/**/*.ts'],
+    rules: { '@typescript-eslint/no-explicit-any': 'off' },
+  },
+  {
     // GAS エントリでは google.script.run 用のトップレベル関数を宣言するため未使用警告を抑止
     files: ['src/gas/**/*.ts'],
     rules: { '@typescript-eslint/no-unused-vars': 'off' },

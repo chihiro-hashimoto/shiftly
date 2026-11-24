@@ -23,7 +23,7 @@ import type {
   WorkSession,
 } from './types';
 import { SUPPORTED_WORKING_TIME_SYSTEMS } from './types';
-import { Frac, sumFrac } from './money';
+import { Frac } from './money';
 import { classifyLabor, summarize, type LaborConfig, type LaborPiece } from './labor';
 import { resolveRate, timebandCuts } from './wage';
 import {
@@ -510,7 +510,7 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
   for (const a of allowancesInPeriod) {
     const cur = effectiveAt([a], period.to).length > 0 || a.effectiveTo === null;
     if (!cur && a.kind === 'fixed_monthly') continue;
-    let amt: Frac | null = null;
+    let amt: Frac;
     if (a.kind === 'fixed_monthly') amt = Frac.of(a.amount);
     else if (a.kind === 'per_workday') {
       const days = daily.filter((d) => d.workMinutes > 0 && d.date >= a.effectiveFrom && (a.effectiveTo === null || d.date <= a.effectiveTo)).length;

@@ -383,7 +383,7 @@ export interface Shift extends RowMeta {
   /** 固定休憩を実績に適用するか（打刻休憩がない場合のみ適用） */
   applyFixedBreak: boolean;
   fixedBreakStart: LocalTime | null;
-  status: 'draft' | 'published';
+  status: 'draft' | 'published' | 'cancelled';
   publishedAt: string | null;
   note: string;
 }
