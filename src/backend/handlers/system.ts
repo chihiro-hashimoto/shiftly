@@ -390,7 +390,7 @@ export function integrityCheck(ctx: Ctx) {
   };
   for (const t of ['credentials', 'permissions', 'wage_rules', 'salary_rules', 'attendance_corrections', 'shifts', 'leave_grants', 'leave_transactions', 'payroll_results', 'pay_slips'] as const) check(t);
   check('attendance_events');
-  const journal = ctx.uow.list<{ state: string }>('operation_journal');
+  const journal = ctx.uow.list<{ state: string }>('operation_journal', { partitions: ctx.uow.recentPartitions() });
   const pending = journal.filter((j) => j.state === 'started').length;
   const failed = journal.filter((j) => j.state === 'failed').length;
   if (pending) issues.push(`未完了の書き込み処理: ${pending}件（次回の更新時に自動再適用）`);

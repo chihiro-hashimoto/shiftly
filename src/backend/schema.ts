@@ -98,10 +98,10 @@ export const TABLES: TableDef[] = [
     ['revokedAt', 'string_nullable'], ['userAgentHint', 'string'],
   ]),
   t('device_enrollments', '端末登録コード（短時間・使い捨て）', [['codeHash', 'string'], ['deviceName', 'string'], ['expiresAt', 'string'], ['usedAt', 'string_nullable']]),
-  t('sessions', 'スタッフセッション（トークンはハッシュのみ）', [
+  t('sessions', 'スタッフセッション（トークンはハッシュのみ。月別。有効期限30分のため直近2か月のみ参照）', [
     ['tokenHash', 'string'], ['deviceId', 'string'], ['employeeId', 'string'], ['expiresAt', 'string'], ['lastActivityAt', 'string'],
     ['stepUpUntil', 'string_nullable'], ['revokedAt', 'string_nullable'],
-  ]),
+  ], 'createdAt'),
   t('wage_rules', '時給ルール（個人・曜日・時間帯・祝日・特定日）', [
     ['employeeId', 'string'], ['kind', 'string'], ['hourlyRate', 'number'], ['effectiveFrom', 'string'], ['effectiveTo', 'string_nullable'],
     ['weekdays', 'json'], ['timeFrom', 'string_nullable'], ['timeTo', 'string_nullable'], ['specialDates', 'json'], ['priority', 'number'],
@@ -176,7 +176,7 @@ export const TABLES: TableDef[] = [
   ]),
   t('system_metadata', 'システム情報（環境ID・スキーマ・バージョン等）', [['key', 'string'], ['value', 'string']]),
   t('request_idempotency', '冪等性キー（再送時の重複登録防止）', [['requestId', 'string'], ['op', 'string'], ['principalKey', 'string'], ['responseJson', 'string']], 'createdAt'),
-  t('operation_journal', '書き込み処理履歴（部分失敗の検出・再実行）', [['op', 'string'], ['state', 'string'], ['detail', 'string']]),
+  t('operation_journal', '書き込み処理履歴（部分失敗の検出・再実行。月別）', [['op', 'string'], ['state', 'string'], ['detail', 'string']], 'createdAt'),
   t('migration_history', 'DB マイグレーション履歴', [['fromVersion', 'number'], ['toVersion', 'number'], ['status', 'string'], ['note', 'string']]),
   t('exports', '出力ファイル履歴', [['kind', 'string'], ['format', 'string'], ['driveFileId', 'string'], ['requestedBy', 'string'], ['note', 'string']]),
 ];

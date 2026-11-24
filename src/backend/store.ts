@@ -156,6 +156,13 @@ export class UnitOfWork {
     return toIsoJst(this.opts.now());
   }
 
+  /** 直近 2 か月のパーティション（短期間のみ有効なデータ: セッション・ジャーナル・冪等性キー） */
+  recentPartitions(): string[] {
+    const cur = toIsoJst(this.opts.now()).slice(0, 7);
+    const prev = toIsoJst(this.opts.now() - 35 * 86400000).slice(0, 7);
+    return prev === cur ? [cur] : [prev, cur];
+  }
+
   insert<T extends RowMeta>(table: TableName, row: Omit<T, keyof RowMeta> & Partial<RowMeta>, prefix = table.slice(0, 3)): T {
     const now = this.nowIso();
     const full = { ...row, id: row.id ?? this.newId(prefix), createdAt: row.createdAt ?? now, updatedAt: now, version: 1 } as unknown as T;
@@ -209,14 +216,15 @@ export class UnitOfWork {
       id: journalId, createdAt: now, updatedAt: this.nowIso(), version: state === 'started' ? 1 : 2,
       op: 'flush', state, detail: journalable ? detail : JSON.stringify({ tooLarge: true, tables: changes.map((c) => c.table) }),
     });
-    this.adapter.write([{ def: jdef, partition: null, id: journalId, raw: encodeRow(jdef, journalRow('started')) }]);
+    const jpart = now.slice(0, 7);
+    this.adapter.write([{ def: jdef, partition: jpart, id: journalId, raw: encodeRow(jdef, journalRow('started')) }]);
     this.adapter.write(
       changes.map((c) => {
         const def = TABLE_BY_NAME[c.table];
         return { def, partition: c.partition, id: c.row.id as string, raw: encodeRow(def, c.row) };
       }),
     );
-    this.adapter.write([{ def: jdef, partition: null, id: journalId, raw: encodeRow(jdef, journalRow('committed')) }]);
+    this.adapter.write([{ def: jdef, partition: jpart, id: journalId, raw: encodeRow(jdef, journalRow('committed')) }]);
     const n = this.pending.size;
     this.pending.clear();
     this.updatedKeys.clear();
@@ -226,7 +234,7 @@ export class UnitOfWork {
   /** started のまま残ったジャーナルを再適用（ロック取得後・処理前に呼ぶ） */
   recoverJournal(): { replayed: number; unrecoverable: number } {
     const jdef = TABLE_BY_NAME.operation_journal;
-    const rows = this.adapter.read(jdef, null).map((r) => decodeRow<{ id: string; state: string; detail: string; createdAt: string; version: number; op: string }>(jdef, r));
+    const rows = this.recentPartitions().flatMap((p) => this.adapter.read(jdef, p).map((r) => ({ p, ...decodeRow<{ id: string; state: string; detail: string; createdAt: string; version: number; op: string }>(jdef, r) })));
     let replayed = 0;
     let unrecoverable = 0;
     for (const j of rows.filter((r) => r.state === 'started')) {
@@ -238,7 +246,7 @@ export class UnitOfWork {
       }
       if (!Array.isArray(parsed)) {
         unrecoverable++;
-        this.adapter.write([{ def: jdef, partition: null, id: j.id, raw: encodeRow(jdef, { ...j, state: 'failed', updatedAt: this.nowIso(), version: j.version + 1 }) }]);
+        this.adapter.write([{ def: jdef, partition: j.p, id: j.id, raw: encodeRow(jdef, { ...j, state: 'failed', updatedAt: this.nowIso(), version: j.version + 1 }) }]);
         continue;
       }
       const writes = (parsed as Array<{ t: TableName; p: string | null; r: Record<string, unknown> }>).map((c) => {
@@ -246,7 +254,7 @@ export class UnitOfWork {
         return { def, partition: c.p, id: c.r.id as string, raw: encodeRow(def, c.r) };
       });
       this.adapter.write(writes);
-      this.adapter.write([{ def: jdef, partition: null, id: j.id, raw: encodeRow(jdef, { ...j, state: 'committed', updatedAt: this.nowIso(), version: j.version + 1 }) }]);
+      this.adapter.write([{ def: jdef, partition: j.p, id: j.id, raw: encodeRow(jdef, { ...j, state: 'committed', updatedAt: this.nowIso(), version: j.version + 1 }) }]);
       replayed++;
     }
     if (replayed || unrecoverable) this.cache.clear();

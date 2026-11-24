@@ -177,7 +177,7 @@ export function login(ctx: Ctx, dev: Device, employeeId: string, pin: string): {
 export function authenticateSession(ctx: Ctx, dev: Device, rawToken: unknown): { session: SessionRow; employee: Employee; permissions: PermissionKey[]; stepUp: boolean } {
   if (typeof rawToken !== 'string' || !/^[0-9a-f]{64}$/.test(rawToken)) throw E.unauthenticated();
   const h = tokenHash(ctx.p, rawToken);
-  const sess = ctx.uow.list<SessionRow>('sessions').find((x) => timingSafeEqualHex(x.tokenHash, h));
+  const sess = ctx.uow.list<SessionRow>('sessions', { partitions: ctx.uow.recentPartitions() }).find((x) => timingSafeEqualHex(x.tokenHash, h));
   if (!sess || sess.revokedAt || sess.deviceId !== dev.id || parseIso(sess.expiresAt) < ctx.now) throw E.unauthenticated();
   const s = settings(ctx);
   const last = ctx.p.cache.get(`sess-act:${sess.id}`);
@@ -191,13 +191,13 @@ export function authenticateSession(ctx: Ctx, dev: Device, rawToken: unknown): {
 }
 
 export function logout(ctx: Ctx, sessionId: string) {
-  const sess = ctx.uow.get<SessionRow>('sessions', sessionId);
+  const sess = ctx.uow.get<SessionRow>('sessions', sessionId, { partitions: ctx.uow.recentPartitions() });
   if (sess && !sess.revokedAt) ctx.uow.update('sessions', { ...sess, revokedAt: nowIso(ctx) });
   ctx.p.cache.remove(`sess-act:${sessionId}`);
 }
 
 export function revokeSessionsWhere(ctx: Ctx, pred: (s: SessionRow) => boolean) {
-  for (const s of ctx.uow.list<SessionRow>('sessions')) {
+  for (const s of ctx.uow.list<SessionRow>('sessions', { partitions: ctx.uow.recentPartitions() })) {
     if (!s.revokedAt && parseIso(s.expiresAt) > ctx.now && pred(s)) {
       ctx.uow.update('sessions', { ...s, revokedAt: nowIso(ctx) });
       ctx.p.cache.remove(`sess-act:${s.id}`);
@@ -207,7 +207,7 @@ export function revokeSessionsWhere(ctx: Ctx, pred: (s: SessionRow) => boolean) 
 
 export function stepUp(ctx: Ctx, sessionId: string, employeeId: string, secret: string) {
   verifyCredential(ctx, employeeId, 'stepup', secret);
-  const sess = ctx.uow.get<SessionRow>('sessions', sessionId);
+  const sess = ctx.uow.get<SessionRow>('sessions', sessionId, { partitions: ctx.uow.recentPartitions() });
   if (!sess) throw E.unauthenticated();
   ctx.uow.update('sessions', { ...sess, stepUpUntil: toIsoJst(ctx.now + STEPUP_MINUTES * 60_000) });
   audit(ctx, 'auth.stepup', 'employee', employeeId, '追加認証');

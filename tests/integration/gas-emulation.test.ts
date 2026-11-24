@@ -70,7 +70,7 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(evSheet.rows).toHaveLength(2);
     const emp = ss.sheets.find((s) => s.title === 'employees')!;
     expect(emp.rows[1]).toContain('=SUM(1)');
-    const jnl = ss.sheets.find((s) => s.title === 'operation_journal')!;
+    const jnl = ss.sheets.find((s) => s.title.startsWith('operation_journal__'))!;
     expect(jnl.rows.slice(1).every((r) => r[5] === 'committed')).toBe(true);
     // PIN・pepper は DB に保存されない
     const dump = JSON.stringify(ss.sheets.map((s) => s.rows));
