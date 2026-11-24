@@ -1,0 +1,49 @@
+{
+  "name": "shiftly",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shiftly（シフトリー）: 店舗勤怠・給与・シフト・人件費管理Webアプリ（GAS + Google Sheets + Google Drive）",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite --config vite.config.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:security": "vitest run --project security",
+    "build": "node scripts/build-frontend.mjs",
+    "build:gas": "node scripts/build-gas.mjs",
+    "build:preview": "node scripts/build-frontend.mjs --preview",
+    "preview": "node scripts/serve-preview.mjs",
+    "test:e2e": "playwright test --trace off",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run build:gas && npm run build:preview && npm run test:integration && npm run test:security && npm run test:e2e",
+    "docs": "node scripts/gen-docs.mjs"
+  },
+  "dependencies": {
+    "qrcode-generator": "2.0.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
+    "@types/google-apps-script": "2.0.15",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "esbuild": "0.28.2",
+    "eslint": "10.14.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.14.0",
+    "jsdom": "31.0.0",
+    "typescript": "6.0.2",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.6",
+    "vitest": "5.1.0"
+  }
+}
