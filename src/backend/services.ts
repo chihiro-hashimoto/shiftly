@@ -25,7 +25,7 @@ import type {
   WorkSession,
 } from '../shared/types';
 import { buildSessions, effectiveEvents, DEFAULT_SESSION_OPTIONS, type EffectiveEvent } from '../shared/attendance';
-import { addDays, monthKey, type LocalDate } from '../shared/time';
+import { addDays, localDateTime, monthKey, type LocalDate } from '../shared/time';
 import { computePayroll, type PayrollInput, type PayrollOutput } from '../shared/payroll';
 import { weekStartOf, overtime60WindowStart } from '../shared/labor';
 import { periodForKey } from '../shared/period';
@@ -85,11 +85,35 @@ export function periodConfig(s: StoreSettings) {
   return { closingDay: s.payrollClosingDay, payMonthOffset: s.payMonthOffset, payDay: s.payDay };
 }
 
+/** 'YYYY-MM' の前月キー */
+function prevKey(k: string): string {
+  const y = Number(k.slice(0, 4));
+  const m = Number(k.slice(5, 7));
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+}
+
+/** 他の給与期間と日付が重なっていないか（締め日の変更などで重複・二重計上しないための検査） */
+export function overlappingPeriod(ctx: Ctx, p: Pick<PayrollPeriod, 'periodKey' | 'from' | 'to'>): PayrollPeriod | null {
+  return ctx.uow.list<PayrollPeriod>('payroll_periods').find((x) => x.periodKey !== p.periodKey && x.from <= p.to && p.from <= x.to) ?? null;
+}
+
 export function getOrCreatePeriod(ctx: Ctx, periodKey: string, create: boolean): PayrollPeriod | null {
-  const ex = ctx.uow.list<PayrollPeriod>('payroll_periods').find((p) => p.periodKey === periodKey);
+  const all = ctx.uow.list<PayrollPeriod>('payroll_periods');
+  const ex = all.find((p) => p.periodKey === periodKey);
   if (ex || !create) return ex ?? null;
   const r = periodForKey(periodKey, periodConfig(settings(ctx)));
-  return ctx.uow.insert<PayrollPeriod>('payroll_periods', { periodKey, from: r.from, to: r.to, payDate: r.payDate, status: 'uncomputed' }, 'per');
+  // 直前月の期間が作成済みなら、その翌日から開始する（締め日を変更した移行期に期間の重複・欠落を作らない）
+  const prev = all.find((p) => p.periodKey === prevKey(periodKey));
+  const from = prev ? addDays(prev.to, 1) : r.from;
+  if (from > r.to) throw E.invalid(`${periodKey} の期間を作成できません（前の期間 ${prev!.from}〜${prev!.to} と締め日の設定が合いません）`);
+  const ov = overlappingPeriod(ctx, { periodKey, from, to: r.to });
+  if (ov) throw E.invalid(`${periodKey} の期間（${from}〜${r.to}）が作成済みの期間 ${ov.periodKey}（${ov.from}〜${ov.to}）と重なるため作成できません`);
+  return ctx.uow.insert<PayrollPeriod>('payroll_periods', { periodKey, from, to: r.to, payDate: r.payDate, status: 'uncomputed' }, 'per');
+}
+
+/** 給与期間の勤務がすべて終わった時刻（期間末日の翌日の営業日切替時刻）。これより前は正式確定できない */
+export function periodClosedAt(ctx: Ctx, p: PayrollPeriod): number {
+  return localDateTime(addDays(p.to, 1), settings(ctx).businessDayCutoff);
 }
 
 /** 平均賃金（労基法12条）: 直前3か月の確定給与（交通費等を含む総支給）÷総暦日数、最低保障（日給・時給制: 総額÷労働日数×60%） */
@@ -118,7 +142,11 @@ export function averageDailyWage(ctx: Ctx, employee: Employee, beforeDate: Local
 /** 給与計算の入力組み立て */
 export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod): PayrollInput {
   const s = settings(ctx);
-  const lookbackFrom = [weekStartOf(period.from, s.weekStartDay ?? 0), s.overtime60StartDay === null ? period.from : overtime60WindowStart(period.from, { overtime60StartDay: s.overtime60StartDay } as never)].sort()[0]!;
+  // 週の時間外判定と月60時間の累計に必要な過去の勤務を読む。
+  // 60時間の起算日が週の途中にある場合、その週の初日まで遡る（起算週の週次時間外を取りこぼさない）
+  const windowStart = s.overtime60StartDay === null ? period.from : overtime60WindowStart(period.from, { overtime60StartDay: s.overtime60StartDay } as never);
+  const earliest = windowStart < period.from ? windowStart : period.from;
+  const lookbackFrom = weekStartOf(earliest, s.weekStartDay ?? 0);
   const sessions = sessionsFor(ctx, employee.id, lookbackFrom, period.to, s);
   const by = <T extends { employeeId: string }>(xs: T[]) => xs.filter((x) => x.employeeId === employee.id);
   const pendingCorrections = ctx.uow.list<AttendanceCorrection>('attendance_corrections').filter((c) => c.employeeId === employee.id && c.status === 'pending').length;

@@ -146,6 +146,13 @@ export function monthKey(d: LocalDate): string {
   return d.slice(0, 7);
 }
 
+/** 'YYYY-MM' の前月（暦月で求める。日数の減算による推定は月の長さで誤る） */
+export function prevMonthKey(ym: string): string {
+  const y = Number(ym.slice(0, 4));
+  const m = Number(ym.slice(5, 7));
+  return m === 1 ? `${y - 1}-12` : `${y}-${pad2(m - 1)}`;
+}
+
 /** 区間 [a1,a2) と [b1,b2) の重なり（ms） */
 export function overlapMs(a1: number, a2: number, b1: number, b2: number): number {
   return Math.max(0, Math.min(a2, b2) - Math.max(a1, b1));

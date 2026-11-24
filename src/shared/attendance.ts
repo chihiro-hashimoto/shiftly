@@ -98,8 +98,12 @@ export function effectiveEvents(
   return [...map.values()].sort((a, b) => a.at - b.at || typeOrder(a.type) - typeOrder(b.type));
 }
 
+/**
+ * 同時刻の打刻の並び順。終了系（休憩終了・退勤）を開始系（出勤・休憩開始）より先に並べる。
+ * 例: 同時刻の「退勤→再出勤」で再出勤を重複出勤として捨てない／休憩中の退勤（休憩終了→退勤）。
+ */
 function typeOrder(t: PunchType): number {
-  return { clock_in: 0, break_start: 1, break_end: 2, clock_out: 3 }[t];
+  return { break_end: 0, clock_out: 1, clock_in: 2, break_start: 3 }[t];
 }
 
 /** 打刻列から現在の勤務状態を求める（不正な遷移はスキップせず検出のため別関数で扱う） */
@@ -316,6 +320,19 @@ export function validatePunch(
   events: EffectiveEvent[],
   punch: PunchType,
   opts: { endBreakConfirmed?: boolean; now?: Instant; staleHours?: number } = {},
+): { ok: true; autoBreakEnd: boolean; staleOpenSession?: boolean } | { ok: false; code: string; message: string } {
+  const r = validateTransition(events, punch, opts);
+  // 打刻時刻は秒単位。直前の打刻と同じ秒（以前）の打刻は順序が確定できないため受け付けない
+  if (r.ok && opts.now !== undefined && events.length > 0 && events[events.length - 1]!.at >= opts.now) {
+    return { ok: false, code: 'TOO_SOON', message: '直前の打刻と同じ時刻です。少し待ってからもう一度打刻してください' };
+  }
+  return r;
+}
+
+function validateTransition(
+  events: EffectiveEvent[],
+  punch: PunchType,
+  opts: { endBreakConfirmed?: boolean; now?: Instant; staleHours?: number },
 ): { ok: true; autoBreakEnd: boolean; staleOpenSession?: boolean } | { ok: false; code: string; message: string } {
   const st = currentState(events);
   // 長時間（既定16時間超）退勤されていない勤務がある場合の出勤は、前回の打刻漏れとして新しい勤務を開始する

@@ -12,7 +12,7 @@ import { ApiError, E } from './errors';
 import { audit, type Ctx, type Principal } from './context';
 import { authenticateDevice, authenticateSession, touchDevice } from './auth';
 import type { PermissionKey, RequestIdempotency } from '../shared/types';
-import { toLocalDate } from '../shared/time';
+import { prevMonthKey, toLocalDate } from '../shared/time';
 
 export type AuthKind = 'public' | 'device' | 'session' | 'owner' | 'staff_or_owner';
 
@@ -99,10 +99,9 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
       // 冪等性: 同一 principal・同一 requestId の再送は保存済みの応答を返す
       const pkey = principalKey(ctx.principal);
       const month = toLocalDate(now).slice(0, 7);
-      const prevMonth = toLocalDate(now - 32 * 86400000).slice(0, 7);
       if (def.mutating && r.requestId) {
         const prev = uow
-          .list<RequestIdempotency>('request_idempotency', { partitions: [prevMonth, month] })
+          .list<RequestIdempotency>('request_idempotency', { partitions: [prevMonthKey(month), month] })
           .find((x) => x.requestId === r.requestId);
         if (prev) {
           if (prev.principalKey !== pkey || prev.op !== r.op) throw E.conflict('requestId が別の操作で使用されています');

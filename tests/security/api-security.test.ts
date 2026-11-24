@@ -110,6 +110,7 @@ describe('認可・IDOR・なりすまし', () => {
     const { h, a, b } = setup();
     const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
     for (const id of [a, b]) h.ownerOk('deductions.upsert', { employeeId: id, periodId: p.id, status: 'explicit_none' });
+    h.setNow('2026-12-01', '06:00'); // 給与期間の終了後に確定（締め日前の確定は不可）
     h.ownerOk('payroll.confirm', { periodId: p.id });
     h.ownerOk('payslips.issue', { periodId: p.id });
     const slips = h.ownerOk<any[]>('payslips.list', { periodId: p.id });

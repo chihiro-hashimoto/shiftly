@@ -8,7 +8,7 @@
  * - Google Sheets は RDB と同等のトランザクションを持たないため、排他は Platform.withLock（スクリプトロック）で行う。
  */
 import { TABLE_BY_NAME, partitionKeyOf, type ColType, type TableDef, type TableName } from './schema';
-import { toIsoJst } from '../shared/time';
+import { prevMonthKey, toIsoJst } from '../shared/time';
 import type { RowMeta } from '../shared/types';
 
 export type Cell = string | number | boolean;
@@ -187,8 +187,7 @@ export class UnitOfWork {
   /** 直近 2 か月のパーティション（短期間のみ有効なデータ: セッション・ジャーナル・冪等性キー） */
   recentPartitions(): string[] {
     const cur = toIsoJst(this.opts.now()).slice(0, 7);
-    const prev = toIsoJst(this.opts.now() - 35 * 86400000).slice(0, 7);
-    return prev === cur ? [cur] : [prev, cur];
+    return [prevMonthKey(cur), cur];
   }
 
   insert<T extends RowMeta>(table: TableName, row: Omit<T, keyof RowMeta> & Partial<RowMeta>, prefix = table.slice(0, 3)): T {

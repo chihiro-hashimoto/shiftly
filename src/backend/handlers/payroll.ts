@@ -8,7 +8,7 @@ import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PaySlip } from '../../shared/types';
 import { issueKey, unacknowledged, type PayrollIssue, type PayrollOutput, type PayrollInput } from '../../shared/payroll';
-import { employeesInPeriod, getOrCreatePeriod, latestResult, periodConfig, runPayroll } from '../services';
+import { employeesInPeriod, getOrCreatePeriod, latestResult, overlappingPeriod, periodClosedAt, periodConfig, runPayroll } from '../services';
 import { periodForDate } from '../../shared/period';
 import { buildPayslip, payslipHtml, type PayslipData } from '../../shared/payslip';
 /** スナップショットの上限（1 行がジャーナルの 1 チャンクに収まる大きさ） */
@@ -54,6 +54,11 @@ function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], rea
   const isConfirmed = prev && (prev.status === 'confirmed' || prev.status === 'issued');
   if (isConfirmed && !isCorrection) throw E.conflict(`${e.displayName}さんの給与はすでに確定しています（訂正を使用してください）`);
   if (!isConfirmed && isCorrection) throw E.invalid('確定済みの給与がないため訂正できません');
+  if (ctx.now < periodClosedAt(ctx, p)) {
+    throw new ApiError('PAYROLL_BLOCKED', `${p.periodKey} の給与期間（〜${p.to}）がまだ終了していないため確定できません（締め日の翌日の営業日切替時刻以降に確定できます）`, 409);
+  }
+  const ov = overlappingPeriod(ctx, p);
+  if (ov) throw new ApiError('PAYROLL_BLOCKED', `給与期間 ${p.periodKey} が ${ov.periodKey} と重なっているため確定できません（二重計上の防止）`, 409);
   const { input, output } = runPayroll(ctx, e, p);
   if (!output.canConfirm) {
     const msgs = output.issues.filter((i) => i.severity === 'blocking').map((i) => (i.date ? `${i.message}（${i.date}）` : i.message));
