@@ -33,16 +33,19 @@
 5. 未確定の業務条件（docs/requirements.md「未確定事項」）は店長が設定画面で登録する
 
 ## テスト結果（直近の実行）
-- 単体 + セキュリティ: 107 件合格（給与ゴールデン 50 件を含む）
-- 統合: 32 件合格（Core API・Setup 状態機械・ビルド済み GAS バンドルのエミュレーション）
-- E2E: 36 件合格（Kiosk/Setup。iPad 横・縦／PC／スマホを Chromium でエミュレート）
-- lint / typecheck: 合格（作業中のページ差分を除く）
+- `npm run verify`（2026-11-24 実行、exit 0）: lint・typecheck 合格／単体 86・統合 33・セキュリティ 27・E2E 44 件すべて合格
+  - 単体に給与ゴールデン 50 件・レビュー回帰 3 件を含む
+  - 統合に Core API・Setup 状態機械・ビルド済み GAS バンドルのエミュレーションを含む
+  - E2E は Kiosk・Setup・管理画面全 16 ページ（iPad 横・縦／PC 1440／スマホ 390、Chromium）
 
 ## 次に実行する作業
 1. 管理画面ページ A・B の取り込み → lint・typecheck・ビルド・E2E（管理画面の巡回テストを追加）
-2. 独立レビュー（Codex ではない）で重要な指摘を修正
+2. （完了）独立レビュー R-1 の指摘修正
 3. `npm run verify` の全通し → CI の確認 → PR 作成（main へのマージはしない）
 4. ユーザーの承認後: 検証用 Google アカウントで実環境検証を行い、technical-verification.md に実測結果を追記
+
+## レビュー
+- 独立レビュー R-1（Claude エージェント、Codex ではない）: 指摘 12 件をすべて修正（docs/review-log.md）
 
 ## 累計 Codex 監査回数
 - **0 回**（Codex CLI を利用できないため未実施。上限は 5 回）
