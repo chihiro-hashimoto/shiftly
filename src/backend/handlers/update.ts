@@ -24,6 +24,8 @@ defineOps([
       const target = v.str(v.obj(raw), 'targetVersion', { max: 20, pattern: /^\d+\.\d+\.\d+$/, label: '更新先バージョン' });
       // 1) メンテナンス状態（スタッフの書き込みを停止）2) 更新前バックアップ
       setMeta(ctx, 'maintenance', 'on');
+      // 複製の前に確定する（更新前バックアップに「メンテナンス中」を含める。旧版へ戻してから復元しても確認前に打刻が再開しない。Codex 監査7 #2）
+      ctx.uow.flush();
       const b = runBackup(ctx, 'pre_update', `更新前 ${metaValue(ctx, 'appVersion') ?? '?'} → ${target}`);
       if (b.status !== 'ok') {
         setMeta(ctx, 'maintenance', 'off');

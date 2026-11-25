@@ -20,6 +20,8 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
   let n = 0;
   let failOnce = opts.failCreateOnce ?? false;
   const calls: string[] = [];
+  // 一時的な障害の注入（残り回数）。getDeployment: デプロイの照会 / putContent: コードの更新
+  const faults = { getDeployment: 0, putContent: 0 };
   const http: Http = (method, url, body) => {
     calls.push(`${method} ${url.replace('https://script.googleapis.com/v1', '')}`);
     if (opts.apiDisabled) return { status: 403, body: JSON.stringify({ error: { message: 'User has not enabled the Apps Script API. Enable it by visiting https://script.google.com/home/usersettings' } }) };
@@ -42,6 +44,14 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     const p = id ? projects.get(decodeURIComponent(id)) : undefined;
     if (!p) return { status: 404, body: '{"error":{"message":"not found"}}' };
     if (method === 'GET' && !sub) return { status: 200, body: JSON.stringify({ scriptId: id, title: p.title }) };
+    if (method === 'PUT' && sub === 'content' && faults.putContent > 0) {
+      faults.putContent--;
+      return { status: 503, body: '{"error":{"message":"backend error"}}' };
+    }
+    if (method === 'GET' && sub === 'deployments' && depId && faults.getDeployment > 0) {
+      faults.getDeployment--;
+      return { status: 503, body: '{"error":{"message":"backend error"}}' };
+    }
     if (method === 'PUT' && sub === 'content') {
       p.files = (body as { files: ScriptFile[] }).files;
       return { status: 200, body: '{}' };
@@ -64,7 +74,7 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     }
     return { status: 400, body: '{"error":{"message":"bad"}}' };
   };
-  return { http, projects, calls };
+  return { http, projects, calls, faults };
 }
 
 /** Core の doPost 相当（ping / pair / owner envelope） */
@@ -549,5 +559,151 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(deployed).not.toBe(prevVersion);
     expect(deployed).toBe(s.store.reg!.core.versionNumber);
     expect(s.store.reg!.appVersion).toBe('0.3.0');
+  });
+
+  // ---- Codex 監査7 ----
+  const installed = () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    return s;
+  };
+  const coreUow = (s: ReturnType<typeof setup>) => new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+  const backups = (s: ReturnType<typeof setup>) => coreUow(s).list<{ id: string; kind: string; driveFileId: string; status: string }>('backup_history');
+  const maintenance = (s: ReturnType<typeof setup>) => {
+    const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    return info.ok && (info.data as { maintenance: boolean }).maintenance;
+  };
+  /** 0.3.0 のコードを Staff・Admin の既存デプロイに配備済みの状態にする（Apps Script 上の実際のデプロイも新しい版を指す） */
+  const deployNew = (s: ReturnType<typeof setup>) => {
+    for (const which of ['core', 'admin'] as const) {
+      const ref = s.store.reg![which];
+      const proj = s.api.projects.get(ref.scriptId!)!;
+      const v = ++proj.versions;
+      proj.deployments.set(ref.deploymentId!, v);
+      s.store.reg![which] = { ...ref, versionNumber: v, previousVersionNumber: ref.versionNumber };
+    }
+  };
+
+  it('Codex 監査7 #1: 移行後の再開でデプロイの照会が一時的に失敗しても、再配備・旧版へのロールバック・バックアップの取り直しをせずに中断し、再実行で完了する', () => {
+    const s = installed();
+    const prevCore = s.store.reg!.core.versionNumber;
+    const prevAdmin = s.store.reg!.admin.versionNumber;
+    s.deps.release = release('0.3.0');
+    deployNew(s);
+    const newCore = s.store.reg!.core.versionNumber;
+    // 移行の段階で Setup が中断した状態（移行の可能性あり）
+    s.store.reg!.update = { target: '0.3.0', stage: 'migrate', startedAt: new Date().toISOString(), prevCore, prevAdmin, backupId: 'bak_first', migrated: true };
+    const backupsBefore = backups(s).length;
+    const coreRef = s.store.reg!.core;
+    const callsBefore = s.api.calls.length;
+    s.api.faults.getDeployment = 1;
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('確認できなかった');
+    // 何も変更していない: コードの更新・版の作成・デプロイの切替（旧版へのロールバックを含む）をしていない
+    expect(s.api.calls.slice(callsBefore).some((c) => c.startsWith('PUT') || c.startsWith('POST'))).toBe(false);
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(newCore);
+    expect(backups(s).length).toBe(backupsBefore);
+    expect(s.store.reg!.update).toMatchObject({ stage: 'migrate', migrated: true, backupId: 'bak_first', prevCore, prevAdmin });
+    // 照会が回復した後の再実行は、配備を省略して完了する
+    const r2 = s.make().applyUpdate({ approveDestructive: false });
+    expect(r2.ok).toBe(true);
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(newCore);
+    expect(backups(s).length).toBe(backupsBefore);
+  });
+
+  it('Codex 監査7 #1: 移行の可能性がある更新を旧版へ手動で戻した後の再実行で、コードの更新に失敗しても旧版へ自動で戻さず、最初の更新前バックアップを保持する', () => {
+    const s = installed();
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    s.dropOps.add('system.finishUpdate');
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    const firstBackup = s.store.reg!.update!.backupId;
+    expect(firstBackup).toBeTruthy();
+    s.make().rollbackCode();
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(prevVersion);
+    const backupsBefore = backups(s).length;
+    const ops: string[] = [];
+    const orig = s.deps.callCoreAsSetup;
+    s.deps.callCoreAsSetup = (url, key, req) => {
+      ops.push((req as { op: string }).op);
+      return orig(url, key, req);
+    };
+    // 再実行: コードの更新が失敗する
+    s.api.faults.putContent = 1;
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('メンテナンスを継続');
+    expect(maintenance(s)).toBe(true);
+    // 更新前バックアップを取り直さない（Setup・Core とも最初の参照を保持）
+    expect(backups(s).length).toBe(backupsBefore);
+    expect(s.store.reg!.update).toMatchObject({ backupId: firstBackup, migrated: true });
+    // Core の更新準備（更新前バックアップの取得・Core 側の参照の書き換え）を呼ばない
+    expect(ops).not.toContain('system.prepareUpdate');
+    // 再実行で新しい版を配備して完了する
+    const r2 = s.make().applyUpdate({ approveDestructive: false });
+    expect(r2.ok).toBe(true);
+    const deployed = s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!);
+    expect(deployed).not.toBe(prevVersion);
+    expect(deployed).toBe(s.store.reg!.core.versionNumber);
+  });
+
+  it('Codex 監査7 #1: 承認待ちからの再開で、コードが旧版に戻っていれば、移行の前に新しい版を配備する', () => {
+    const s = installed();
+    const coreRef = s.store.reg!.core;
+    const prevCore = coreRef.versionNumber;
+    const prevAdmin = s.store.reg!.admin.versionNumber;
+    s.deps.release = release('0.3.0');
+    // 承認待ちの間に、コードが旧版のデプロイに戻された状態（実際のデプロイは更新開始前の版）
+    s.store.reg!.update = { target: '0.3.0', stage: 'awaiting_approval', startedAt: new Date().toISOString(), prevCore, prevAdmin, backupId: 'bak_first' };
+    // 移行の要求を送った時点で、デプロイの切替（PUT deployments）が済んでいたか
+    let deployedBeforeMigrate: boolean | null = null;
+    const orig = s.deps.callCoreAsSetup;
+    s.deps.callCoreAsSetup = (url, key, req) => {
+      if ((req as { op: string }).op === 'system.migrate') deployedBeforeMigrate = s.api.calls.some((c) => c.startsWith('PUT') && c.includes('/deployments/'));
+      return orig(url, key, req);
+    };
+    const r = s.make().applyUpdate({ approveDestructive: true });
+    expect(r.ok).toBe(true);
+    const deployed = s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!);
+    expect(deployed).not.toBe(prevCore);
+    expect(deployed).toBe(s.store.reg!.core.versionNumber);
+    expect(deployedBeforeMigrate).toBe(true);
+  });
+
+  it('Codex 監査7 #2: 更新前バックアップは「メンテナンス中」の状態を含む（旧版へ戻した後に旧版の Core で復元しても、確認前に打刻が再開しない）', () => {
+    const s = installed();
+    const ops: string[] = [];
+    const orig = s.deps.callCoreAsSetup;
+    s.deps.callCoreAsSetup = (url, key, req) => {
+      ops.push((req as { op: string }).op);
+      return orig(url, key, req);
+    };
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+    // Setup は準備（更新前バックアップ）の前に、メンテナンスの開始を独立した要求として確定する（旧版の Core が準備を行う場合にも効く）
+    expect(ops.indexOf('system.setMaintenance')).toBeGreaterThanOrEqual(0);
+    expect(ops.indexOf('system.setMaintenance')).toBeLessThan(ops.indexOf('system.prepareUpdate'));
+    // 更新前バックアップの内容（旧版の Core の復元は、この値をそのまま有効にする）
+    const pre = backups(s).find((b) => b.kind === 'pre_update' && b.status === 'ok')!;
+    const cand = s.core.env.platform.database.prepareRestoreCopy(pre.driveFileId);
+    const uowC = new UnitOfWork(cand.adapter, { now: () => Date.now(), newId: (p) => `${p}_x` });
+    expect(uowC.list<{ key: string; value: string }>('system_metadata').find((m) => m.key === 'maintenance')?.value).toBe('on');
+  });
+
+  it('Codex 監査7 #2: Core の更新準備だけでも、更新前バックアップは「メンテナンス中」を含む', () => {
+    const s = installed();
+    const r = handleRequest(s.core.be, { op: 'system.prepareUpdate', args: { targetVersion: '0.3.0' }, requestId: 'req_prep_000001' }, 'owner');
+    expect(r.ok).toBe(true);
+    const pre = backups(s).find((b) => b.kind === 'pre_update' && b.status === 'ok')!;
+    const cand = s.core.env.platform.database.prepareRestoreCopy(pre.driveFileId);
+    const uowC = new UnitOfWork(cand.adapter, { now: () => Date.now(), newId: (p) => `${p}_x` });
+    expect(uowC.list<{ key: string; value: string }>('system_metadata').find((m) => m.key === 'maintenance')?.value).toBe('on');
   });
 });

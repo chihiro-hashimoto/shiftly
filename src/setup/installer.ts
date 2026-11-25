@@ -76,7 +76,10 @@ export interface Registry {
     prevAdmin?: number;
     /** 更新開始時の DB のスキーマ版（記録のみ。移行の結果が不明な場合は移行済みとして扱い、この値では判断しない） */
     startSchema?: number;
-    /** DB の移行が完了しているか（移行後の失敗は旧版へ戻さず、再開時は完了処理から行う） */
+    /**
+     * DB の移行が行われた可能性があるか（移行の要求を送る前に true として保存し、明確に拒否された場合だけ戻す）。
+     * true の更新は、以後この更新の中で旧版へ自動で戻さない（配備の照会の結果に左右されない。Codex 監査7 #1）
+     */
     migrated?: boolean;
   };
 }
@@ -489,15 +492,30 @@ export class Installer {
     if (!this.state().complete) return { ok: false, message: '初期セットアップが完了していません' };
     const target = this.d.release.version;
     const reg = this.reg!;
-    // 更新開始前のバージョン番号を保持（承認待ちから再開した場合も、更新前の版へ戻せるように）
-    // 移行後に失敗した更新の再開（コードは新しい版のまま。バックアップの再取得・再配備をせず完了処理から行う）
-    // 移行の段階（migrate / finish）で中断した更新も、移行済みの可能性があるため同様に扱う（Codex 監査5）
-    // ただし、配備されているコードがこの更新で配備した版である場合に限る（手動ロールバック等で旧版に戻っていれば、配備からやり直す。Codex 監査6 #3）
-    const afterMigration = !!(reg.update && reg.update.target === target && (reg.update.migrated || ['migrate', 'finish'].includes(reg.update.stage))) && this.deployedByThisUpdate();
-    const resuming = afterMigration || (reg.update && reg.update.target === target && reg.update.prevCore !== undefined && reg.update.stage !== 'failed');
-    const prevCore = resuming ? reg.update!.prevCore : reg.core.versionNumber;
-    const prevAdmin = resuming ? reg.update!.prevAdmin : reg.admin.versionNumber;
-    if (!resuming) {
+    // 同じ版への更新の続き（承認待ち・中断・失敗からの再実行）
+    const u0 = reg.update && reg.update.target === target ? reg.update : null;
+    // DB の移行が行われた可能性がある更新（移行の要求を送った後。Codex 監査3 #1・監査5・監査6 #1）。
+    // この保護は保存した状態だけで決め、配備の照会の結果では外さない（照会の一時的な失敗で旧版へ戻さない。Codex 監査7 #1）
+    const protect = !!(u0 && (u0.migrated || ['migrate', 'finish'].includes(u0.stage)));
+    const awaiting = !!(u0 && u0.stage === 'awaiting_approval');
+    // 配備を省略して DB 更新から再開できるのは、実際のデプロイがこの更新で配備した版を指す場合だけ（Codex 監査6 #3・監査7 #1）。
+    // 照会できない場合は何も変更せずに中断する（メンテナンスは継続。再実行で続きから行う）
+    let skipDeploy = false;
+    if (protect || awaiting) {
+      const st = this.deploymentState();
+      if (st === 'unknown') {
+        return {
+          ok: false,
+          message: 'Staff・Admin の配備の状態を確認できなかったため、更新を中断しました（何も変更していません。メンテナンスは継続中）。時間をおいて「更新を再開」を押してください',
+        };
+      }
+      skipDeploy = st === 'new';
+    }
+    // 更新開始前の版・最初の更新前バックアップは、同じ更新の続きでは引き継ぐ
+    const continuing = !!(u0 && u0.prevCore !== undefined && (protect || u0.stage !== 'failed'));
+    const prevCore = continuing ? u0!.prevCore : reg.core.versionNumber;
+    const prevAdmin = continuing ? u0!.prevAdmin : reg.admin.versionNumber;
+    if (!continuing) {
       reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin, startSchema: this.coreInfo()?.schemaVersion };
       this.persist();
     }
@@ -505,16 +523,24 @@ export class Installer {
       reg.update = { ...(reg.update ?? { target, startedAt: this.d.now() }), target, stage };
       this.persist();
     };
-    // DB の移行が完了したか（移行後の失敗では、旧プログラムへ戻さない。Codex 監査3 #1）
-    let migrated = afterMigration;
+    // この実行で失敗したときに旧版へ戻さないか
+    let migrated = protect;
     try {
-      // 承認待ち・移行後の失敗からの再開では、バックアップ・コード更新・デプロイは完了済み（DB 更新から再開）
-      if (!(resuming && (reg.update!.stage === 'awaiting_approval' || afterMigration))) {
+      if (!skipDeploy) {
         step('prepare');
-        const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
-        if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
-        // 中断からの再開でも、最初の更新前バックアップの参照を保持する
-        reg.update!.backupId = reg.update!.backupId ?? (prep.data as { backupId: string }).backupId;
+        // 準備の前に、メンテナンスの開始を独立した要求として確定する。更新前バックアップ（準備の中で DB を複製）に
+        // 「メンテナンス中」を含めるため。旧版（v1.2）の Core は準備の中の変更を複製の前に確定しないため、Setup 側で行う
+        // （旧版へ戻してからそのバックアップを旧版の Core で復元しても、確認前に打刻が再開しない。Codex 監査7 #2）
+        const on = this.callCore('system.setMaintenance', { on: true });
+        if (!on.ok) return this.failUpdate(`メンテナンスを開始できませんでした（${on.error?.message ?? ''}）。更新は行っていません`);
+        if (protect) {
+          // DB は移行済みの可能性があるため、更新前バックアップを取り直さない（最初の更新前バックアップの参照を Core・Setup とも保持する）
+        } else {
+          const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
+          if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
+          // 中断からの再開でも、最初の更新前バックアップの参照を保持する
+          reg.update!.backupId = reg.update!.backupId ?? (prep.data as { backupId: string }).backupId;
+        }
         step('code');
         this.upload('core');
         this.upload('admin');
@@ -522,35 +548,33 @@ export class Installer {
         this.deploy('core');
         this.deploy('admin');
       }
+      // 移行の要求を送る前に「移行の可能性あり」を保存する（応答が失われる・通信の例外・Setup の中断に備える）
+      migrated = true;
+      reg.update = { ...reg.update!, migrated: true };
       step('migrate');
-      let mig: ReturnType<Installer['callCore']>;
-      try {
-        mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
-      } catch (e) {
-        // 通信が例外になった場合も結果は不明（Core で移行が進んでいる可能性）。移行済みとして扱い、旧版へ戻さない（Codex 監査6 #1）
-        migrated = true;
-        throw e;
-      }
+      const mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
       if (!mig.ok) {
-        // 応答がない・内部エラー等で結果が不明な場合は、Core で移行が進んでいる可能性があるため移行済みとして扱い、旧版へ戻さない
-        // （ロック外の読み取りで移行前と判断しない。再開時は Core のロック内で移行をやり直す＝冪等。Codex 監査5）
+        // 明確に拒否された場合（Core は移行を行っていない）だけ、この実行での移行の可能性を取り消す。
+        // 応答がない・内部エラー等で結果が不明な場合は移行済みとして扱う（ロック外の読み取りで移行前と判断しない。Codex 監査5）
         const definitive = ['CONFLICT', 'INVALID_INPUT', 'FORBIDDEN', 'UNAUTHENTICATED', 'NOT_PAIRED', 'NOT_INITIALIZED'];
-        if (!definitive.includes(mig.error?.code ?? '')) migrated = true;
+        if (definitive.includes(mig.error?.code ?? '')) {
+          migrated = protect;
+          reg.update = { ...reg.update!, migrated: protect };
+          this.persist();
+        }
         throw new Error(`DB 更新に失敗しました（${mig.error?.message ?? ''}）`);
       }
       const need = (mig.data as { requiresApproval: string[] }).requiresApproval;
-      if (need.length === 0) {
-        migrated = true;
-        reg.update = { ...reg.update!, migrated: true };
-        this.persist();
-      }
       if (need.length) {
+        // 承認待ち: 今回の要求では何も移行していない
+        migrated = protect;
+        reg.update = { ...reg.update!, migrated: protect };
         step('awaiting_approval');
         return { ok: false, message: '破壊的な DB 変更が含まれるため、内容を確認して承認してください（コードは更新済み・メンテナンス中）', requiresApproval: need };
       }
       step('finish');
       // 完了処理の前に、配備されているコードがこの更新の版であることを確認する（旧版の Core で完了させない。Codex 監査6 #3）
-      if (!this.deployedByThisUpdate()) throw new Error('配備されているプログラムが更新先の版ではありません（ロールバック等で切り替わった可能性）');
+      if (this.deploymentState() !== 'new') throw new Error('配備されているプログラムが更新先の版ではありません（ロールバック等で切り替わった可能性）');
       const fin = this.callCore('system.finishUpdate');
       if (!fin.ok) throw new Error(`更新の完了処理に失敗しました（${fin.error?.message ?? ''}）`);
       reg.appVersion = target;
@@ -566,7 +590,7 @@ export class Installer {
         // DB は新しい構造に移行済み。旧プログラムは新しい構造の DB を正しく扱えず、メンテナンス解除の検査も持たないため、
         // プログラムは新しい版のまま、メンテナンスを継続する（新しい版の Core は構造の一致を検査できる）
         return this.failUpdate(
-          `更新に失敗しました: ${msg}。DB の更新後に失敗したため、プログラムは新しい版（${target}）のまま、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
+          `更新に失敗しました: ${msg}。DB の更新が行われた可能性がある段階で失敗したため、旧版へ自動では戻さず、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
             '原因（整合性の確認結果など）を管理画面「システム・更新」で確認し、解消してから更新を再実行してください。旧版に戻す必要がある場合は docs/update-rollback.md の手順（更新前バックアップの復元と旧版への切替）に従ってください',
         );
       }
@@ -576,24 +600,29 @@ export class Installer {
   }
 
   /**
-   * Staff・Admin の既存デプロイが、この更新で配備した版（更新開始前の版ではない）を指しているか。
-   * Apps Script API で実際のデプロイの版を確認する
+   * Staff・Admin の既存デプロイの状態（Apps Script API で実際のデプロイの版を照会する）
+   * - new: 両方とも、この更新で配備した版（更新開始前と異なる版）を指す
+   * - old: 照会できたが、少なくとも一方がこの更新の版を指していない（未配備・手動ロールバック等）
+   * - unknown: 照会できなかった（一時的な障害等）。呼び出し側は何も変更せずに中断する
    */
-  private deployedByThisUpdate(): boolean {
+  private deploymentState(): 'new' | 'old' | 'unknown' {
     const reg = this.reg;
     const u = reg?.update;
-    if (!reg || !u) return false;
+    if (!reg || !u) return 'unknown';
+    let allNew = true;
     for (const [which, prev] of [['core', u.prevCore], ['admin', u.prevAdmin]] as const) {
       const ref = reg[which];
-      if (!ref.scriptId || !ref.deploymentId || !ref.versionNumber || ref.versionNumber === prev) return false;
+      if (!ref.scriptId || !ref.deploymentId) return 'unknown';
+      let v: number | undefined;
       try {
-        const dep = this.d.api.getDeployment(ref.scriptId, ref.deploymentId);
-        if (dep?.deploymentConfig?.versionNumber !== ref.versionNumber) return false;
+        v = this.d.api.getDeployment(ref.scriptId, ref.deploymentId)?.deploymentConfig?.versionNumber;
       } catch {
-        return false;
+        return 'unknown';
       }
+      if (v === undefined) return 'unknown';
+      if (!ref.versionNumber || v !== ref.versionNumber || v === prev) allNew = false;
     }
-    return true;
+    return allNew ? 'new' : 'old';
   }
 
   private failUpdate(message: string) {
