@@ -536,7 +536,7 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
         extraBase = extraBase.add(otBase);
       }
 
-      // 欠勤・遅刻早退控除（店長が承認した調整のみ。シフトから自動反映しない）
+      // 欠勤・遅刻早退控除（管理者が承認した調整のみ。シフトから自動反映しない）
       for (const a of input.adjustments) {
         if (a.kind === 'absence_days') {
           if (!sr.absenceDeduction?.enabled || !sr.absenceDeduction.divisorDays) {

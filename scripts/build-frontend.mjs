@@ -1,7 +1,7 @@
 /**
  * フロントエンドのビルド
  *  - 既定: GAS HtmlService 用の単一 HTML（JS/CSS をインライン化）を dist/gas-html/ に出力
- *          kiosk.html（Shiftly-Kiosk）, admin.html（Shiftly-Admin）, setup.html（Shiftly Setup）
+ *          staff.html（Shiftly-Staff）, admin.html（Shiftly-Admin）, setup.html（Shiftly Setup）
  *  - --preview: モックデータで動作するプレビューを dist/preview/ に出力
  */
 import { build } from 'vite';
@@ -66,4 +66,4 @@ async function buildGasHtml(name) {
 }
 
 if (preview) await buildPreview();
-else for (const n of ['kiosk', 'admin', 'setup']) await buildGasHtml(n);
+else for (const n of ['staff', 'admin', 'setup']) await buildGasHtml(n);

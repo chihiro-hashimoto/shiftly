@@ -29,11 +29,11 @@ export const STEPS: Array<{ id: StepId; label: string; manual?: boolean }> = [
   { id: 'account', label: 'Google アカウントの確認' },
   { id: 'api', label: 'Apps Script API の利用確認' },
   { id: 'store', label: '店舗情報の入力' },
-  { id: 'core.create', label: 'Shiftly-Kiosk（本体）の作成' },
-  { id: 'core.upload', label: 'Shiftly-Kiosk のコード配置' },
-  { id: 'core.deploy', label: 'Shiftly-Kiosk のデプロイ' },
-  { id: 'core.authorize', label: 'Shiftly-Kiosk の権限承認と初期化（フォルダ・DB 作成）', manual: true },
-  { id: 'admin.create', label: 'Shiftly-Admin（店長用）の作成' },
+  { id: 'core.create', label: 'Shiftly-Staff（本体）の作成' },
+  { id: 'core.upload', label: 'Shiftly-Staff のコード配置' },
+  { id: 'core.deploy', label: 'Shiftly-Staff のデプロイ' },
+  { id: 'core.authorize', label: 'Shiftly-Staff の権限承認と初期化（フォルダ・DB 作成）', manual: true },
+  { id: 'admin.create', label: 'Shiftly-Admin（管理者用）の作成' },
   { id: 'admin.upload', label: 'Shiftly-Admin のコード配置' },
   { id: 'admin.deploy', label: 'Shiftly-Admin のデプロイ' },
   { id: 'admin.authorize', label: 'Shiftly-Admin の権限承認と接続', manual: true },
@@ -124,7 +124,8 @@ export interface PublicState {
   storeName: string | null;
   steps: Array<{ id: StepId; label: string; status: 'done' | 'error' | 'pending'; message?: string; manual?: boolean }>;
   complete: boolean;
-  kioskUrl: string | null;
+  /** 店舗 iPad（Shiftly-Staff）の URL */
+  staffUrl: string | null;
   adminUrl: string | null;
   coreEditorUrl: string | null;
   adminEditorUrl: string | null;
@@ -158,7 +159,7 @@ export class Installer {
   /**
    * レジストリ（非秘密）のみ復元でき、秘密情報（ペアリングコード・Setup 鍵）を失った場合の復旧。
    * 新しい Setup 用ペアリングコードを発行し、Core のコード再配置・再デプロイ・再ペアリングが必要な状態に戻す。
-   * 事前に店長の管理画面「システム・更新」で更新用接続のリセット（system.resetSetupPairing）が必要。
+   * 事前に管理者の管理画面「システム・更新」で更新用接続のリセット（system.resetSetupPairing）が必要。
    */
   private recoverSecrets() {
     const code = this.d.randomHex(32);
@@ -176,7 +177,7 @@ export class Installer {
       storeName: r?.storeName || null,
       steps: STEPS.map((s) => ({ id: s.id, label: s.label, manual: s.manual, status: r?.steps[s.id]?.status ?? 'pending', message: r?.steps[s.id]?.message })),
       complete: !!r && STEPS.every((s) => r.steps[s.id]?.status === 'done'),
-      kioskUrl: r?.core.url ?? null,
+      staffUrl: r?.core.url ?? null,
       adminUrl: r?.admin.url ?? null,
       coreEditorUrl: editorUrl(r?.core.scriptId),
       adminEditorUrl: editorUrl(r?.admin.scriptId),
@@ -203,7 +204,7 @@ export class Installer {
     if (!this.reg) return null;
     const email = this.d.userEmail();
     if (!email || email.toLowerCase() !== this.reg.ownerEmail.toLowerCase())
-      return { step: 'account', message: `この環境は別の Google アカウント（${maskEmail(this.reg.ownerEmail)}）で作成されています`, fix: '店長の Google アカウントでログインし直してください（アカウントの取り違え防止）' };
+      return { step: 'account', message: `この環境は別の Google アカウント（${maskEmail(this.reg.ownerEmail)}）で作成されています`, fix: '管理者の Google アカウントでログインし直してください（アカウントの取り違え防止）' };
     return null;
   }
 
@@ -238,7 +239,7 @@ export class Installer {
         const email = d.userEmail();
         if (!email) throw new InstallerError(step, 'Google アカウントを確認できません', 'Google にログインし、Shiftly Setup の権限を承認してから再度開いてください');
         if (this.reg && this.reg.ownerEmail && this.reg.ownerEmail.toLowerCase() !== email.toLowerCase())
-          throw new InstallerError(step, `この環境は別の Google アカウント（${maskEmail(this.reg.ownerEmail)}）で作成されています`, '店長の Google アカウントでログインし直してください（アカウントの取り違え防止）');
+          throw new InstallerError(step, `この環境は別の Google アカウント（${maskEmail(this.reg.ownerEmail)}）で作成されています`, '管理者の Google アカウントでログインし直してください（アカウントの取り違え防止）');
         if (!this.reg) {
           const now = d.now();
           const adminCode = d.randomHex(32);
@@ -280,7 +281,8 @@ export class Installer {
         return null;
       }
       case 'core.create':
-        return this.createProject('core', `Shiftly-Kiosk (${this.reg!.envId})`);
+        // v1.3 で名称を Shiftly-Kiosk から Shiftly-Staff に変更。既存の環境は保存済みの scriptId で識別するため、旧名称のプロジェクトもそのまま使う
+        return this.createProject('core', `Shiftly-Staff (${this.reg!.envId})`);
       case 'admin.create':
         return this.createProject('admin', `Shiftly-Admin (${this.reg!.envId})`);
       case 'core.upload':
@@ -303,7 +305,7 @@ export class Installer {
           step,
           openUrl: editorUrl(this.reg!.core.scriptId) ?? undefined,
           instructions: [
-            '下のボタンで Shiftly-Kiosk のスクリプトエディタを開きます（店長の Google アカウント）。',
+            '下のボタンで Shiftly-Staff のスクリプトエディタを開きます（管理者の Google アカウント）。',
             '関数の選択欄で「shiftlyAuthorize」を選び「実行」を押します。',
             'Google の確認画面で権限を確認し「許可」を押します（Shiftly が作成したファイルのみ操作する権限です）。',
             '実行ログに完了が表示されたら、この画面に戻って「確認して続行」を押してください。',
@@ -338,7 +340,7 @@ export class Installer {
           throw new InstallerError(
             step,
             `更新用の接続設定に失敗しました（${r.error?.code ?? 'unknown'}）`,
-            r.error?.code === 'CONFLICT' ? '管理画面「システム・更新」で「更新用接続のリセット」を実行してから再実行してください' : 'Shiftly-Kiosk の初期化が完了しているか確認し、再実行してください',
+            r.error?.code === 'CONFLICT' ? '管理画面「システム・更新」で「更新用接続のリセット」を実行してから再実行してください' : 'Shiftly-Staff の初期化が完了しているか確認し、再実行してください',
           );
         this.sec!.setupKey = key;
         delete this.sec!.pendingSetupKey;
@@ -347,7 +349,7 @@ export class Installer {
       }
       case 'verify': {
         const ping = this.ping();
-        if (!ping) throw new InstallerError(step, 'Shiftly-Kiosk に接続できません', 'デプロイと権限承認が完了しているか確認してください');
+        if (!ping) throw new InstallerError(step, 'Shiftly-Staff に接続できません', 'デプロイと権限承認が完了しているか確認してください');
         const chk = this.callCore('system.integrityCheck');
         const res = chk.data as { ok: boolean; issues: string[] } | undefined;
         if (!chk.ok || !res) throw new InstallerError(step, `確認に失敗しました（${chk.error?.message ?? ''}）`, '時間をおいて再実行してください');
@@ -369,6 +371,8 @@ export class Installer {
     const step: StepId = which === 'core' ? 'core.create' : 'admin.create';
     if (this.reg![which].creatingAt) {
       // 前回の作成要求の結果が不明（作成済みで応答だけ失われた可能性）。自動では作り直さない
+      // 前回の要求時の名称で案内する（v1.2 で開始したセットアップの再開では旧名称の Shiftly-Staff）
+      title = this.reg![which].title ?? title;
       throw new InstallerError(
         step,
         `前回の「${title}」の作成結果を確認できませんでした`,
@@ -404,7 +408,7 @@ export class Installer {
   private upload(which: 'core' | 'admin') {
     const ref = this.reg![which];
     if (!ref.scriptId) throw new InstallerError(`${which}.upload` as StepId, 'プロジェクトが作成されていません', '再実行してください');
-    if (which === 'admin' && !this.reg!.core.url) throw new InstallerError('admin.upload', 'Shiftly-Kiosk の URL が未確定です', 'Shiftly-Kiosk のデプロイを先に完了してください');
+    if (which === 'admin' && !this.reg!.core.url) throw new InstallerError('admin.upload', 'Shiftly-Staff の URL が未確定です', 'Shiftly-Staff のデプロイを先に完了してください');
     this.d.api.updateContent(ref.scriptId, this.filesFor(which));
   }
 
@@ -435,7 +439,7 @@ export class Installer {
   retry(step: StepId) {
     if (this.reg?.steps[step]?.status === 'error') {
       delete this.reg.steps[step];
-      // 作成工程の再実行は、店長が重複がないことを確認した上での明示的な操作として、作成中の目印を解除する
+      // 作成工程の再実行は、管理者が重複がないことを確認した上での明示的な操作として、作成中の目印を解除する
       if (step === 'core.create' && !this.reg.core.scriptId) delete this.reg.core.creatingAt;
       if (step === 'admin.create' && !this.reg.admin.scriptId) delete this.reg.admin.creatingAt;
       this.persist();
@@ -450,7 +454,7 @@ export class Installer {
   }
 
   /**
-   * 更新の実行（店長の承認後に呼ぶ）
+   * 更新の実行（管理者の承認後に呼ぶ）
    * 1) メンテナンス＋更新前バックアップ 2) 配布物の検証・コード更新 3) バージョン作成・既存デプロイ更新（URL 維持）
    * 4) DB マイグレーション（破壊的変更は承認がなければ停止）5) 完了・整合性確認。失敗時はロールバック。
    */
@@ -526,7 +530,7 @@ export class Installer {
       try {
         this.d.api.updateDeployment(ref.scriptId, ref.deploymentId, prev, `Shiftly rollback to v${prev}`);
         reg[which] = { ...ref, versionNumber: prev };
-        out.push(`${which === 'core' ? 'Kiosk' : 'Admin'} をバージョン ${prev} に戻しました`);
+        out.push(`${which === 'core' ? 'Staff' : 'Admin'} をバージョン ${prev} に戻しました`);
       } catch (e) {
         out.push(`${which} のロールバックに失敗（${e instanceof Error ? e.message : ''}）`);
       }

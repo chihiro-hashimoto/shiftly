@@ -180,12 +180,12 @@ export function BackupPage() {
             <li><strong>月次</strong>: 毎月1日に自動で作成し、設定した世代数（初期値12世代）を保持します。</li>
             <li><strong>更新前</strong>: アップデートの直前に自動で作成します（自動削除しません）。</li>
             <li><strong>手動</strong>: この画面から作成したもの、復元の直前に自動で作成したもの（自動削除しません）。</li>
-            <li>バックアップは店長の Google ドライブ（Shiftly のバックアップ用フォルダ）に保存されます。</li>
+            <li>バックアップは管理者の Google ドライブ（Shiftly のバックアップ用フォルダ）に保存されます。</li>
           </ul>
         </Panel>
         <Panel title="Google アカウントを失った場合に備えて">
           <p className="small">
-            バックアップは店長の Google アカウント内に保存されるため、アカウントにログインできなくなるとバックアップも利用できなくなります。別の Google アカウントへの共有や外部メディアへの保管など、アカウント外での保管手順は
+            バックアップは管理者の Google アカウント内に保存されるため、アカウントにログインできなくなるとバックアップも利用できなくなります。別の Google アカウントへの共有や外部メディアへの保管など、アカウント外での保管手順は
             <strong>運用ガイド（docs/operations-guide.md）</strong>を参照してください。
           </p>
           <p className="small muted" style={{ marginTop: 8 }}>Shiftly はバックアップを外部へ自動で転送しません。</p>

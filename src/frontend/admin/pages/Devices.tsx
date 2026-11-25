@@ -20,7 +20,7 @@ function defaultStaffUrl(): string {
   try {
     const u = new URL(location.href);
     if (!u.pathname.endsWith('preview.html')) return '';
-    u.searchParams.set('view', 'kiosk');
+    u.searchParams.set('view', 'staff');
     u.hash = '';
     return u.toString();
   } catch {

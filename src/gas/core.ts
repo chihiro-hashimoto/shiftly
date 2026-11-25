@@ -1,9 +1,9 @@
 /**
- * Shiftly-Kiosk（Core）GAS エントリ
- * - Web アプリ: 実行=デプロイユーザー（店長）、アクセス=全員（匿名）
- * - スタッフ用画面（HtmlService）と業務データへの唯一の更新経路（Core API）を持つ
- * - doPost: 店長用 Admin からの署名付きリクエスト／Admin との初回ペアリング／死活確認
- * - 公開関数: doGet, doPost, kioskApi, shiftlyAuthorize, shiftlyDailyJob（ビルド時にトップレベル関数として生成）
+ * Shiftly-Staff（Core）GAS エントリ（v1.2 までの名称は Shiftly-Kiosk）
+ * - Web アプリ: 実行=デプロイユーザー（Google 所有者）、アクセス=全員（匿名）
+ * - 店舗 iPad の画面（スタッフ画面・管理者モード）と業務データへの唯一の更新経路（Core API）を持つ
+ * - doPost: Google 所有者用 Admin からの署名付きリクエスト／Admin との初回ペアリング／死活確認
+ * - 公開関数: doGet, doPost, staffApi（互換: kioskApi）, shiftlyAuthorize, shiftlyDailyJob（ビルド時にトップレベル関数として生成）
  */
 import { handleRequest, verifyEnvelope, SECRET_KEYS, APP_VERSION, type Backend } from '../backend/index';
 import { createGasPlatform, provisionStorage, writeEnvironmentFile } from '../backend/gas/platform';
@@ -36,14 +36,14 @@ function json(o: unknown) {
 }
 
 export function doGet(_e: GoogleAppsScript.Events.DoGet) {
-  return HtmlService.createHtmlOutputFromFile('kiosk')
+  return HtmlService.createHtmlOutputFromFile('staff')
     .setTitle('Shiftly')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
 
-/** スタッフ画面からの API 呼び出し（google.script.run） */
-export function kioskApi(reqJson: string): string {
+/** 店舗 iPad の画面からの API 呼び出し（google.script.run） */
+export function staffApi(reqJson: string): string {
   let req: unknown;
   try {
     req = JSON.parse(reqJson);
@@ -51,6 +51,14 @@ export function kioskApi(reqJson: string): string {
     return JSON.stringify({ ok: false, error: { code: 'INVALID_INPUT', message: 'リクエスト形式が不正です' } });
   }
   return JSON.stringify(handleRequest(be(), req, null));
+}
+
+/**
+ * 互換: v1.2 までの関数名。更新の前から開いていた店舗端末の画面（旧 HTML）が更新後も動作するように残す
+ * （同じ処理。認証・認可は staffApi と同一。docs/decisions.md D-014）
+ */
+export function kioskApi(reqJson: string): string {
+  return staffApi(reqJson);
 }
 
 export function doPost(e: GoogleAppsScript.Events.DoPost) {
@@ -79,7 +87,7 @@ export function doPost(e: GoogleAppsScript.Events.DoPost) {
     }
     if (body.kind === 'pair') return json(pair(b, body.role === 'setup' ? 'setup' : 'admin', body.pairingCode, body.clientKey));
     if (body.kind === 'owner') {
-      // admin（店長画面）/ setup（更新関連のみ）の署名を検証
+      // admin（Google 所有者の管理画面）/ setup（更新関連のみ）の署名を検証
       const v = verifyEnvelope(b.p, body.envelope);
       return json(handleRequest(b, JSON.parse(v.body), 'owner'));
     }
@@ -114,12 +122,12 @@ function pair(b: Backend, role: 'admin' | 'setup', code: unknown, clientKey?: un
 }
 
 /**
- * 店長がスクリプトエディタで 1 回実行する初期化（権限承認を兼ねる）
+ * Google 所有者がスクリプトエディタで 1 回実行する初期化（権限承認を兼ねる）
  * フォルダ・DB 作成、秘密情報生成、初期データ、日次トリガー登録（すべて冪等）
  */
 export function shiftlyAuthorize() {
-  // 匿名の Web アプリ訪問者が google.script.run で呼ぶことを拒否（エディタから店長が実行した場合のみ）
-  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから店長が実行してください');
+  // 匿名の Web アプリ訪問者が google.script.run で呼ぶことを拒否（エディタから Google 所有者が実行した場合のみ）
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
   const b = be();
   const cfg = SHIFTLY_BOOTSTRAP;
   // ロックは入れ子にしない（handleRequest 内で再度ロックを取得するため）
@@ -139,11 +147,11 @@ export function shiftlyAuthorize() {
 }
 
 /**
- * 店長がスクリプトエディタで実行: 管理画面（Shiftly-Admin）との接続をリセットする（接続鍵を失った場合の復旧用）。
+ * Google 所有者がスクリプトエディタで実行: 管理画面（Shiftly-Admin）との接続をリセットする（接続鍵を失った場合の復旧用）。
  * 実行後、Shiftly-Admin のエディタで shiftlyAuthorize を実行すると再接続される
  */
 export function shiftlyResetAdminPairing() {
-  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから店長が実行してください');
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
   const p = be().p;
   p.withLock(10000, () => {
     p.secrets.delete(SECRET_KEYS.adminHmac);
@@ -152,7 +160,7 @@ export function shiftlyResetAdminPairing() {
   return { ok: true, message: '管理画面との接続をリセットしました。Shiftly-Admin のエディタで shiftlyAuthorize を実行してください' };
 }
 
-/** エディタ実行（店長本人）か。匿名アクセスの Web アプリ経由では getActiveUser が空になる */
+/** エディタ実行（Google 所有者本人）か。匿名アクセスの Web アプリ経由では getActiveUser が空になる */
 function isOwnerExecution(): boolean {
   try {
     const active = Session.getActiveUser().getEmail();

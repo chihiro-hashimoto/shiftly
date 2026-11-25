@@ -630,7 +630,7 @@ function ShiftHistory({ shiftId, nameOf }: { shiftId: string; nameOf: Map<string
             <div className="row small">
               <strong>{ACTION_LABEL[r.action] ?? r.action}</strong>
               <span className="num muted">{r.createdAt.slice(0, 16).replace('T', ' ')}</span>
-              <span className="muted">{r.actorId === 'owner' ? '店長' : `${nameOf.get(r.actorId) ?? 'スタッフ'}（委任）`}</span>
+              <span className="muted">{r.actorId === 'owner' ? '管理者' : `${nameOf.get(r.actorId) ?? 'スタッフ'}（委任）`}</span>
             </div>
             {r.action === 'update' && before && <div className="small muted">変更前: {before}</div>}
             {after && <div className="small">{r.action === 'update' ? '変更後: ' : ''}{after}</div>}

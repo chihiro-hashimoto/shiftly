@@ -1,7 +1,7 @@
 /**
  * プレビュー用: Shiftly Setup の画面確認のためのデモ（Google へは接続しない）
  * 実際の Installer を、メモリ上の擬似 Apps Script API・擬似 Core で動かす。
- * 「店長の操作が必要」な権限承認工程は、確認ボタンを押すと承認済みとして扱う（デモのみ）。
+ * 「管理者の操作が必要」な権限承認工程は、確認ボタンを押すと承認済みとして扱う（デモのみ）。
  */
 import { AppsScriptApi, type Http, type ScriptFile } from '../../setup/apps-script-api';
 import { Installer, type Registry, type ReleaseBundle, type SecretRegistry } from '../../setup/installer';

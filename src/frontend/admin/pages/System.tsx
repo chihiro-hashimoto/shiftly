@@ -1,6 +1,7 @@
-/** システム情報・整合性チェック・アップデート（店長向け） F35/F36/F37 */
+/** システム情報・整合性チェック・アップデート（管理者向け） F35/F36/F37 */
 import { useState } from 'react';
-import { ErrorBox, Loading, Modal, Panel, useAction, useClient, useLoad } from '../../components/ui';
+import { ErrorBox, Field, Loading, Modal, Panel, useAction, useClient, useLoad } from '../../components/ui';
+import { validateAdminPassword } from '../../../shared/crypto';
 
 /** 管理画面のグリッド内で横幅を超えないようにする（表は .table-wrap 内でスクロール） */
 const PAGE_STYLE = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 18, minWidth: 0 } as const;
@@ -75,6 +76,7 @@ export function SystemPage() {
               </div>
             </div>
           )}
+          <AdminPasswordPanel />
           <div className="kpis">
             <div className="kpi">
               <div className="label">アプリのバージョン</div>
@@ -218,7 +220,7 @@ function UpdateGuide() {
     <Panel title="アップデートの手順">
       <div className="stack" style={{ gap: 10 }}>
         <p className="small">
-          アップデートは、店長のパソコンから <strong>「Shiftly Setup」</strong>を開いて実行します。この画面から新しいバージョンを取得することはありません。
+          アップデートは、管理者のパソコンから <strong>「Shiftly Setup」</strong>を開いて実行します。この画面から新しいバージョンを取得することはありません。
         </p>
         <ol className="small" style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 4 }}>
           <li><strong>更新前バックアップ</strong>: メンテナンス状態にしてスタッフの書き込みを止め、現在のデータをバックアップします（失敗した場合は更新を中止）。</li>
@@ -228,7 +230,7 @@ function UpdateGuide() {
         </ol>
         <ul className="small" style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 4 }}>
           <li>失敗した場合は、Shiftly Setup から以前のバージョンへ<strong>ロールバック</strong>できます。データは更新前バックアップ（「バックアップ」ページの「更新前」）から復元できます。</li>
-          <li>列の削除などデータが失われる可能性のある<strong>破壊的な DB 変更は、店長の承認なしには実行しません</strong>。</li>
+          <li>列の削除などデータが失われる可能性のある<strong>破壊的な DB 変更は、管理者の承認なしには実行しません</strong>。</li>
           <li>営業時間外など、スタッフが打刻しない時間帯に実行してください。</li>
         </ul>
       </div>
@@ -333,6 +335,74 @@ function ResumeUpdate({ onChanged }: { onChanged: () => void }) {
           )}
         </div>
       </div>
+    </Panel>
+  );
+}
+
+// ------------------------------------------------------------------ 管理者パスワード（v1.3。Google 所有者のみ設定・再設定）
+function AdminPasswordPanel() {
+  const client = useClient();
+  const st = useLoad(() => client.call<{ configured: boolean; setBy: string | null; passwordChangedAt: string | null; locked: boolean; lockedUntil: string | null; activeSessions: number; idleTimeoutSec: number }>('adminAuth.status'), []);
+  const { busy, run } = useAction();
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const err = pw ? validateAdminPassword(pw) : null;
+  const d = st.data;
+  const submit = async () => {
+    const v = pw;
+    setPw('');
+    setPw2('');
+    const r = await run(() => client.call('adminAuth.setPassword', { password: v }), d?.configured ? '管理者パスワードを再設定しました' : '管理者パスワードを設定しました');
+    if (r) st.reload();
+  };
+  return (
+    <Panel title="管理者パスワード（店舗 iPad の「管理者ページ」）">
+      {st.loading && !d && <Loading />}
+      {st.error && <ErrorBox message={st.error} onRetry={st.reload} />}
+      {d && (
+        <div className="stack" style={{ gap: 10 }}>
+          <div className="row">
+            {d.configured ? <span className="badge badge-board">設定済み</span> : <span className="badge badge-warn">未設定（店舗 iPad から管理者ページに入れません）</span>}
+            {d.passwordChangedAt && <span className="small muted">最終変更 {d.passwordChangedAt.slice(0, 16).replace('T', ' ')}（{d.setBy === 'owner' ? 'Google 所有者' : '管理者'}）</span>}
+            {d.locked && <span className="badge badge-bull">入力失敗によりロック中</span>}
+            <span className="small muted">有効な管理者モード {d.activeSessions} 件</span>
+          </div>
+          <form
+            className="form-grid"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!err && pw && pw === pw2) void submit();
+            }}
+          >
+            <Field label={d.configured ? '新しいパスワード（再設定）' : '管理者パスワード'} hint="12文字以上・英大文字/英小文字/数字/記号のうち3種類以上">
+              <input className="input" type="password" autoComplete="new-password" maxLength={128} value={pw} onChange={(e) => setPw(e.target.value)} />
+            </Field>
+            <Field label="確認のためもう一度">
+              <input className="input" type="password" autoComplete="new-password" maxLength={128} value={pw2} onChange={(e) => setPw2(e.target.value)} />
+            </Field>
+            <div className="row" style={{ gridColumn: '1/-1' }}>
+              <button type="submit" className="btn btn-primary" disabled={busy || !pw || !!err || pw !== pw2}>
+                {d.configured ? '再設定' : '設定'}
+              </button>
+              {d.locked && (
+                <button type="button" className="btn" disabled={busy} onClick={async () => (await run(() => client.call('adminAuth.unlock'), 'ロックを解除しました')) && st.reload()}>
+                  ロックを解除
+                </button>
+              )}
+              {d.activeSessions > 0 && (
+                <button type="button" className="btn" disabled={busy} onClick={async () => (await run(() => client.call('adminAuth.revokeSessions'), 'すべての管理者モードを終了しました')) && st.reload()}>
+                  すべての管理者モードを終了
+                </button>
+              )}
+            </div>
+          </form>
+          {err && <span className="small" style={{ color: 'var(--bull)' }}>{err}</span>}
+          {!err && pw2 && pw !== pw2 && <span className="small" style={{ color: 'var(--bull)' }}>確認用のパスワードが一致しません</span>}
+          <p className="small muted">
+            店舗 iPad の右上「管理者ページ」から入るためのパスワードです（スタッフの PIN とは別）。設定・再設定は Google 所有者のこの画面からのみ行えます。再設定すると、すべての管理者モードが終了します。システムの更新・復旧は、引き続き Google 所有者の操作が必要です。
+          </p>
+        </div>
+      )}
     </Panel>
   );
 }

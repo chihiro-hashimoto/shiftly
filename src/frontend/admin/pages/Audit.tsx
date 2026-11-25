@@ -176,7 +176,7 @@ export function AuditPage() {
             <span>実行者</span>
             <select className="input" value={actor} onChange={(e) => { setActor(e.target.value as '' | AuditLog['actorKind']); resetPaging(); }}>
               <option value="">すべて</option>
-              <option value="owner">店長</option>
+              <option value="owner">管理者</option>
               <option value="staff">スタッフ</option>
               <option value="system">システム</option>
             </select>
@@ -245,7 +245,7 @@ export function AuditPage() {
 }
 
 function Actor({ r, names }: { r: AuditLog; names: Map<string, string> }) {
-  if (r.actorKind === 'owner') return <span className="badge badge-board">店長</span>;
+  if (r.actorKind === 'owner') return <span className="badge badge-board">管理者</span>;
   if (r.actorKind === 'system') return <span className="badge">システム</span>;
   const name = r.actorId ? names.get(r.actorId) : undefined;
   return (

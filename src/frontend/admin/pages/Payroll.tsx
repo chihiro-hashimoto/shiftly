@@ -86,7 +86,7 @@ table.pr-main > tbody > tr > td:first-child{white-space:nowrap}
 // ------------------------------------------------------------------ ページ
 export function PayrollPage() {
   const client = useClient();
-  const isKiosk = client.transport.mode === 'kiosk';
+  const isSharedDevice = client.transport.mode === 'staff';
   const periods = useLoad(() => client.call<PeriodsResp>('payroll.periods'), []);
   const [selected, setSelected] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
@@ -156,7 +156,7 @@ export function PayrollPage() {
           </div>
         )}
       </Panel>
-      {current && <PeriodWork key={current.id} period={current} isKiosk={isKiosk} onPeriodChanged={periods.reload} />}
+      {current && <PeriodWork key={current.id} period={current} isSharedDevice={isSharedDevice} onPeriodChanged={periods.reload} />}
     </div>
   );
 }
@@ -176,7 +176,7 @@ function Steps({ status }: { status: string }) {
 }
 
 // ------------------------------------------------------------------ 期間ごとの作業
-function PeriodWork({ period, isKiosk, onPeriodChanged }: { period: PayrollPeriod; isKiosk: boolean; onPeriodChanged: () => void }) {
+function PeriodWork({ period, isSharedDevice, onPeriodChanged }: { period: PayrollPeriod; isSharedDevice: boolean; onPeriodChanged: () => void }) {
   const client = useClient();
   const [started, setStarted] = useState(period.status !== 'uncomputed');
   const comp = useLoad(() => (started ? client.call<ComputeResp>('payroll.compute', { periodId: period.id }) : Promise.resolve(null)), [period.id, started]);
@@ -477,8 +477,8 @@ function PeriodWork({ period, isKiosk, onPeriodChanged }: { period: PayrollPerio
                 </div>
                 {anyIssueCode('PAYROLL_RULES_UNCONFIRMED') && (
                   <div className="row" style={{ marginTop: 10 }}>
-                    {isKiosk ? (
-                      <span className="small">店舗の給与規定の確認は店長が管理画面（店舗設定）で行います。</span>
+                    {isSharedDevice ? (
+                      <span className="small">店舗の給与規定の確認は管理者が管理画面（店舗設定）で行います。</span>
                     ) : (
                       <button className="btn btn-sm" onClick={() => setRulesOpen(true)}>
                         店舗の給与規定を確認する
@@ -858,7 +858,7 @@ function AdjustmentModal({ emp, periodId, onClose }: { emp: EmpResult; periodId:
     <Modal title={`${emp.displayName}さんの給与調整`} onClose={onClose} wide footer={<button className="btn" onClick={onClose}>閉じる（再計算）</button>}>
       <div className="stack" style={{ gap: 14 }}>
         <div className="callout small">
-          欠勤日数・遅刻早退の分数は<strong>店長が承認した分のみ</strong>入力してください。シフトとの差（遅刻・早退・欠勤）から自動では控除しません。月給制で控除規定が未設定の場合は確定できません。時給制では不就労時間はもともと支給されないため、欠勤・遅刻早退の調整は適用されません。
+          欠勤日数・遅刻早退の分数は<strong>管理者が承認した分のみ</strong>入力してください。シフトとの差（遅刻・早退・欠勤）から自動では控除しません。月給制で控除規定が未設定の場合は確定できません。時給制では不就労時間はもともと支給されないため、欠勤・遅刻早退の調整は適用されません。
         </div>
         <section>
           <h3 style={{ margin: '0 0 6px' }}>この期間の調整</h3>
@@ -1053,7 +1053,7 @@ function CorrectionModal({ emp, periodId, onClose, onDone }: { emp: EmpResult; p
   );
 }
 
-// ------------------------------------------------------------------ 店舗の給与規定の確認（店長のみ）
+// ------------------------------------------------------------------ 店舗の給与規定の確認（管理者のみ）
 interface SettingsLite {
   workingTimeSystem: string;
   weekStartDay: number | null;

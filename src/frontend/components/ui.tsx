@@ -213,7 +213,7 @@ export function timeOf(iso: string | null): string {
   return iso ? iso.slice(11, 16) : '—';
 }
 
-/** ブラウザでのファイル保存（店長端末のみ使用） */
+/** ブラウザでのファイル保存（管理者端末のみ使用） */
 export function downloadBase64(base64: string, fileName: string, mime: string) {
   const bin = atob(base64);
   const bytes = new Uint8Array(bin.length);

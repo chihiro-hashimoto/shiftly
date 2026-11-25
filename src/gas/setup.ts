@@ -2,10 +2,10 @@
  * Shiftly Setup（自動インストーラー）GAS エントリ
  *
  * 配信方式（docs/installer-guide.md）:
- *  A) 自己ホスト: 店長の Google アカウントに Setup プロジェクトを 1 つ置き（clasp またはファイル 1 つの貼り付け）、
+ *  A) 自己ホスト: 管理者の Google アカウントに Setup プロジェクトを 1 つ置き（clasp またはファイル 1 つの貼り付け）、
  *     アクセス=自分のみ・実行=自分 でデプロイ
  *  B) ホスト型: 配布者のアカウントで 実行=アクセスしたユーザー・アクセス=Google アカウントを持つ全員 でデプロイ
- * いずれも Setup のコードは店長本人の権限で動作し、店長のアカウント内に GAS・Drive・DB を作成する。
+ * いずれも Setup のコードは管理者本人の権限で動作し、管理者のアカウント内に GAS・Drive・DB を作成する。
  * Apps Script API の呼び出しには、Setup に紐づく標準 Cloud プロジェクトで API を有効化しておく必要がある。
  *
  * 秘密情報（ペアリングコード・Setup 鍵）は UserProperties のみに保存し、Drive のレジストリファイルには書かない。
@@ -45,7 +45,7 @@ function postJson(url: string, body: unknown) {
   try {
     return JSON.parse(res.getContentText());
   } catch {
-    return { ok: false, error: { code: 'CORE_UNAVAILABLE', message: 'Shiftly-Kiosk に接続できません（権限承認が未完了の可能性）' } };
+    return { ok: false, error: { code: 'CORE_UNAVAILABLE', message: 'Shiftly-Staff（旧名称 Shiftly-Kiosk）に接続できません（権限承認が未完了の可能性）' } };
   }
 }
 

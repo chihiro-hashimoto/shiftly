@@ -1,6 +1,6 @@
 /**
- * Shiftly-Admin（店長用）GAS エントリ
- * - Web アプリ: 実行=デプロイユーザー（店長）、アクセス=自分のみ → Google が店長本人を認証
+ * Shiftly-Admin（管理者用）GAS エントリ
+ * - Web アプリ: 実行=デプロイユーザー（管理者）、アクセス=自分のみ → Google が管理者本人を認証
  * - 業務データには直接アクセスせず、Core へ HMAC 署名付きリクエストを転送（更新経路を Core に一本化）
  * - ブラウザに OAuth トークン・HMAC 鍵を渡さない
  */
@@ -64,7 +64,7 @@ function ensurePaired(): string {
   if (!key)
     throw new Error(
       r.error?.code === 'CONFLICT'
-        ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Kiosk のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
+        ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Staff（旧名称 Shiftly-Kiosk）のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
         : `Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`,
     );
   props.setProperty(KEY_PROP, key);
@@ -72,7 +72,7 @@ function ensurePaired(): string {
   return key;
 }
 
-/** 店長画面からの API 呼び出し（google.script.run） */
+/** 管理者画面からの API 呼び出し（google.script.run） */
 export function adminApi(reqJson: string): string {
   try {
     const parsed = JSON.parse(reqJson) as { op?: unknown; args?: unknown; requestId?: unknown };
@@ -86,7 +86,7 @@ export function adminApi(reqJson: string): string {
   }
 }
 
-/** 店長の Google アカウント（表示・取り違え確認用。他者へは送らない） */
+/** 管理者の Google アカウント（表示・取り違え確認用。他者へは送らない） */
 export function adminWhoAmI(): string {
   return JSON.stringify({ email: Session.getEffectiveUser().getEmail(), envId: SHIFTLY_ADMIN_BOOTSTRAP.envId });
 }

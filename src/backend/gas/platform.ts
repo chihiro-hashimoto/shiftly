@@ -2,7 +2,7 @@
  * Google Apps Script 実行環境の Platform 実装
  *
  * スコープ方針（appsscript.json の oauthScopes で明示）:
- * - drive.file: Shiftly 自身が作成したファイル・フォルダのみ（店長の他の Drive ファイルにはアクセスしない）
+ * - drive.file: Shiftly 自身が作成したファイル・フォルダのみ（管理者の他の Drive ファイルにはアクセスしない）
  * - script.external_request: Drive のファイル本体取得（REST）等
  * - script.scriptapp: 日次トリガーの登録
  * - userinfo.email: 所有者アカウントの確認（取り違え防止）

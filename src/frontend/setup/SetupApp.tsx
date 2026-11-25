@@ -75,10 +75,10 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
       </header>
       <main className="s-main">
         <section className="s-intro">
-          <h1>{st?.complete ? 'Shiftly の準備ができました' : 'Shiftly を店長の Google アカウントに準備します'}</h1>
+          <h1>{st?.complete ? 'Shiftly の準備ができました' : 'Shiftly を管理者の Google アカウントに準備します'}</h1>
           {!st?.complete && (
             <p className="muted">
-              Shiftly 用のフォルダ・データベース（スプレッドシート）・アプリ本体を、店長の Google ドライブ内に作成します。Shiftly が作成したファイル以外にはアクセスしません。途中で画面を閉じても、次回この画面を開くと続きから再開できます。
+              Shiftly 用のフォルダ・データベース（スプレッドシート）・アプリ本体を、管理者の Google ドライブ内に作成します。Shiftly が作成したファイル以外にはアクセスしません。途中で画面を閉じても、次回この画面を開くと続きから再開できます。
             </p>
           )}
           {st?.ownerEmail && <p className="small muted">Google アカウント: {st.ownerEmail}　／　環境ID: {st.envId}</p>}
@@ -95,7 +95,7 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                   <span className="s-mark" aria-hidden="true">{s.status === 'done' ? '✓' : s.status === 'error' ? '!' : ''}</span>
                   <span>
                     {s.label}
-                    {s.manual && <span className="badge badge-brass" style={{ marginLeft: 6 }}>店長の操作が必要</span>}
+                    {s.manual && <span className="badge badge-brass" style={{ marginLeft: 6 }}>管理者の操作が必要</span>}
                     {s.status === 'error' && s.message && <span className="s-msg">{s.message}</span>}
                   </span>
                 </li>
@@ -119,7 +119,7 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                   )}
                   {res?.waitingFor && (
                     <div className="callout callout-board">
-                      <strong>店長の操作が必要です</strong>
+                      <strong>管理者の操作が必要です</strong>
                       <ol className="small" style={{ margin: '6px 0 0', paddingLeft: 20 }}>
                         {res.waitingFor.instructions.map((t) => (
                           <li key={t}>{t}</li>
@@ -162,8 +162,8 @@ function Complete({ st }: { st: PublicState }) {
       <div className="callout callout-board">セットアップが完了しました（バージョン {st.installedVersion ?? '—'}）。</div>
       <div className="s-urls">
         <div>
-          <h3>店長用（管理画面）</h3>
-          <p className="small muted">店長の Google アカウントでのみ開けます。ブックマークしてください。店舗の共用 iPad では開かないでください。</p>
+          <h3>管理者用（管理画面）</h3>
+          <p className="small muted">管理者の Google アカウントでのみ開けます。ブックマークしてください。店舗の共用 iPad では開かないでください。</p>
           {st.adminUrl && (
             <a className="btn btn-primary" href={st.adminUrl} target="_blank" rel="noopener noreferrer">
               管理画面を開く
@@ -173,8 +173,8 @@ function Complete({ st }: { st: PublicState }) {
         <div>
           <h3>スタッフ用（店舗 iPad）</h3>
           <p className="small muted">iPad の Safari でこの QR を読み取り、ホーム画面に追加してください。初回は管理画面「店舗端末」で発行する登録コードを入力します。</p>
-          {st.kioskUrl && <QrCode text={st.kioskUrl} label="スタッフ用URLのQRコード" />}
-          <p className="small" style={{ wordBreak: 'break-all' }}>{st.kioskUrl}</p>
+          {st.staffUrl && <QrCode text={st.staffUrl} label="スタッフ用URLのQRコード" />}
+          <p className="small" style={{ wordBreak: 'break-all' }}>{st.staffUrl}</p>
         </div>
       </div>
     </div>

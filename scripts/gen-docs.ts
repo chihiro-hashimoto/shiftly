@@ -16,14 +16,18 @@ for (const t of TABLES) {
   for (const [c, ty] of t.columns) db += `| \`${c}\` | ${typeJa[ty] ?? ty} |\n`;
   db += '\n';
 }
-db += `## 業務データ以外の保存場所\n\n| 情報 | 保存場所 | 備考 |\n|---|---|---|\n| PIN の pepper、Admin/Setup との HMAC 鍵、DB ファイルID、フォルダID | Core の Script Properties | DB・バックアップに含めない |\n| 端末トークン | iPad の localStorage（平文はここのみ）／ DB には SHA-256 | 端末認証情報のみ永続保存を許可 |\n| セッションの最終操作時刻・ノンス・試行回数 | Core の CacheService | 消失時は安全側（失効）に倒す |\n| Setup の進捗・リソースID | Setup の UserProperties ＋ 店長 Drive のレジストリ JSON | ペアリングコード・Setup 鍵は UserProperties のみ |\n| 給与明細 PDF・出力ファイル・バックアップ | 店長の Drive（Shiftly/02〜05 フォルダ） | drive.file スコープ（Shiftly 作成ファイルのみ） |\n`;
+db += `## 業務データ以外の保存場所\n\n| 情報 | 保存場所 | 備考 |\n|---|---|---|\n| PIN・管理者パスワードの pepper、Admin/Setup との HMAC 鍵、DB ファイルID、フォルダID | Core の Script Properties | DB・バックアップに含めない |\n| 端末トークン | iPad の localStorage（平文はここのみ）／ DB には SHA-256 | 端末認証情報のみ永続保存を許可 |\n| スタッフのセッショントークン・管理者セッショントークン | iPad の画面のメモリ上のみ（平文）／ DB には SHA-256 | ブラウザに永続保存しない。再読み込みで破棄 |\n| セッション（スタッフ・管理者）の最終操作時刻・ノンス・試行回数 | Core の CacheService | 消失時は安全側（失効）に倒す |\n| Setup の進捗・リソースID | Setup の UserProperties ＋ 管理者 Drive のレジストリ JSON | ペアリングコード・Setup 鍵は UserProperties のみ |\n| 給与明細 PDF・出力ファイル・バックアップ | 管理者の Drive（Shiftly/02〜05 フォルダ） | drive.file スコープ（Shiftly 作成ファイルのみ） |\n`;
 writeFileSync('docs/database-schema.md', db);
 
-const authJa: Record<string, string> = { public: '公開（未認証可）', device: '登録端末', session: 'スタッフ本人（端末＋PIN）', owner: '店長専用', staff_or_owner: '店長／委任スタッフ' };
+const authJa: Record<string, string> = { public: '公開（未認証可）', device: '登録端末', session: 'スタッフ本人（端末＋氏名選択／PIN）', owner: 'Google 所有者', staff_or_owner: '管理者（Google 所有者・管理者モード）／委任スタッフ', admin: '管理者モード（管理者パスワード）のみ' };
 let pm = `# 権限マトリクス\n\n> \`npm run docs\` で src/shared/permissions.ts と登録済み API 操作から自動生成。手で編集しないでください。\n\n## スタッフ個別権限\n\n| キー | 名称 | 区分 | 機密（追加認証） | 初期値 |\n|---|---|---|---|---|\n`;
 for (const p of PERMISSIONS) pm += `| \`${p.key}\` | ${p.label} | ${p.group} | ${p.sensitive ? '○' : ''} | ${p.defaultForStaff ? '付与' : ''} |\n`;
-pm += `\n店長は全権限を固定で保持（削除不可）。**権限管理・PIN/管理用パスコード設定・端末登録・バックアップ復元・店舗設定・システム更新は店長専用**で、スタッフへは付与できません。\n\n## API 操作ごとの認可（サーバー側で毎回検証）\n\n| 操作 | 認証 | 必要な権限（いずれか） | スタッフの追加認証 | 更新系 |\n|---|---|---|---|---|\n`;
-for (const o of listOps().sort((a, b) => a.name.localeCompare(b.name))) pm += `| \`${o.name}\` | ${authJa[o.auth]} | ${(o.perms ?? []).map((x) => `\`${x}\``).join(', ')} | ${o.sensitive ? '必要' : ''} | ${o.mutating ? '○' : ''} |\n`;
-pm += `\n### ハンドラ内の追加制約（自己操作・昇格の防止）\n\n- スタッフは自分自身の勤怠修正・給与条件変更・雇用条件変更・有給付与/取得/調整・給与確定/訂正・退職処理を行えない\n- 他者の給与明細の閲覧は \`payslip_view_others\` ＋追加認証（5分間）が必要。閲覧は監査ログに記録\n- 人件費分析: \`payroll_view_all\` がない場合、スタッフ別内訳・1名のみが勤務した日の金額・時間帯別金額を返さない\n- 出力: スタッフ端末（共用 iPad）にはファイル本体を返さず、店長の Drive に保存のみ\n- 権限変更は既存セッションにも次の操作から反映（毎回 DB から再読込）\n`;
+pm += `\n管理者（Google 所有者、および店舗 iPad で管理者パスワードにより認証した管理者モード）は全権限を固定で保持（削除不可）。**権限管理・PIN/管理用パスコード設定・端末登録・バックアップ復元・店舗設定は管理者専用**で、スタッフへは付与できません。**システムの構築・更新・移行・メンテナンス切替、管理者パスワードの初期設定・再設定は Google 所有者専用**で、管理者モードからも実行できません。\n\n## 管理者・スタッフの区分（v1.3）\n\n| 区分 | 認証 | できること |\n|---|---|---|\n| Google 所有者 | Google アカウント（Shiftly-Admin・Setup・エディタ） | すべて（構築・更新・復旧・管理者パスワードの設定/再設定を含む） |\n| 管理者モード | 登録済み端末＋管理者パスワード（無操作5分で終了） | 「管理者モード」列が ○ の操作。「再認証」が ○ の操作は直近5分以内のパスワード再入力が必要 |\n| スタッフ（本人確認済み） | 登録済み端末＋氏名＋PIN | 個別権限の範囲 |\n| スタッフ（本人未確認・PIN 未設定） | 登録済み端末＋氏名 | 「PIN なし」列が ○ の操作のみ（打刻・公開シフト・承認待ちとなる申告） |\n\n## API 操作ごとの認可（サーバー側で毎回検証）\n\n| 操作 | 認証 | 必要な権限（いずれか） | スタッフの追加認証 | 管理者モード | 再認証 | PIN なし | 更新系 |\n|---|---|---|---|---|---|---|---|\n`;
+for (const o of listOps().sort((a, b) => a.name.localeCompare(b.name))) {
+  const adminOk = o.auth === 'admin' || o.auth === 'staff_or_owner' || (o.auth === 'owner' && !!o.adminAllowed);
+  pm += `| \`${o.name}\`${o.name.startsWith('kiosk.') ? '（互換名: v1.2 までの名称。staff.* と同じ処理）' : ''} | ${authJa[o.auth]} | ${(o.perms ?? []).map((x) => `\`${x}\``).join(', ')} | ${o.sensitive ? '必要' : ''} | ${adminOk ? '○' : ''} | ${o.reauth ? '○' : ''} | ${o.allowUnverified ? '○' : ''} | ${o.mutating ? '○' : ''} |\n`;
+}
+pm += `\n### ハンドラ内の追加制約（自己操作・昇格の防止）\n\n- スタッフは自分自身の勤怠修正（管理者向けの修正）・給与条件変更・雇用条件変更・有給付与/取得/調整・給与確定/訂正・退職処理、自分の早出残業申請・本人修正・休憩申告の確認（承認）を行えない
+- 本人による勤怠修正・休憩申告・早出残業申請（v1.3）は、本人の勤務からサーバー側で対象を特定する（他人の勤務は指定できない）。本人未確認（PIN 未設定）の申告・確定済み期間の修正は承認待ち（未反映）\n- 他者の給与明細の閲覧は \`payslip_view_others\` ＋追加認証（5分間）が必要。閲覧は監査ログに記録\n- 人件費分析: \`payroll_view_all\` がない場合、スタッフ別内訳・1名のみが勤務した日の金額・時間帯別金額を返さない\n- 出力: 共用 iPad（スタッフ・管理者モード）にはファイル本体を返さず、Google 所有者の Drive に保存のみ\n- 権限変更は既存セッションにも次の操作から反映（毎回 DB から再読込）\n`;
 writeFileSync('docs/permission-matrix.md', pm);
 console.log('docs generated');

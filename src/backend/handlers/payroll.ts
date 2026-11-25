@@ -364,7 +364,7 @@ defineOps([
     auth: 'owner',
     mutating: false,
     handler: (ctx, raw) => {
-      // 店長端末からの印刷・ダウンロード用（共用 iPad からは呼べない）
+      // 管理者端末からの印刷・ダウンロード用（共用 iPad からは呼べない）
       const slip = ctx.uow.get<PaySlip>('pay_slips', v.id(v.obj(raw), 'payslipId'));
       if (!slip) throw E.notFound('給与明細');
       const data = payslipData(ctx, slip);

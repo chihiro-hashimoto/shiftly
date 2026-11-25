@@ -248,13 +248,18 @@ type Editing =
   | { kind: 'allowance'; row: Allowance | null }
   | { kind: 'employment'; row: EmploymentHistory | null };
 
-export function PayConditionsPage() {
+/**
+ * 給与条件（時給ルール・月給設定・手当・交通費・雇用条件）
+ * v1.3: 独立したナビゲーションは廃止し、「スタッフ・権限」の各スタッフの「時給ルール」「月給設定」から対象スタッフを固定して開く
+ */
+export function PayConditionsPage({ fixedEmployeeId }: { fixedEmployeeId?: string } = {}) {
   const client = useClient();
   const today = todayJst();
-  const [includeRetired, setIncludeRetired] = useState(false);
+  const [includeRetired, setIncludeRetired] = useState(!!fixedEmployeeId);
   const emps = useLoad(() => client.call<EmpLite[]>('employees.list', { includeRetired }), [includeRetired]);
-  const [picked, setPicked] = useState('');
-  const empId = picked && emps.data?.some((e) => e.id === picked) ? picked : (emps.data?.[0]?.id ?? '');
+  const [picked, setPicked] = useState(fixedEmployeeId ?? '');
+  // 対象スタッフを固定した場合は、一覧に見つからなくても別のスタッフに切り替えない（取り違え防止）
+  const empId = fixedEmployeeId ? (emps.data?.some((e) => e.id === fixedEmployeeId) ? fixedEmployeeId : '') : picked && emps.data?.some((e) => e.id === picked) ? picked : (emps.data?.[0]?.id ?? '');
   const emp = emps.data?.find((e) => e.id === empId) ?? null;
   const conf = useLoad(() => (empId ? client.call<Conf>('payconf.get', { employeeId: empId }) : Promise.resolve(null)), [empId]);
   const empl = useLoad(() => (empId ? client.call<EmploymentHistory[]>('employment.list', { employeeId: empId }) : Promise.resolve(null)), [empId]);
@@ -277,6 +282,16 @@ export function PayConditionsPage() {
     <div className="pc-page" style={{ display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 }}>
       <style>{CSS}</style>
       <Panel>
+        {fixedEmployeeId ? (
+          <div className="pc-picker" data-testid="pc-target">
+            <div>
+              <div className="small muted">対象スタッフ</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>
+                {emp ? `${emp.displayName}（${emp.payType === 'monthly' ? '月給制' : '時給制'}）` : emps.loading ? '読み込み中…' : '対象のスタッフが見つかりません'}
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className="pc-picker">
           <Field label="スタッフ">
             <select className="input" value={empId} onChange={(e) => setPicked(e.target.value)} disabled={!emps.data?.length}>
@@ -292,6 +307,7 @@ export function PayConditionsPage() {
             <span>退職者も表示</span>
           </label>
         </div>
+        )}
         {emps.loading && !emps.data && <Loading />}
         {emps.error && <ErrorBox message={emps.error} onRetry={emps.reload} />}
         {emps.data && emps.data.length === 0 && <Empty>スタッフが登録されていません。「スタッフ・権限」で登録してください。</Empty>}
@@ -681,7 +697,7 @@ function SalarySection({ rules, today, onEdit, note }: { rules: SalaryRule[]; to
         </div>
       )}
       <p className="small muted" style={{ padding: '10px 18px 14px' }}>
-        時間単価＝（月給＋割増算定基礎に算入する手当）÷1か月平均所定労働時間。法定時間外・休日労働は月給に含まれないため、100%部分と割増を別途支給します。欠勤・遅刻早退の控除は、給与計算で店長が承認した調整のみが対象です（シフトから自動では控除しません）。
+        時間単価＝（月給＋割増算定基礎に算入する手当）÷1か月平均所定労働時間。法定時間外・休日労働は月給に含まれないため、100%部分と割増を別途支給します。欠勤・遅刻早退の控除は、給与計算で管理者が承認した調整のみが対象です（シフトから自動では控除しません）。
       </p>
     </Panel>
   );

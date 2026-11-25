@@ -39,7 +39,7 @@ export interface MinimumWageEntry {
   effectiveFrom: LocalDate;
   hourly: number; // 円
   label: string; // 例: '東京都 地域別最低賃金'
-  sourceNote: string; // 根拠（店長が確認した公式ページ等）
+  sourceNote: string; // 根拠（管理者が確認した公式ページ等）
 }
 
 export interface StoreSettings extends RowMeta {
@@ -54,7 +54,7 @@ export interface StoreSettings extends RowMeta {
   weekStartDay: number | null;
   /** 法定休日の曜日（0=日）。null は未設定 */
   statutoryHolidayWeekday: number | null;
-  /** 週44時間特例の適用を店長が確認済みか（業種・常時10人未満の要件） */
+  /** 週44時間特例の適用を管理者が確認済みか（業種・常時10人未満の要件） */
   weekly44Confirmed: boolean;
   /** 36協定の締結・届出状況（記録のみ。計算は実労働時間に基づく） */
   agreement36: 'unset' | 'concluded' | 'not_concluded';
@@ -281,7 +281,7 @@ export interface SalaryRule extends RowMeta {
   absenceDeduction: { enabled: boolean; divisorDays: number | null } | null;
   /** 遅刻早退控除の有無 */
   lateEarlyDeduction: { enabled: boolean } | null;
-  confirmed: boolean; // 店長が給与規定と照合済みか
+  confirmed: boolean; // 管理者が給与規定と照合済みか
   note: string;
 }
 
@@ -298,7 +298,7 @@ export interface TransportRule extends RowMeta {
   note: string;
 }
 
-/** 給与調整（欠勤・遅刻早退控除は店長が承認したもののみ。自動反映しない） */
+/** 給与調整（欠勤・遅刻早退控除は管理者が承認したもののみ。自動反映しない） */
 export interface PayrollAdjustment extends RowMeta {
   employeeId: Id;
   periodId: Id;

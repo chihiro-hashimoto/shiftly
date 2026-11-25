@@ -166,7 +166,7 @@ defineOps([
       let skippedOwn = 0;
       const self = isOwner(ctx) ? null : staff(ctx).employeeId;
       for (const s of ctx.uow.list<Shift>('shifts').filter((x) => x.date >= from && x.date <= to && x.status === 'draft')) {
-        // スタッフは自分のシフトを公開できない（店長が公開）
+        // スタッフは自分のシフトを公開できない（管理者が公開）
         if (self && s.employeeId === self) {
           skippedOwn++;
           continue;

@@ -1,7 +1,7 @@
 /**
  * DB マイグレーション（F35）
  * - 原則は「列・テーブルの追加のみ」（後方互換）。読み取りはヘッダー不足を既定値で補う。
- * - destructive: true のマイグレーションは店長の明示承認（approveDestructive）なしに実行しない。
+ * - destructive: true のマイグレーションは管理者の明示承認（approveDestructive）なしに実行しない。
  * - GAS コードのロールバックと DB 構造のロールバックは別。DB は「更新前バックアップからの復元」で戻す。
  */
 import type { Ctx } from './context';

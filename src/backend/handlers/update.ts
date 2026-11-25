@@ -68,13 +68,13 @@ defineOps([
       if (sv !== SCHEMA_VERSION)
         throw new ApiError('UPDATE_INTEGRITY_FAILED', `DB のスキーマ（${sv}）とアプリ（${SCHEMA_VERSION}）が一致しないため、更新を完了できません（メンテナンスを継続します）`, 409);
       const check = integrityCheck(ctx);
-      // 整合性に問題がある場合はメンテナンスを継続し、店長が内容を確認して明示的に承認した場合のみ完了する
+      // 整合性に問題がある場合はメンテナンスを継続し、管理者が内容を確認して明示的に承認した場合のみ完了する
       if (!check.ok && !accept)
         throw new ApiError('UPDATE_INTEGRITY_FAILED', `整合性チェックで問題が見つかったため、更新を完了していません（メンテナンスを継続します）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
       setMeta(ctx, 'appVersion', APP_VERSION);
       setMeta(ctx, 'pendingUpdate', '');
       setMeta(ctx, 'maintenance', 'off');
-      audit(ctx, 'update.finish', 'system', null, `更新完了 ${APP_VERSION} 整合性=${check.ok}${!check.ok ? '（店長が問題を確認して完了）' : ''}`);
+      audit(ctx, 'update.finish', 'system', null, `更新完了 ${APP_VERSION} 整合性=${check.ok}${!check.ok ? '（管理者が問題を確認して完了）' : ''}`);
       return { appVersion: APP_VERSION, integrity: check };
     },
   },
@@ -84,7 +84,7 @@ defineOps([
     mutating: true,
     allowInMaintenance: true,
     handler: (ctx) => {
-      // Shiftly Setup の更新用接続（鍵）を無効化し、再ペアリングを可能にする（店長専用）
+      // Shiftly Setup の更新用接続（鍵）を無効化し、再ペアリングを可能にする（管理者専用）
       ctx.p.secrets.delete('SHIFTLY_SETUP_HMAC_KEY');
       ctx.p.secrets.delete('SHIFTLY_SETUP_PAIRED');
       audit(ctx, 'update.reset_setup_pairing', 'system', null, '更新用接続のリセット');
