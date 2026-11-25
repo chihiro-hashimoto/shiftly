@@ -706,6 +706,13 @@ interface BreakDecl {
   kind: 'as_scheduled' | 'not_taken' | 'custom';
   intervals?: Array<{ start: string; end: string }>;
   reason?: string;
+  /** 「予定どおり」のとき、画面に表示した予定休憩（サーバーで現在の予定休憩と照合する） */
+  expectedPlanned?: { start: string | null; end: string | null; minutes: number } | null;
+}
+
+/** 画面に表示した予定休憩（サーバーとの照合用。分単位） */
+function plannedView(pb: { minutes: number; start: string | null; end: string | null } | null) {
+  return pb ? { start: pb.start ? pb.start.slice(0, 16) : null, end: pb.end ? pb.end.slice(0, 16) : null, minutes: pb.minutes } : null;
 }
 interface ClockOutContext {
   breakMode: 'scheduled' | 'punch';
@@ -753,6 +760,13 @@ function PersonScreen({ client, me, setMe, idleSec, onLogout }: { client: StaffC
       }
       if (r.error.code === 'BREAK_END_CONFIRM_REQUIRED') {
         setConfirmBreakOut(true);
+        return;
+      }
+      if (r.error.code === 'PLANNED_BREAK_CHANGED') {
+        // 表示中にシフトの予定休憩が変わった: 最新の予定休憩で確認し直す（退勤は記録されていない）
+        setErr(r.error.message);
+        const c = await client.raw<ClockOutContext>('attendance.clockOutContext');
+        if (c.ok && c.data.plannedBreak && !c.data.hasPunchedBreaks) setBreakAsk(c.data);
         return;
       }
       if (r.error.code === 'NETWORK' || r.error.code === 'BAD_RESPONSE' || r.error.code === 'INTERNAL') {
@@ -1001,7 +1015,7 @@ function BreakAtClockOut({ ctx, onCancel, onSubmit }: { ctx: ClockOutContext; on
             <button className="btn" onClick={() => setMode('not_taken')}>
               取れなかった
             </button>
-            <button className="btn btn-primary btn-lg" onClick={() => onSubmit({ kind: 'as_scheduled' })}>
+            <button className="btn btn-primary btn-lg" onClick={() => onSubmit({ kind: 'as_scheduled', expectedPlanned: plannedView(pb) })}>
               予定どおり取得して退勤
             </button>
           </>
@@ -1326,7 +1340,14 @@ function BreakForm({ session, onClose, onDone }: { session: DetailSession; onClo
   const [busy, setBusy] = useState(false);
   const submit = async () => {
     setBusy(true);
-    const r = await client.raw<{ status: string }>('breaks.declare', { workDate: session.laborDate, sessionKey: session.sessionKey, kind, intervals: kind === 'custom' ? rows : [], reason });
+    const r = await client.raw<{ status: string }>('breaks.declare', {
+      workDate: session.laborDate,
+      sessionKey: session.sessionKey,
+      kind,
+      intervals: kind === 'custom' ? rows : [],
+      reason,
+      ...(kind === 'as_scheduled' ? { expectedPlanned: plannedView(session.plannedBreak) } : {}),
+    });
     setBusy(false);
     if (!r.ok) return setErr(r.error.message);
     toast('ok', r.data.status === 'pending' ? '休憩を申告しました（管理者の確認後に反映されます）' : '休憩を修正しました');

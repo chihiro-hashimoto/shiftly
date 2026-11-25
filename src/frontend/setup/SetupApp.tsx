@@ -182,7 +182,7 @@ function Complete({ st }: { st: PublicState }) {
 }
 
 function UpdatePanel({ transport, onChanged }: { transport: SetupTransport; onChanged: () => void }) {
-  const [info, setInfo] = useState<{ installed: string | null; available: string; needsUpdate: boolean } | null>(null);
+  const [info, setInfo] = useState<{ installed: string | null; available: string; needsUpdate: boolean; pending?: string | null } | null>(null);
   const [msg, setMsg] = useState('');
   const [approval, setApproval] = useState<string[] | null>(null);
   const [agree, setAgree] = useState(false);
@@ -217,6 +217,11 @@ function UpdatePanel({ transport, onChanged }: { transport: SetupTransport; onCh
         )}
         {info?.needsUpdate && (
           <>
+            {info.pending && (
+              <div className="callout callout-warn" role="status">
+                <strong>未完了の更新があります。</strong> {info.pending}
+              </div>
+            )}
             <div className="callout">
               更新では次の順に処理します: 更新前バックアップ → メンテナンス（スタッフの打刻を一時停止） → コード更新 → 既存 URL のまま切替 → データベース更新 → 動作・整合性確認。失敗した場合はコードを以前のバージョンへ戻します。営業時間外に実施してください。
             </div>
@@ -225,7 +230,7 @@ function UpdatePanel({ transport, onChanged }: { transport: SetupTransport; onCh
               <span>営業時間外であること、スタッフが打刻中でないことを確認しました</span>
             </label>
             <button className="btn btn-primary" disabled={!agree || busy} onClick={() => void apply(false)}>
-              {busy ? '更新中…' : `バージョン ${info.available} に更新`}
+              {busy ? '更新中…' : info.pending ? `バージョン ${info.available} への更新を再開` : `バージョン ${info.available} に更新`}
             </button>
           </>
         )}
@@ -242,7 +247,9 @@ function UpdatePanel({ transport, onChanged }: { transport: SetupTransport; onCh
         )}
         <details>
           <summary className="small">更新を元に戻す（ロールバック）</summary>
-          <p className="small muted" style={{ margin: '6px 0' }}>アプリのコードを直前のバージョンへ戻します（URL は変わりません）。データベースは自動では戻しません。必要に応じて管理画面「バックアップ」から更新前バックアップを復元してください。</p>
+          <p className="small muted" style={{ margin: '6px 0' }}>
+            アプリのコードを直前のバージョンへ戻します（URL は変わりません）。先にメンテナンス（スタッフの打刻の一時停止）を開始し、戻したプログラムとデータベースの構造が一致する場合のみ解除します。一致しない場合はメンテナンスを継続するため、管理画面「バックアップ」から更新前バックアップを復元してから解除してください（docs/update-rollback.md）。
+          </p>
           <button
             className="btn btn-sm"
             disabled={busy}

@@ -222,7 +222,7 @@ describe('休憩（予定休憩は取得を確認したものだけ控除）', (
   });
   it('退勤時に「予定どおり取得」→ 60分控除（7時間）', () => {
     const { h, a } = breakStore();
-    expect(out(h, a, { kind: 'as_scheduled' }).breakDeclaration).toBe('applied');
+    expect(out(h, a, { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T13:00', minutes: 60 } }).breakDeclaration).toBe('applied');
     h.setNow('2026-11-04', '10:00');
     const r = compute(h, a);
     expect(r.totals.workMinutes).toBe(420);
@@ -252,7 +252,7 @@ describe('休憩（予定休憩は取得を確認したものだけ控除）', (
     const { h, a } = breakStore('punch');
     h.punchAt(a, '482913', '2026-11-03', '12:00', 'break_start');
     h.punchAt(a, '482913', '2026-11-03', '13:00', 'break_end');
-    out(h, a, { kind: 'as_scheduled' });
+    out(h, a, { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T13:00', minutes: 60 } });
     h.setNow('2026-11-04', '10:00');
     expect(compute(h, a).totals.workMinutes).toBe(420);
   });
@@ -270,7 +270,7 @@ describe('休憩（予定休憩は取得を確認したものだけ控除）', (
   });
   it('本人の休憩申告（PIN 済み）は勤怠確認画面から変更でき、最新の申告を使う', () => {
     const { h, a } = breakStore();
-    out(h, a, { kind: 'as_scheduled' });
+    out(h, a, { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T13:00', minutes: 60 } });
     h.setNow('2026-11-04', '10:00');
     h.login(a, '482913');
     const det = h.staffOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });

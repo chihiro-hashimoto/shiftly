@@ -12,7 +12,7 @@
  */
 import { defineOps } from '../api';
 import { actorId, actorKindForRecord, audit, identityVerified, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
-import { E } from '../errors';
+import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { AttendanceCorrection, BreakDeclaration, Employee, OvertimeRequest, OvertimeRequestHistory, Shift, WorkSession } from '../../shared/types';
 import { buildSessions, DEFAULT_SESSION_OPTIONS, effectiveEvents, plannedBreakFor, sessionKeyOf, type EffectiveEvent } from '../../shared/attendance';
@@ -73,6 +73,11 @@ export interface BreakDeclarationInput {
   kind: BreakDeclaration['kind'];
   intervals: Array<{ start: number; end: number }>;
   reason: string;
+  /**
+   * 「予定どおり」で、画面に表示していた予定休憩（undefined は未送信）。
+   * 表示から送信までにシフトが変わった場合に、確認していない休憩を控除しないよう照合する（Codex 監査4）
+   */
+  expectedPlanned?: { start: string | null; end: string | null; minutes: number } | null;
 }
 
 export function readBreakDeclaration(a: v.Args): BreakDeclarationInput {
@@ -93,7 +98,16 @@ export function readBreakDeclaration(a: v.Args): BreakDeclarationInput {
     for (let i = 1; i < sorted.length; i++) if (sorted[i]!.start < sorted[i - 1]!.end) throw E.invalid('休憩時間が重なっています');
   }
   const reason = kind === 'as_scheduled' ? v.optStr(a, 'reason', 300) : v.str(a, 'reason', { min: 2, max: 300, label: '理由' });
-  return { kind, intervals, reason };
+  let expectedPlanned: BreakDeclarationInput['expectedPlanned'];
+  if (Object.prototype.hasOwnProperty.call(a, 'expectedPlanned')) {
+    if (a.expectedPlanned === null) expectedPlanned = null;
+    else {
+      const o = v.obj(a.expectedPlanned);
+      const hhmm = (k: string) => (o[k] === null || o[k] === undefined || o[k] === '' ? null : v.str(o, k, { max: 16, pattern: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, label: '予定休憩' }));
+      expectedPlanned = { start: hhmm('start'), end: hhmm('end'), minutes: v.int(o, 'minutes', { min: 0, max: 600, label: '予定休憩（分）' }) };
+    }
+  }
+  return { kind, intervals, reason, expectedPlanned };
 }
 
 /**
@@ -109,6 +123,16 @@ export function saveBreakDeclaration(ctx: Ctx, employeeId: string, s: WorkSessio
   const verified = identityVerified(ctx);
   const confirmed = confirmedPeriodFor(ctx, s.laborDate);
   const byStaff = ctx.principal.kind === 'staff';
+  if (d.kind === 'as_scheduled') {
+    // 画面に表示した予定休憩と、現在の予定休憩が一致することを確認してから「予定どおり」を記録する（Codex 監査4）
+    const cur = plannedBreakFor(s, shifts);
+    const curView = cur ? { start: cur.start === null ? null : toIsoJst(cur.start).slice(0, 16), end: cur.end === null ? null : toIsoJst(cur.end).slice(0, 16), minutes: cur.minutes } : null;
+    if (d.expectedPlanned === undefined) {
+      if (byStaff) throw E.invalid('表示した予定休憩の情報がありません。画面を開き直してからもう一度操作してください');
+    } else if (JSON.stringify(d.expectedPlanned) !== JSON.stringify(curView)) {
+      throw new ApiError('PLANNED_BREAK_CHANGED', '予定休憩が変更されました。表示を更新しましたので、内容を確認してからもう一度操作してください', 409);
+    }
+  }
   // 本人未確認の申告で即時に反映するのは、退勤打刻と同じ処理で受け付けた「予定どおり」だけ（事後の申告はすべて承認待ち。Codex 監査2 #8）
   const pending = !!confirmed || (byStaff && !verified && !(d.kind === 'as_scheduled' && opts.atClockOut === true));
   const planned = plannedBreakFor(s, shifts);
@@ -629,7 +653,9 @@ defineOps([
       if (r.status === 'cancelled') throw E.conflict('取り消された申請です');
       if (r.parentRequestId) throw E.invalid('一部承認の残りの確認は、元の申請から処理してください');
       // 再審査: 以前の一部承認で作った「残りは実労働なし」の確認を失効させてから新しい判断を反映する（履歴は残す。Codex 監査3 #3）
-      for (const child of ctx.uow.list<OvertimeRequest>('overtime_requests').filter((x) => x.parentRequestId === r.id && x.status !== 'cancelled')) {
+      // 互換: parentRequestId の列がない形式（開発中の版）で作った残りの確認は、理由欄の申請 ID でひも付ける
+      const isChild = (x: OvertimeRequest) => x.parentRequestId === r.id || (!x.parentRequestId && x.reason.startsWith(`一部承認の残り（申請 ${r.id}）`));
+      for (const child of ctx.uow.list<OvertimeRequest>('overtime_requests').filter((x) => x.id !== r.id && isChild(x) && x.status !== 'cancelled')) {
         const cancelled: OvertimeRequest = { ...child, status: 'cancelled', reviewedBy: actorId(ctx), reviewedAt: nowIso(ctx), reviewComment: `元の申請の再審査により失効: ${comment}` };
         ctx.uow.update('overtime_requests', cancelled);
         history(ctx, cancelled, 'cancel', child, '元の申請の再審査により失効');

@@ -66,7 +66,19 @@ export interface Registry {
   /** ペアリングコードのハッシュ（非秘密）。平文コードは SecretRegistry に保持 */
   adminPairingHash: string;
   setupPairingHash: string;
-  update: null | { target: string; stage: string; backupId?: string; startedAt: string; message?: string; prevCore?: number; prevAdmin?: number };
+  update: null | {
+    target: string;
+    stage: string;
+    backupId?: string;
+    startedAt: string;
+    message?: string;
+    prevCore?: number;
+    prevAdmin?: number;
+    /** 更新開始時の DB のスキーマ版（移行の結果が不明な場合に、DB の実状態から移行済みかを判断する） */
+    startSchema?: number;
+    /** DB の移行が完了しているか（移行後の失敗は旧版へ戻さず、再開時は完了処理から行う） */
+    migrated?: boolean;
+  };
 }
 
 /** 秘密情報（UserProperties のみ。Drive のレジストリファイルには書かない） */
@@ -447,10 +459,20 @@ export class Installer {
   }
 
   // ------------------------------------------------------------------ アップデート（F36）
-  checkUpdate(): { installed: string | null; available: string; needsUpdate: boolean; core: CorePing | null } {
+  checkUpdate(): { installed: string | null; available: string; needsUpdate: boolean; core: CorePing | null; pending?: string | null } {
     const ping = this.ping();
     const installed = ping?.version ?? this.reg?.appVersion ?? null;
-    return { installed, available: this.d.release.version, needsUpdate: !!installed && compareVersion(this.d.release.version, installed) > 0, core: ping };
+    // 未完了の更新（移行後の失敗など）が残っている場合は、配備済みの版が同じでも再開を表示する（Codex 監査4）
+    const u = this.reg?.update;
+    const pending = u && u.target === this.d.release.version ? (u.message ?? `更新が完了していません（段階: ${u.stage}）`) : null;
+    return { installed, available: this.d.release.version, needsUpdate: (!!installed && compareVersion(this.d.release.version, installed) > 0) || !!pending, core: ping, pending };
+  }
+
+  /** Core の system.info（DB のスキーマ版・プログラムの期待するスキーマ版・メンテナンス） */
+  private coreInfo(): { schemaVersion: number; expectedSchemaVersion: number; maintenance: boolean } | null {
+    const r = this.callCore('system.info');
+    const d = r.ok ? (r.data as { schemaVersion?: number; expectedSchemaVersion?: number; maintenance?: boolean }) : null;
+    return d && typeof d.schemaVersion === 'number' && typeof d.expectedSchemaVersion === 'number' ? { schemaVersion: d.schemaVersion, expectedSchemaVersion: d.expectedSchemaVersion, maintenance: !!d.maintenance } : null;
   }
 
   /**
@@ -465,11 +487,13 @@ export class Installer {
     const target = this.d.release.version;
     const reg = this.reg!;
     // 更新開始前のバージョン番号を保持（承認待ちから再開した場合も、更新前の版へ戻せるように）
-    const resuming = reg.update && reg.update.target === target && reg.update.prevCore !== undefined && reg.update.stage !== 'failed';
+    // 移行後に失敗した更新の再開（コードは新しい版のまま。バックアップの再取得・再配備をせず完了処理から行う）
+    const afterMigration = !!(reg.update && reg.update.target === target && reg.update.migrated);
+    const resuming = afterMigration || (reg.update && reg.update.target === target && reg.update.prevCore !== undefined && reg.update.stage !== 'failed');
     const prevCore = resuming ? reg.update!.prevCore : reg.core.versionNumber;
     const prevAdmin = resuming ? reg.update!.prevAdmin : reg.admin.versionNumber;
     if (!resuming) {
-      reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin };
+      reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin, startSchema: this.coreInfo()?.schemaVersion };
       this.persist();
     }
     const step = (stage: string) => {
@@ -477,10 +501,10 @@ export class Installer {
       this.persist();
     };
     // DB の移行が完了したか（移行後の失敗では、旧プログラムへ戻さない。Codex 監査3 #1）
-    let migrated = false;
+    let migrated = afterMigration;
     try {
-      // 承認待ちからの再開では、バックアップ・コード更新・デプロイは完了済み（DB 更新から再開）
-      if (!(resuming && reg.update!.stage === 'awaiting_approval')) {
+      // 承認待ち・移行後の失敗からの再開では、バックアップ・コード更新・デプロイは完了済み（DB 更新から再開）
+      if (!(resuming && (reg.update!.stage === 'awaiting_approval' || afterMigration))) {
         step('prepare');
         const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
         if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
@@ -496,7 +520,11 @@ export class Installer {
       const mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
       if (!mig.ok) throw new Error(`DB 更新に失敗しました（${mig.error?.message ?? ''}）`);
       const need = (mig.data as { requiresApproval: string[] }).requiresApproval;
-      if (need.length === 0) migrated = true;
+      if (need.length === 0) {
+        migrated = true;
+        reg.update = { ...reg.update!, migrated: true };
+        this.persist();
+      }
       if (need.length) {
         step('awaiting_approval');
         return { ok: false, message: '破壊的な DB 変更が含まれるため、内容を確認して承認してください（コードは更新済み・メンテナンス中）', requiresApproval: need };
@@ -510,7 +538,13 @@ export class Installer {
       return { ok: true, message: `バージョン ${target} に更新しました` };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // 移行の応答が失われた等で結果が不明な場合は、DB の実状態（スキーマ版）で判断する。確認できなければ移行済みとして扱う（Codex 監査4）
+      if (!migrated && reg.update && ['migrate', 'finish', 'awaiting_approval'].includes(reg.update.stage)) {
+        const info = this.coreInfo();
+        if (!info || reg.update.startSchema === undefined || info.schemaVersion !== reg.update.startSchema) migrated = true;
+      }
       if (migrated) {
+        reg.update = { ...reg.update!, migrated: true };
         // DB は新しい構造に移行済み。旧プログラムは新しい構造の DB を正しく扱えず、メンテナンス解除の検査も持たないため、
         // プログラムは新しい版のまま、メンテナンスを継続する（新しい版の Core は構造の一致を検査できる）
         return this.failUpdate(
@@ -535,6 +569,10 @@ export class Installer {
   rollbackCode(prevCore?: number, prevAdmin?: number): string {
     const reg = this.reg!;
     const out: string[] = [];
+    // 配備を切り替える前に、現在の Core で書き込みを止める（旧版と DB の組み合わせを確認するまで営業を再開しない。Codex 監査4）
+    const on = this.callCore('system.setMaintenance', { on: true });
+    if (!on.ok) return `メンテナンスを開始できなかったため、ロールバックを中止しました（${on.error?.message ?? ''}）。現在のバージョンのまま稼働しています`;
+    out.push('メンテナンスを開始しました');
     for (const [which, prev] of [['core', prevCore ?? reg.core.previousVersionNumber], ['admin', prevAdmin ?? reg.admin.previousVersionNumber]] as const) {
       const ref = reg[which];
       if (!prev || !ref.scriptId || !ref.deploymentId) continue;
@@ -548,9 +586,8 @@ export class Installer {
     }
     // 戻したプログラムと DB の構造が一致するか確認してからメンテナンスを解除する（Codex 監査2 #3）。
     // DB の移行後に失敗した場合、旧プログラムと新しい構造の DB の組み合わせで営業を再開しない
-    const info = this.callCore('system.info');
-    const d = info.ok ? (info.data as { schemaVersion?: number; expectedSchemaVersion?: number }) : null;
-    if (!d || typeof d.schemaVersion !== 'number' || typeof d.expectedSchemaVersion !== 'number') {
+    const d = this.coreInfo();
+    if (!d) {
       out.push('戻したプログラムと DB の組み合わせを確認できないため、メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態を確認してください');
     } else if (d.schemaVersion !== d.expectedSchemaVersion) {
       out.push(

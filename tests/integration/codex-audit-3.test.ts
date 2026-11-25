@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Harness } from '../helpers/harness';
+import { UnitOfWork } from '../../src/backend/store';
 
 function store() {
   const h = new Harness();
@@ -77,7 +78,7 @@ describe('Codex 監査3 #4: 時刻未設定で「予定どおり」と申告し�
     const { h, a } = store();
     const id = shift(h, a, '2026-11-03', '09:00', '17:00', { breakMinutes: 30 });
     h.punchAt(a, '482913', '2026-11-03', '09:00', 'clock_in');
-    h.punchAt(a, '482913', '2026-11-03', '17:00', 'clock_out', { breakDeclaration: { kind: 'as_scheduled' } });
+    h.punchAt(a, '482913', '2026-11-03', '17:00', 'clock_out', { breakDeclaration: { kind: 'as_scheduled', expectedPlanned: { start: null, end: null, minutes: 30 } } });
     h.setNow('2026-11-04', '10:00');
     expect(compute(h, a).totals.workMinutes).toBe(480);
     h.ownerOk('shifts.upsert', { id, employeeId: a, date: '2026-11-03', start: '09:00', end: '17:00', breakMinutes: 60, fixedBreakStart: '12:00' });
@@ -102,5 +103,61 @@ describe('Codex 監査3 #6: 退職済みのスタッフの勤務もシフト外�
     expect(list.rows.map((r: any) => r.employeeId)).toContain(a);
     h.ownerOk('offshift.confirm', { comment: '閉店作業', items: [{ employeeId: a, start: '2026-11-03T17:00', end: '2026-11-03T17:10', result: 'work', category: 'late' }] });
     expect(compute(h, a).totals.basePay).toBe(9800);
+  });
+});
+
+describe('Codex 監査4: 退勤確認の表示後に予定休憩が変わった場合は、確認し直すまで記録しない', () => {
+  it('表示 30 分（12:00–12:30）→ 管理者が 60 分に変更 → 30 分の表示のまま「予定どおり」は拒否（退勤も記録しない）→ 60 分を確認して退勤', () => {
+    const { h, a } = store();
+    const id = shift(h, a, '2026-11-03', '09:00', '17:00', { breakMinutes: 30, fixedBreakStart: '12:00' });
+    h.punchAt(a, '482913', '2026-11-03', '09:00', 'clock_in');
+    h.setNow('2026-11-03', '17:00');
+    h.login(a, '482913');
+    const ctxShown = h.staffOk('attendance.clockOutContext');
+    expect(ctxShown.plannedBreak.minutes).toBe(30);
+    h.ownerOk('shifts.upsert', { id, employeeId: a, date: '2026-11-03', start: '09:00', end: '17:00', breakMinutes: 60, fixedBreakStart: '12:00' });
+    h.ownerOk('shifts.publish', { from: '2026-11-03', to: '2026-11-03' });
+    const r = h.punch('clock_out', { breakDeclaration: { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T12:30', minutes: 30 } } }) as any;
+    expect(r.ok).toBe(false);
+    expect(r.error.code).toBe('PLANNED_BREAK_CHANGED');
+    expect(h.staffOk('auth.me').state).toBe('working'); // 退勤は記録されていない
+    h.advance(2000);
+    expect(h.punch('clock_out', { breakDeclaration: { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T13:00', minutes: 60 } } }).ok).toBe(true);
+    h.setNow('2026-11-04', '10:00');
+    expect(compute(h, a).totals.workMinutes).toBe(420);
+  });
+  it('「予定どおり」の申告に、表示した予定休憩がない（古い画面からの送信）は拒否', () => {
+    const { h, a } = store();
+    shift(h, a, '2026-11-03', '09:00', '17:00', { breakMinutes: 30, fixedBreakStart: '12:00' });
+    h.punchAt(a, '482913', '2026-11-03', '09:00', 'clock_in');
+    h.setNow('2026-11-03', '17:00');
+    h.login(a, '482913');
+    const r = h.punch('clock_out', { breakDeclaration: { kind: 'as_scheduled' } }) as any;
+    expect(r.ok).toBe(false);
+    expect(r.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('Codex 監査4: 旧形式（元の申請へのひも付けの列がない）の「残りは実労働なし」も再審査で失効させる', () => {
+  it('理由欄の申請 ID でひも付く旧形式の確認行は、元の申請の再審査で取消になる', () => {
+    const { h, a } = store();
+    shift(h, a, '2026-11-03', '09:00', '17:00');
+    h.punchAt(a, '482913', '2026-11-03', '09:00', 'clock_in');
+    h.punchAt(a, '482913', '2026-11-03', '17:10', 'clock_out');
+    h.setNow('2026-11-04', '10:00');
+    h.login(a, '482913');
+    const req = h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T17:00', end: '2026-11-03T17:10', reason: '閉店作業' });
+    h.ownerOk('overtime.review', { requestId: req.id, action: 'partial', approvedStart: '2026-11-03T17:00', approvedEnd: '2026-11-03T17:05', comment: '一部', remainder: 'unconfirmed' });
+    // 旧形式の残りの確認行（parentRequestId なし・理由欄に申請 ID）を直接作る
+    const uow = new UnitOfWork(h.env.adapter, { now: () => h.env.clock.now, newId: (p) => `${p}_legacy0001` });
+    uow.insert('overtime_requests', {
+      employeeId: a, sessionKey: null, workDate: '2026-11-03', shiftId: null, category: 'late', requestedStart: '2026-11-03T17:05:00+09:00', requestedEnd: '2026-11-03T17:10:00+09:00',
+      reason: `一部承認の残り（申請 ${req.id}）: 私的滞在`, identityVerified: true, requestedBy: 'owner', requestedByKind: 'owner', status: 'confirmed', workConfirmation: 'no_work',
+      approvedStart: null, approvedEnd: null, reviewedBy: 'owner', reviewedAt: '2026-11-04T10:00:00+09:00', reviewComment: '私的滞在',
+    } as never, 'otr');
+    uow.flush();
+    expect(codes(compute(h, a))).not.toContain('OFF_SHIFT_UNCONFIRMED');
+    h.ownerOk('overtime.review', { requestId: req.id, action: 'partial', approvedStart: '2026-11-03T17:00', approvedEnd: '2026-11-03T17:05', comment: '残りは再確認', remainder: 'unconfirmed' });
+    expect(compute(h, a).issues.find((i: any) => i.code === 'OFF_SHIFT_UNCONFIRMED')?.severity).toBe('blocking');
   });
 });

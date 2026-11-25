@@ -149,10 +149,18 @@ function setup(o: { apiDisabled?: boolean; failCreateOnce?: boolean; loseCreateR
     },
     callCoreAsSetup: (url, keyHex, req) => {
       const envlp = signOwnerEnvelope(core.env.platform, fromHex(keyHex), JSON.stringify(req), 'setup');
-      return deps.postCore(url, { kind: 'owner', envelope: envlp }) as never;
+      const res = deps.postCore(url, { kind: 'owner', envelope: envlp }) as never;
+      // 処理は Core で完了したが応答が失われた状態を模擬（操作名で指定）
+      const op = (req as { op?: string }).op ?? '';
+      if (dropOps.has(op)) {
+        dropOps.delete(op);
+        return { ok: false, error: { code: 'NETWORK', message: '応答なし' } } as never;
+      }
+      return res;
     },
   };
-  return { api, store, core, deps, make: () => new Installer(deps) };
+  const dropOps = new Set<string>();
+  return { api, store, core, deps, dropOps, make: () => new Installer(deps) };
 }
 
 describe('Shiftly Setup（自動インストーラー）', () => {
@@ -352,6 +360,84 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     const proj = s.api.projects.get(coreRef.scriptId!)!;
     expect(proj.deployments.get(coreRef.deploymentId!)).not.toBe(prevVersion);
     const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
+  });
+
+  it('Codex 監査4: 正常に更新した後の手動ロールバックは、先にメンテナンスを開始し、DB の構造が一致しなければ継続する', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+    // 旧版のプログラムが期待する構造と DB が一致しない状態（新しい構造に移行済み）を模す
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    const row = uow.list<{ id: string; key: string; value: string; version: number; createdAt: string; updatedAt: string }>('system_metadata').find((m) => m.key === 'schemaVersion')!;
+    uow.update('system_metadata', { ...row, value: '99' });
+    uow.flush();
+    const msg = s.make().rollbackCode();
+    expect(msg).toContain('メンテナンスを開始しました');
+    expect(msg).toContain('メンテナンスを継続');
+    const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
+  });
+
+  it('Codex 監査4: 移行後に失敗した更新は、Setup を開き直しても再開でき、完了処理から行う', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    const ghost = uow.insert('attendance_events', { employeeId: 'emp_ghost', type: 'clock_in', at: new Date().toISOString().slice(0, 19) + '+09:00', deviceId: null, source: 'admin_manual', requestId: 'req_ghost_0002', actorId: null, note: '' } as never, 'evt') as { id: string };
+    uow.flush();
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    // 版は配備済み（ping は新しい版を返す）でも、未完了の更新として再開を表示
+    s.core.state.version = '0.3.0';
+    const chk = s.make().checkUpdate();
+    expect(chk.needsUpdate).toBe(true);
+    expect(chk.pending).toBeTruthy();
+    // 再開: バックアップ・コード配置・配備（versions.create）をやり直さず、DB 更新・完了処理から行う。旧版へは戻さない
+    const coreRef = s.store.reg!.core;
+    const deployed = s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!);
+    const before = s.api.calls.length;
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false); // 不整合（存在しないスタッフの打刻）が残るため完了しない
+    expect(r.message).toContain('メンテナンスを継続');
+    expect(s.api.calls.slice(before).some((c) => c.includes('/versions') || c.includes('/content'))).toBe(false);
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(deployed);
+    void ghost;
+  });
+
+  it('Codex 監査4: DB の移行の応答が失われた場合は、DB の実状態で移行済みと判断し、旧版へ戻さない', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    // 更新開始時の DB を旧構造（v1）にし、移行（v1→v2）は Core で完了するが応答が失われる
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    const row = uow.list<{ id: string; key: string; value: string; version: number; createdAt: string; updatedAt: string }>('system_metadata').find((m) => m.key === 'schemaVersion')!;
+    uow.update('system_metadata', { ...row, value: '1' });
+    uow.flush();
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    s.dropOps.add('system.migrate');
+    s.deps.release = release('0.3.0');
+    const u = s.make().applyUpdate({ approveDestructive: false });
+    expect(u.ok).toBe(false);
+    expect(u.message).toContain('メンテナンスを継続');
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).not.toBe(prevVersion);
+    const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    expect(info.ok && (info.data as { schemaVersion: number; maintenance: boolean }).schemaVersion).toBe(2);
     expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
   });
 });

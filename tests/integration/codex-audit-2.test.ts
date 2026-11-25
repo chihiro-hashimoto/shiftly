@@ -113,7 +113,7 @@ describe('Codex 監査2 #7: 休憩の取得確認後にシフトの予定休憩�
     const s = h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-03', start: '09:00', end: '17:00', breakMinutes: 30, fixedBreakStart: '12:00' });
     h.ownerOk('shifts.publish', { from: '2026-11-03', to: '2026-11-03' });
     h.punchAt(a, '482913', '2026-11-03', '09:00', 'clock_in');
-    h.punchAt(a, '482913', '2026-11-03', '17:00', 'clock_out', { breakDeclaration: { kind: 'as_scheduled' } });
+    h.punchAt(a, '482913', '2026-11-03', '17:00', 'clock_out', { breakDeclaration: { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T12:30', minutes: 30 } } });
     h.setNow('2026-11-04', '10:00');
     h.ownerOk('shifts.upsert', { id: s.id, employeeId: a, date: '2026-11-03', start: '09:00', end: '17:00', breakMinutes: 60, fixedBreakStart: '12:00' });
     h.ownerOk('shifts.publish', { from: '2026-11-03', to: '2026-11-03' });
@@ -142,7 +142,7 @@ describe('Codex 監査2 #8: PIN 未設定のスタッフの事後の「予定ど
     h.punch('clock_out');
     h.setNow('2026-11-04', '10:00');
     login();
-    expect(h.staffOk('breaks.declare', { workDate: '2026-11-03', kind: 'as_scheduled' })).toEqual({ status: 'pending' });
+    expect(h.staffOk('breaks.declare', { workDate: '2026-11-03', kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T12:30', minutes: 30 } })).toEqual({ status: 'pending' });
     const r = compute(h, e.id);
     expect(r.totals.workMinutes).toBe(480);
     expect(r.totals.basePay).toBe(9600);
@@ -160,7 +160,7 @@ describe('Codex 監査2 #8: PIN 未設定のスタッフの事後の「予定ど
     h.punch('clock_in');
     h.setNow('2026-11-03', '17:00');
     login();
-    expect(h.staffOk('attendance.punch', { type: 'clock_out', breakDeclaration: { kind: 'as_scheduled' } }).breakDeclaration).toBe('applied');
+    expect(h.staffOk('attendance.punch', { type: 'clock_out', breakDeclaration: { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T12:30', minutes: 30 } } }).breakDeclaration).toBe('applied');
   });
 });
 
