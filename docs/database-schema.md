@@ -755,6 +755,7 @@ DB マイグレーション履歴
 | `reviewedBy` | 文字列（null可） |
 | `reviewedAt` | 文字列（null可） |
 | `reviewComment` | 文字列（必須） |
+| `parentRequestId` | 文字列（null可） |
 
 ## overtime_request_history
 

@@ -463,6 +463,8 @@ export interface OvertimeRequest extends RowMeta {
   reviewedBy: Id | null;
   reviewedAt: string | null;
   reviewComment: string;
+  /** 一部承認の「残りは実労働なし」の確認の場合、元の申請 ID（元の申請の再審査で失効させる） */
+  parentRequestId?: Id | null;
 }
 
 export interface OvertimeRequestHistory extends RowMeta {

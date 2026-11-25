@@ -359,35 +359,66 @@ function PinDialog({ client, staff, onCancel, onLoggedIn }: { client: Client; st
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(true);
   const [needPin, setNeedPin] = useState(false);
+  // キャンセル・タブ非表示・画面の破棄の後に届いたログインの応答では本人画面を開かない（Codex 監査3 #5）
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const cancel = () => {
+    alive.current = false;
+    onCancel();
+  };
+  /** ログインの応答を採用するか。間に合わなかった場合は発行されたセッションをサーバー側で失効させる */
+  const accept = useCallback(
+    (r: LoginResult): boolean => {
+      if (alive.current && document.visibilityState !== 'hidden') return true;
+      const probe = new Client(client.transport);
+      probe.device = client.device;
+      probe.session = r.sessionToken;
+      void probe.raw('auth.logout');
+      return false;
+    },
+    [client],
+  );
   const done = useCallback(
     (r: LoginResult) => {
+      if (!accept(r)) return;
       client.session = r.sessionToken;
       onLoggedIn({ employee: r.employee, permissions: r.permissions, verified: r.verified, breakMode: r.breakMode, state: r.state, stateLabel: r.stateLabel, allowedPunches: r.allowedPunches, staleOpenSince: r.staleOpenSince });
     },
-    [client, onLoggedIn],
+    [client, onLoggedIn, accept],
+  );
+  // スタッフのセッションは、ログインの応答で初めて設定する（試行中の送信には含めない）
+  const login = useCallback(
+    async (p: string | null) => {
+      const probe = new Client(client.transport);
+      probe.device = client.device;
+      return probe.raw<LoginResult>('auth.login', { employeeId: staff.id, pin: p });
+    },
+    [client, staff.id],
   );
   useEffect(() => {
-    let alive = true;
     void (async () => {
-      const r = await client.raw<LoginResult>('auth.login', { employeeId: staff.id, pin: null });
-      if (!alive) return;
+      const r = await login(null);
       if (r.ok) return done(r.data);
+      if (!alive.current) return;
       if (r.error.code === 'PIN_REQUIRED') setNeedPin(true);
       else setErr(r.error.message);
       setBusy(false);
     })();
-    return () => {
-      alive = false;
-    };
-  }, [client, staff.id, done]);
+  }, [login, done]);
   const submit = async () => {
     if (pin.length < PIN_MIN_LENGTH) return;
     setBusy(true);
     setErr('');
     const p = pin;
     setPin('');
-    const r = await client.raw<LoginResult>('auth.login', { employeeId: staff.id, pin: p });
+    const r = await login(p);
     if (r.ok) return done(r.data);
+    if (!alive.current) return;
     setErr(r.error.message);
     setBusy(false);
   };
@@ -414,7 +445,7 @@ function PinDialog({ client, staff, onCancel, onLoggedIn }: { client: Client; st
               {d}
             </button>
           ))}
-          <button className="sf-key sub" onClick={onCancel}>
+          <button className="sf-key sub" onClick={cancel}>
             キャンセル
           </button>
           <button className="sf-key" onClick={() => press('0')} disabled={busy || !needPin}>

@@ -218,6 +218,19 @@ test('Codex 監査2 #9: 管理者パスワードの送信直後にキャンセ�
   await expect(page.getByRole('heading', { name: 'スタッフを選択' })).toBeVisible();
 });
 
+test('Codex 監査3 #5: PIN の確定直後にキャンセルすると、遅れて届いた応答でも本人画面を開かない', async ({ page }) => {
+  await open(page);
+  await page.getByRole('button', { name: /サンプル 花子/ }).click();
+  for (const d of '573024') await page.getByRole('button', { name: d, exact: true }).click();
+  await page.getByRole('button', { name: '確定' }).click();
+  await page.getByRole('button', { name: 'キャンセル' }).click();
+  await page.waitForTimeout(800);
+  // 本人画面（氏名・状態の表示とログアウトボタン）が開いていない
+  await expect(page.locator('.sf-state')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'ログアウト' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'スタッフを選択' })).toBeVisible();
+});
+
 test('管理者モード: タブ非表示（バックグラウンド）で管理者モードを終了', async ({ page }) => {
   await open(page);
   await enterAdmin(page);

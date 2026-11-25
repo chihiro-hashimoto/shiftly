@@ -85,12 +85,17 @@ describe('予定休憩（v1.3: 取得を確認したものだけ控除）', () =
     expect(r.minutes).toBe(480);
     expect(r.anomalies).toContain('planned_break_unconfirmed');
   });
-  it('予定どおり 420 / 取得なし 480 / 短縮 450', () => {
-    expect(work([decl('as_scheduled', '')]).minutes).toBe(420);
+  it('予定どおり 420（申告に確認時点の区間 12:00–13:00 を保存）/ 取得なし 480 / 短縮 450', () => {
+    expect(work([decl('as_scheduled', '', [['12:00', '13:00']])]).minutes).toBe(420);
     expect(work([decl('not_taken', '')]).minutes).toBe(480);
     expect(work([decl('custom', '', [['12:00', '12:30']])]).minutes).toBe(450);
   });
   it('承認待ち（pending）の申告は反映しない', () => {
-    expect(work([{ ...decl('as_scheduled', ''), status: 'pending' }]).minutes).toBe(480);
+    expect(work([{ ...decl('as_scheduled', '', [['12:00', '13:00']]), status: 'pending' }]).minutes).toBe(480);
+  });
+  it('申告の時点で予定休憩の時刻が未設定（区間なし）の「予定どおり」は、現在のシフトの区間で補わず控除しない（Codex 監査3 #4）', () => {
+    const r = work([decl('as_scheduled', '')]);
+    expect(r.minutes).toBe(480);
+    expect(r.anomalies).toContain('planned_break_time_unset');
   });
 });

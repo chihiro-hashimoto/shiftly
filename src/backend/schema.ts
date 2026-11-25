@@ -212,7 +212,7 @@ export const TABLES: TableDef[] = [
     ['employeeId', 'string'], ['sessionKey', 'string_nullable'], ['workDate', 'string'], ['shiftId', 'string_nullable'], ['category', 'string'],
     ['requestedStart', 'string'], ['requestedEnd', 'string'], ['reason', 'string'], ['identityVerified', 'boolean'], ['requestedBy', 'string'],
     ['requestedByKind', 'string'], ['status', 'string'], ['workConfirmation', 'string'], ['approvedStart', 'string_nullable'], ['approvedEnd', 'string_nullable'],
-    ['reviewedBy', 'string_nullable'], ['reviewedAt', 'string_nullable'], ['reviewComment', 'string'],
+    ['reviewedBy', 'string_nullable'], ['reviewedAt', 'string_nullable'], ['reviewComment', 'string'], ['parentRequestId', 'string_nullable'],
   ]),
   t('overtime_request_history', '早出・残業申請の履歴（追記専用）', [
     ['requestId', 'string'], ['action', 'string'], ['actorId', 'string'], ['actorKind', 'string'], ['before', 'string'], ['after', 'string'], ['comment', 'string'],

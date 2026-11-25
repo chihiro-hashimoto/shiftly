@@ -14,13 +14,8 @@ const WORK: Record<string, string> = { work: '実労働', no_work: '実労働な
 const hm = (iso: string | null) => (iso ? iso.slice(11, 16) : '—');
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
 const local = (iso: string) => iso.slice(0, 16);
-/** 終了時刻は分単位に切り上げる（確認は分単位。秒単位のシフト外の勤務を取りこぼさない。Codex 監査2 #4） */
-function localCeil(iso: string): string {
-  if (iso.length < 19 || iso.slice(17, 19) === '00') return iso.slice(0, 16);
-  const d = new Date(Date.parse(iso) + 60_000 + 9 * 3600_000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-}
+/** 時刻の表示（秒がある場合は秒まで） */
+const hms = (iso: string) => (iso.slice(17, 19) && iso.slice(17, 19) !== '00' ? iso.slice(11, 19) : iso.slice(11, 16));
 /** 長さの表示（1 分未満は秒） */
 const dur = (g: { minutes: number; seconds?: number }) => (g.minutes === 0 && g.seconds ? `${g.seconds}秒` : `${g.minutes}分`);
 
@@ -310,7 +305,7 @@ function OffShiftTab({ onChanged }: { onChanged: () => void }) {
                   <label key={key} className="check" style={{ minHeight: 44, alignItems: 'center' }}>
                     {g.resolution === 'unresolved' ? <input type="checkbox" checked={!!sel[key]} onChange={(e) => setSel((x) => ({ ...x, [key]: e.target.checked }))} style={{ marginTop: 0 }} /> : <span style={{ width: 18 }} />}
                     <span>
-                      {CAT[c.category]} {md(g.start)} {hm(g.start)}〜{hm(localCeil(g.end) + ':00')}（{dur(g)}）{' '}
+                      {CAT[c.category]} {md(g.start)} {hms(g.start)}〜{hms(g.end)}（{dur(g)}）{' '}
                       <span className={`badge ${g.resolution === 'unresolved' ? 'badge-warn' : g.resolution === 'work' ? 'badge-board' : ''}`}>{g.resolution === 'unresolved' ? '未確認' : g.resolution === 'work' ? '実労働' : '実労働なし'}</span>
                     </span>
                   </label>
@@ -370,7 +365,8 @@ function ConfirmOffShift({ result, items, onClose, onDone }: { result: 'work' | 
             disabled={busy || comment.trim().length < 2}
             onClick={async () => {
               const r = await run(
-                () => client.call<{ warning: string | null }>('offshift.confirm', { comment, items: items.map((i) => ({ employeeId: i.employeeId, category: i.category, start: local(i.start), end: localCeil(i.end), result })) }),
+                () => client.call<{ warning: string | null }>('offshift.confirm', { comment, // 候補区間の正確な開始・終了（秒まで）を送る（同じ分の別の候補区間まで確認済みにしない。Codex 監査3 #2）
+                items: items.map((i) => ({ employeeId: i.employeeId, category: i.category, start: i.start.slice(0, 19), end: i.end.slice(0, 19), result })) }),
                 '確認を登録しました',
               );
               if (r) {
@@ -388,7 +384,7 @@ function ConfirmOffShift({ result, items, onClose, onDone }: { result: 'work' | 
         <ul className="small" style={{ margin: 0, paddingLeft: '1.2em' }}>
           {items.map((i) => (
             <li key={`${i.employeeId}${i.start}`}>
-              {i.displayName} {CAT[i.category]} {md(i.start)} {hm(i.start)}〜{hm(localCeil(i.end) + ':00')}（{dur(i)}）
+              {i.displayName} {CAT[i.category]} {md(i.start)} {hms(i.start)}〜{hms(i.end)}（{dur(i)}）
             </li>
           ))}
         </ul>

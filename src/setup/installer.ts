@@ -476,6 +476,8 @@ export class Installer {
       reg.update = { ...(reg.update ?? { target, startedAt: this.d.now() }), target, stage };
       this.persist();
     };
+    // DB の移行が完了したか（移行後の失敗では、旧プログラムへ戻さない。Codex 監査3 #1）
+    let migrated = false;
     try {
       // 承認待ちからの再開では、バックアップ・コード更新・デプロイは完了済み（DB 更新から再開）
       if (!(resuming && reg.update!.stage === 'awaiting_approval')) {
@@ -494,6 +496,7 @@ export class Installer {
       const mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
       if (!mig.ok) throw new Error(`DB 更新に失敗しました（${mig.error?.message ?? ''}）`);
       const need = (mig.data as { requiresApproval: string[] }).requiresApproval;
+      if (need.length === 0) migrated = true;
       if (need.length) {
         step('awaiting_approval');
         return { ok: false, message: '破壊的な DB 変更が含まれるため、内容を確認して承認してください（コードは更新済み・メンテナンス中）', requiresApproval: need };
@@ -507,6 +510,14 @@ export class Installer {
       return { ok: true, message: `バージョン ${target} に更新しました` };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (migrated) {
+        // DB は新しい構造に移行済み。旧プログラムは新しい構造の DB を正しく扱えず、メンテナンス解除の検査も持たないため、
+        // プログラムは新しい版のまま、メンテナンスを継続する（新しい版の Core は構造の一致を検査できる）
+        return this.failUpdate(
+          `更新に失敗しました: ${msg}。DB の更新後に失敗したため、プログラムは新しい版（${target}）のまま、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
+            '原因（整合性の確認結果など）を管理画面「システム・更新」で確認し、解消してから更新を再実行してください。旧版に戻す必要がある場合は docs/update-rollback.md の手順（更新前バックアップの復元と旧版への切替）に従ってください',
+        );
+      }
       const rb = this.rollbackCode(prevCore, prevAdmin);
       return this.failUpdate(`更新に失敗しました: ${msg}。${rb}`);
     }

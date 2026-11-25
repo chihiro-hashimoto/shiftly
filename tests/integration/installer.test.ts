@@ -329,4 +329,29 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     // Core 側でも、構造が一致しない間はメンテナンスを解除できない
     expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: false }, requestId: 'req_maint_off_01' }, 'owner').ok).toBe(false);
   });
+
+  it('Codex 監査3 #1: DB の移行後に完了処理が失敗した場合は、旧プログラムへ戻さずメンテナンスを継続する', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    // 整合性の確認で不合格になる状態（存在しないスタッフを参照する打刻）を作る → 移行は成功し、完了処理で失敗する
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    uow.insert('attendance_events', { employeeId: 'emp_ghost', type: 'clock_in', at: new Date().toISOString().slice(0, 19) + '+09:00', deviceId: null, source: 'admin_manual', requestId: 'req_ghost_0001', actorId: null, note: '' } as never, 'evt');
+    uow.flush();
+    s.deps.release = release('0.3.0');
+    const u = s.make().applyUpdate({ approveDestructive: false });
+    expect(u.ok).toBe(false);
+    expect(u.message).toContain('メンテナンスを継続');
+    // コードは戻していない（新しい版のまま）
+    const proj = s.api.projects.get(coreRef.scriptId!)!;
+    expect(proj.deployments.get(coreRef.deploymentId!)).not.toBe(prevVersion);
+    const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
+  });
 });

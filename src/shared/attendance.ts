@@ -316,9 +316,10 @@ function applyDeclarations(employeeId: Id, sessions: WorkSession[], shifts: Shif
     }
     if (d.kind === 'as_scheduled') {
       // 申告の時点で確認した予定休憩の区間（v1.3 以降の申告は保存済み）を使う。後からシフトの休憩が変わっても控除は増えない
+      // 申告の時点で開始時刻が未設定だった場合は区間を保存していない。後から設定されたシフトの区間で補わない（Codex 監査3 #4）
       const declared = d.intervals[0] ? { start: parseIso(d.intervals[0].start), end: parseIso(d.intervals[0].end) } : null;
       if (declared && planned && planned.start !== null && (planned.start !== declared.start || planned.end !== declared.end)) s.anomalies.push('planned_break_changed_after_declaration');
-      const use = declared ?? (planned && planned.start !== null && planned.end !== null ? { start: planned.start, end: planned.end } : null);
+      const use = declared;
       if (!use) {
         s.anomalies.push(planned ? 'planned_break_time_unset' : 'planned_break_missing');
         continue;

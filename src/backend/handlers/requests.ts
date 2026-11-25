@@ -18,7 +18,7 @@ import type { AttendanceCorrection, BreakDeclaration, Employee, OvertimeRequest,
 import { buildSessions, DEFAULT_SESSION_OPTIONS, effectiveEvents, plannedBreakFor, sessionKeyOf, type EffectiveEvent } from '../../shared/attendance';
 import { addDays, localDateTime, parseIso, toIsoJst, toLocalDate, type LocalDate } from '../../shared/time';
 import { applyTimeBasis, timeBasisView } from '../../shared/worktime';
-import { activeEmployees, confirmedPeriodFor, correctionDate, loadEffective, loadEvents, reviewStatusOf, sessionsFor } from '../services';
+import { confirmedPeriodFor, correctionDate, employeesInPeriod, loadEffective, loadEvents, reviewStatusOf, sessionsFor } from '../services';
 import { sessionView } from './attendance';
 
 const MAX_PAST_DAYS = 62;
@@ -27,6 +27,15 @@ function dt(a: v.Args, k: string, label: string): number {
   const s = a[k];
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) throw E.invalid(`${label}は YYYY-MM-DDTHH:MM 形式で入力してください`);
   return localDateTime(s.slice(0, 10), s.slice(11, 16));
+}
+
+/** 'YYYY-MM-DDTHH:MM' または 'YYYY-MM-DDTHH:MM:SS'（秒まで。シフト外の候補区間を正確に確認するため） */
+function dtSec(a: v.Args, k: string, label: string): number {
+  const s = a[k];
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) throw E.invalid(`${label}は YYYY-MM-DDTHH:MM(:SS) 形式で入力してください`);
+  const sec = s.length === 19 ? Number(s.slice(17, 19)) : 0;
+  if (sec > 59) throw E.invalid(`${label}の秒が不正です`);
+  return localDateTime(s.slice(0, 10), s.slice(11, 16)) + sec * 1000;
 }
 
 function checkPastFuture(ctx: Ctx, t: number, label: string) {
@@ -325,6 +334,7 @@ function submitRequest(ctx: Ctx, employeeId: string, a: v.Args): OvertimeRequest
       reviewedBy: null,
       reviewedAt: null,
       reviewComment: '',
+      parentRequestId: null,
     },
     'otr',
   );
@@ -617,6 +627,13 @@ defineOps([
       const remainder = action === 'partial' ? v.oneOf(a, 'remainder', ['no_work', 'unconfirmed'] as const, '残りの時間の扱い') : null;
       const comment = action === 'approve' ? v.optStr(a, 'comment', 300) : v.str(a, 'comment', { min: 2, max: 300, label: 'コメント・理由' });
       if (r.status === 'cancelled') throw E.conflict('取り消された申請です');
+      if (r.parentRequestId) throw E.invalid('一部承認の残りの確認は、元の申請から処理してください');
+      // 再審査: 以前の一部承認で作った「残りは実労働なし」の確認を失効させてから新しい判断を反映する（履歴は残す。Codex 監査3 #3）
+      for (const child of ctx.uow.list<OvertimeRequest>('overtime_requests').filter((x) => x.parentRequestId === r.id && x.status !== 'cancelled')) {
+        const cancelled: OvertimeRequest = { ...child, status: 'cancelled', reviewedBy: actorId(ctx), reviewedAt: nowIso(ctx), reviewComment: `元の申請の再審査により失効: ${comment}` };
+        ctx.uow.update('overtime_requests', cancelled);
+        history(ctx, cancelled, 'cancel', child, '元の申請の再審査により失効');
+      }
       const base = { ...r, reviewedBy: actorId(ctx), reviewedAt: nowIso(ctx), reviewComment: comment };
       let next: OvertimeRequest;
       let act: OvertimeRequestHistory['action'];
@@ -662,7 +679,8 @@ defineOps([
               category: r.category,
               requestedStart: toIsoJst(rs),
               requestedEnd: toIsoJst(re),
-              reason: `一部承認の残り（申請 ${r.id}）: ${comment}`,
+              reason: `一部承認の残り: ${comment}`,
+              parentRequestId: r.id,
               identityVerified: true,
               requestedBy: actorId(ctx),
               requestedByKind: actorKindForRecord(ctx),
@@ -695,7 +713,8 @@ defineOps([
       const { from, to } = v.range(a, MAX_PAST_DAYS);
       const only = typeof a.employeeId === 'string' ? v.id(a, 'employeeId') : null;
       const unresolvedOnly = v.bool(a, 'unresolvedOnly');
-      const emps = activeEmployees(ctx).filter((e) => !only || e.id === only);
+      // 期間内に在籍したスタッフ（退職者を含む。退職前の勤務の確認ができるように。Codex 監査3 #6）
+      const emps = employeesInPeriod(ctx, from, to).filter((e) => !only || e.id === only);
       const rows: unknown[] = [];
       for (const e of emps) {
         const det = sessionDetails(ctx, e.id, from, to);
@@ -729,8 +748,9 @@ defineOps([
         forbidSelf(ctx, employeeId, '勤務確認');
         const result = v.oneOf(o, 'result', ['work', 'no_work'] as const, '確認結果');
         const category = v.oneOf(o, 'category', CATEGORIES, '区分');
-        const start = dt(o, 'start', '開始日時');
-        const end = dt(o, 'end', '終了日時');
+        // 秒まで受け付ける（同じ分にある別の候補区間まで確認済みにしない。Codex 監査3 #2）
+        const start = dtSec(o, 'start', '開始日時');
+        const end = dtSec(o, 'end', '終了日時');
         if (end <= start || end - start > 24 * 3600_000) throw E.invalid('確認する時間帯が不正です');
         if (end > ctx.now + 60_000) throw E.invalid('未来の時間は確認できません');
         const loc = locate(ctx, employeeId, start, end);
@@ -755,6 +775,7 @@ defineOps([
             reviewedBy: actorId(ctx),
             reviewedAt: nowIso(ctx),
             reviewComment: comment,
+            parentRequestId: null,
           },
           'otr',
         );
@@ -882,7 +903,7 @@ defineOps([
       const d = today(ctx);
       let unresolvedMinutes = 0;
       let unresolvedSessions = 0;
-      for (const e of activeEmployees(ctx)) {
+      for (const e of employeesInPeriod(ctx, addDays(d, -31), d)) {
         const det = sessionDetails(ctx, e.id, addDays(d, -31), d);
         for (const s of det.sessions) if (s.timeBasis && s.timeBasis.unresolvedMs > 0) {
           unresolvedMinutes += Math.max(1, s.timeBasis.unresolvedMinutes);
@@ -902,4 +923,3 @@ defineOps([
     },
   },
 ]);
-
