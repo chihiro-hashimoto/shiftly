@@ -2,17 +2,17 @@
 
 ## 1. 配布の流れ（非公開 GitHub からの更新取得）
 
-- 店長の環境が GitHub から自動でコードを取得することは**しない**（長期有効の GitHub トークンを埋め込まない・未承認の外部コードを自動実行しない）
-- 新バージョンは開発者が `npm run build && npm run build:gas` で作成した `dist/gas/setup/`（Release.js に Core/Admin の配布物と SHA-256 を同梱）を、店長の Setup プロジェクトに反映する（clasp push またはファイル貼り付け）。これが「承認済みの配布物」となる
+- 管理者の環境が GitHub から自動でコードを取得することは**しない**（長期有効の GitHub トークンを埋め込まない・未承認の外部コードを自動実行しない）
+- 新バージョンは開発者が `npm run build && npm run build:gas` で作成した `dist/gas/setup/`（Release.js に Core/Admin の配布物と SHA-256 を同梱）を、管理者の Setup プロジェクトに反映する（clasp push またはファイル貼り付け）。これが「承認済みの配布物」となる
 - Setup は配置前に各ファイルの SHA-256 を再計算して照合（配布経路内の破損・改ざんを検知）
 
 ## 2. 更新手順（Setup の「アップデート」）
 
 | 段階 | 処理 | 失敗時 |
 |---|---|---|
-| 1. 確認 | 現在の版（Core の ping）と Setup 同梱の版を比較し、店長が承認（営業時間外のチェック） | — |
+| 1. 確認 | 現在の版（Core の ping）と Setup 同梱の版を比較し、管理者が承認（営業時間外のチェック） | — |
 | 2. prepare | Core: メンテナンス状態（スタッフの操作を停止）→ **更新前バックアップ**（DB の複製） | バックアップ失敗なら更新せず中止・メンテナンス解除 |
-| 3. code | 配布物検証 → Kiosk/Admin のコードを更新（updateContent） | ロールバック |
+| 3. code | 配布物検証 → Staff/Admin のコードを更新（updateContent） | ロールバック |
 | 4. deploy | バージョン作成 → **既存デプロイを更新**（URL は維持） | ロールバック |
 | 5. migrate | Core: DB マイグレーション（列・テーブル追加は自動。**破壊的変更は承認がなければ停止**） | ロールバック |
 | 6. finish | Core: 整合性確認 → アプリ版を記録 → メンテナンス解除 | ロールバック |
@@ -37,6 +37,6 @@
 |---|---|
 | 更新が途中で止まった（メンテナンスのまま） | 管理画面「システム・更新」で DB 更新の再実行 → 更新の完了。またはメンテナンスの手動解除 |
 | 更新の完了時に整合性チェックで問題が見つかった | 更新は完了せずメンテナンスを継続（Codex 監査1 #13）。内容を確認し、問題ないと判断した場合のみ「問題が見つかっても完了する」にチェックして完了（監査ログに記録）。DB のスキーマとアプリの版が一致しない場合は完了できない |
-| 管理画面（Shiftly-Admin）と Core の接続を失った | Shiftly-Kiosk のエディタで `shiftlyResetAdminPairing` を実行 → Shiftly-Admin のエディタで `shiftlyAuthorize` を実行（Codex 監査1 #12） |
-| Setup の秘密情報（更新用の接続）を失った | 管理画面で更新用接続をリセット（`system.resetSetupPairing`）→ Setup を開くと新しいペアリングコードで Kiosk を再配置・再デプロイ・再接続 |
+| 管理画面（Shiftly-Admin）と Core の接続を失った | Shiftly-Staff のエディタで `shiftlyResetAdminPairing` を実行 → Shiftly-Admin のエディタで `shiftlyAuthorize` を実行（Codex 監査1 #12） |
+| Setup の秘密情報（更新用の接続）を失った | 管理画面で更新用接続をリセット（`system.resetSetupPairing`）→ Setup を開くと新しいペアリングコードで Staff を再配置・再デプロイ・再接続 |
 | 破壊的 DB 変更の承認待ち | Setup に内容が表示される。確認のうえ承認して続行、または更新前バックアップから復元＋コードのロールバック |

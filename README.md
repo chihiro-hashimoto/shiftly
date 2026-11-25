@@ -1,16 +1,16 @@
 # Shiftly（シフトリー）
 
-店舗勤怠・給与・シフト・人件費管理 Web アプリ。Google Apps Script（GAS）をバックエンド、Google スプレッドシートを DB、Google ドライブをファイル保管に使い、**店長本人の Google アカウント内で、月額無料**で動作することを目標としています。
+店舗勤怠・給与・シフト・人件費管理 Web アプリ。Google Apps Script（GAS）をバックエンド、Google スプレッドシートを DB、Google ドライブをファイル保管に使い、**管理者本人の Google アカウント内で、月額無料**で動作することを目標としています。
 
-> 状態: 開発中（Google 実環境・iPad 実機は未検証）。本番利用・実在スタッフの登録・正式な給与支払いへの利用は、検証と並行運用の後に店長の判断で行ってください。詳細は `docs/implementation-status.md`。
+> 状態: 開発中（Google 実環境・iPad 実機は未検証）。v1.3（1 台の iPad での管理者モード、PIN 任意化、本人の勤怠修正、予定休憩の取得確認、シフト基準の給与計算、早出・残業申請）を実装済み（モック・エミュレーションで検証）。本番利用・実在スタッフの登録・正式な給与支払いへの利用は、検証と並行運用の後に管理者の判断で行ってください。詳細は `docs/implementation-status.md`。
 
 ## 構成
 
 | 構成 | 役割 |
 |---|---|
-| Shiftly-Kiosk（Core） | 店舗 iPad 用画面＋業務データの唯一の更新経路（GAS Web アプリ、匿名アクセス・店長として実行） |
-| Shiftly-Admin | 店長用管理画面（GAS Web アプリ、本人のみ） |
-| Shiftly Setup | 上記 2 つを店長のアカウントに自動作成・配置・デプロイ・更新するインストーラー |
+| Shiftly-Staff（Core。v1.2 までの名称は Shiftly-Kiosk） | 店舗 iPad 用画面（スタッフ画面＋右上「管理者ページ」から管理者パスワードで入る管理者モード）＋業務データの唯一の更新経路（GAS Web アプリ、匿名アクセス・Google 所有者として実行） |
+| Shiftly-Admin | Google 所有者の管理画面（PC・スマホ。任意。GAS Web アプリ、本人のみ）。構築・更新・復旧・管理者パスワードの設定 |
+| Shiftly Setup | 上記 2 つを管理者のアカウントに自動作成・配置・デプロイ・更新するインストーラー |
 
 詳細: `docs/architecture.md`
 
@@ -22,7 +22,7 @@ npm ci
 ```bash
 npm run dev
 ```
-→ ブラウザで http://localhost:5173/preview.html（架空のサンプルデータで Kiosk / 管理画面 / セットアップのデモを確認。Google には接続しません）
+→ ブラウザで http://localhost:5173/preview.html（架空のサンプルデータで店舗 iPad（スタッフ・管理者モード）／ Google 所有者の管理画面／セットアップのデモを確認。Google には接続しません。サンプルの PIN・管理者パスワードは画面上部に表示）
 
 ## 検証コマンド
 
@@ -46,7 +46,7 @@ npm run dev
 |---|---|
 | docs/HANDOFF.md | 引き継ぎ（現在の状態・次の作業） |
 | docs/requirements.md | 要件の要点 |
-| docs/implementation-status.md | 機能 F01〜F37 の実装・検証状況 |
+| docs/implementation-status.md | 機能 F01〜F41（F38〜F41 は v1.3 で追加）の実装・検証状況 |
 | docs/architecture.md / decisions.md | 構成と設計判断 |
 | docs/database-schema.md / permission-matrix.md | DB・権限（自動生成） |
 | docs/payroll-specification.md | 給与計算仕様 |

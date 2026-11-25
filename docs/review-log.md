@@ -1,7 +1,27 @@
 # レビュー記録
 
-> - **Codex 独立監査: 累計 1 回**（C-1、2026-11-24）。上限 5 回
+> - **Codex 独立監査: 累計 1 回**（C-1、2026-11-24）。上限 5 回。v1.3 実装後の監査は C-2（累計 2 回目）として実施する（新規セッションへの移行で回数をリセットしない）
 > - R-1 は Codex とは別の、Claude エージェント（アプリケーションセキュリティ担当）による読み取り専用レビュー
+> - 用語: v1.3 で「店長」→「管理者」、「Kiosk」→「Staff」に統一した。以下の過去の記録（C-1・R-1）と原文（docs/reviews/codex-audit-1.md）は、記録の改変を避けるため当時の用語のまま残す
+
+## C-1 #8 の対応（v1.3、2026-11-25）
+
+- ユーザーの判断: v1.3 の休憩管理仕様（予定休憩を初期値とし、退勤操作等で取得状況を確認。予定休憩の存在だけを根拠に、取得していない休憩を控除しない）に従って対応する
+- 対応: 予定休憩は「予定どおり取得」と申告・確認された勤務にだけ控除する（docs/decisions.md D-017）。申告がない勤務は控除せず、給与確定時の確認項目（PLANNED_BREAK_UNCONFIRMED）にする
+- 回帰テスト: tests/unit/worktime.test.ts「Codex 監査1 #8: 申告なしでは予定休憩（applyFixedBreak=true でも）を控除しない」、tests/integration/v13.test.ts「Codex 監査1 #8: 休憩の取得を確認していない場合は控除しない（実働8時間＝9,600円）」（9〜17時・シフトの予定休憩 12〜13時・休憩未取得・時給 1,200 円 → 期待 480 分・9,600 円。C-1 の再現条件と同じ）
+- 既存テストの扱い: tests/unit/attendance.test.ts「固定休憩と打刻休憩を二重控除しない」の期待値は変更していない。休憩申告を渡さない純粋関数としての v1.2 の動作の確認として残り、製品のコード（services.sessionsFor）は必ず休憩申告を渡すため、本番の控除には使われない
+
+## v1.3 でのテストの変更（期待値の緩和ではなく、仕様変更・名称変更に伴うもの）
+
+| ファイル | 変更 | 理由 |
+|---|---|---|
+| tests/helpers/harness.ts | `setupStore` が店舗設定 `payrollTimeBasis` を指定（既定 `actual`）。`kiosk`/`kioskOk` を `staff`/`staffOk` に改名。端末登録の操作名を `staff.enroll` に | v1.2 の給与・勤怠テストは「打刻の実績どおり」を前提に作成されているため、その前提を明示（期待値は不変）。v1.3 のシフト基準は v13.test.ts で `timeBasis: 'shift'` を指定して検証。改名は v1.3 §3 |
+| tests/security/api-security.test.ts | 公開操作の一覧 `kiosk.enroll` → `staff.enroll` | 操作名の変更（v1.3 §3）。公開操作は 2 件のまま（緩和なし） |
+| tests/integration/installer.test.ts | 作成されるプロジェクト名の判定 `Shiftly-Kiosk` → `Shiftly-Staff`、配布物の HTML 名 `kiosk` → `staff`、`kioskUrl` → `staffUrl` | GAS プロジェクト名の変更（v1.3 §3）。重複作成しないこと等の検証内容は不変 |
+| tests/integration/gas-emulation.test.ts | `core.kioskApi` → `core.staffApi`（互換名 `kioskApi` の確認を追加） | 関数名の変更（v1.3 §3） |
+| tests/e2e/staff.spec.ts（旧 kiosk.spec.ts） | PIN 入力後に「確定」を押す。休憩中の退勤のテストは前提として休憩打刻方式に切り替える。タップ領域の CSS クラス名、「店長代理」→「管理者代理」、「店長から委任」→「管理者から委任」 | PIN の可変長化（4〜12 桁のため自動送信しない）、休憩ボタンの標準非表示（v1.3 §8）、名称変更。検証内容は不変 |
+| tests/e2e/admin.spec.ts | 巡回するページ一覧から「給与条件」を除き「申請・確認」を追加。テスト名の「店長」→「管理者」 | 時給ルールの独立したナビゲーションの廃止（v1.3 §7）と新ページ |
+
 
 ## C-1（2026-11-24）Codex 独立監査 1 回目
 

@@ -2,7 +2,7 @@
 
 > このファイルは `npm run docs`（scripts/gen-docs.ts）で src/backend/schema.ts から自動生成されます。手で編集しないでください。
 
-- スキーマバージョン: **1**
+- スキーマバージョン: **2**
 - 1テーブル = 1シート。1行目はヘッダー、A列 `id` が主キー（ランダムID。氏名は主キーにしない）
 - 全テーブル共通列: `id`（主キー）/ `createdAt` / `updatedAt`（ISO 8601 +09:00）/ `version`（楽観的排他。更新ごとに+1）
 - 月別パーティション: `<table>__YYYY_MM` シート（打刻原本・監査ログ・冪等性キー）。期間取得時は必要な月のシートだけを読む
@@ -49,6 +49,8 @@
 | `dailyBackupGenerations` | 数値（必須） |
 | `monthlyBackupGenerations` | 数値（必須） |
 | `payrollRulesConfirmedAt` | 文字列（null可） |
+| `breakMode` | 文字列（必須） |
+| `payrollTimeBasis` | 文字列（必須） |
 
 ## employees
 
@@ -111,6 +113,7 @@ PIN・管理用パスコードのハッシュ（平文なし。pepper は Script
 | `failedCount` | 数値（必須） |
 | `lockedUntil` | 文字列（null可） |
 | `mustChange` | 真偽 |
+| `lockCount` | 数値（必須） |
 
 ## permissions
 
@@ -175,6 +178,7 @@ PIN・管理用パスコードのハッシュ（平文なし。pepper は Script
 | `lastActivityAt` | 文字列（必須） |
 | `stepUpUntil` | 文字列（null可） |
 | `revokedAt` | 文字列（null可） |
+| `verified` | 真偽 |
 
 ## wage_rules
 
@@ -264,6 +268,13 @@ PIN・管理用パスコードのハッシュ（平文なし。pepper は Script
 | `status` | 文字列（必須） |
 | `before` | 文字列（必須） |
 | `after` | 文字列（必須） |
+| `identityVerified` | 真偽 |
+| `reviewStatus` | 文字列（必須） |
+| `reviewedAt` | 文字列（null可） |
+| `reviewedBy` | 文字列（null可） |
+| `reviewComment` | 文字列（必須） |
+| `groupId` | 文字列（null可） |
+| `sessionKey` | 文字列（null可） |
 
 ## manual_breaks
 
@@ -652,12 +663,124 @@ DB マイグレーション履歴
 | `requestedBy` | 文字列（必須） |
 | `note` | 文字列（必須） |
 
+## admin_credentials
+
+管理者パスワードのハッシュ（店舗に 1 行。平文なし。pepper は Script Properties）
+
+| 列 | 型 |
+|---|---|
+| `id` | 文字列（必須） |
+| `createdAt` | 文字列（必須） |
+| `updatedAt` | 文字列（必須） |
+| `version` | 数値（必須） |
+| `hash` | 文字列（必須） |
+| `salt` | 文字列（必須） |
+| `iterations` | 数値（必須） |
+| `algo` | 文字列（必須） |
+| `failedCount` | 数値（必須） |
+| `lockedUntil` | 文字列（null可） |
+| `lockCount` | 数値（必須） |
+| `setBy` | 文字列（必須） |
+| `passwordChangedAt` | 文字列（必須） |
+
+## admin_sessions
+
+管理者セッション（トークンはハッシュのみ。月別。無操作 5 分で失効）（月別パーティション: `createdAt` の年月）
+
+| 列 | 型 |
+|---|---|
+| `id` | 文字列（必須） |
+| `createdAt` | 文字列（必須） |
+| `updatedAt` | 文字列（必須） |
+| `version` | 数値（必須） |
+| `tokenHash` | 文字列（必須） |
+| `deviceId` | 文字列（必須） |
+| `expiresAt` | 文字列（必須） |
+| `lastActivityAt` | 文字列（必須） |
+| `reauthUntil` | 文字列（null可） |
+| `revokedAt` | 文字列（null可） |
+| `revokeReason` | 文字列（必須） |
+
+## break_declarations
+
+休憩の取得申告（予定休憩の取得確認・未取得・短縮・延長・時間帯違い・追加）
+
+| 列 | 型 |
+|---|---|
+| `id` | 文字列（必須） |
+| `createdAt` | 文字列（必須） |
+| `updatedAt` | 文字列（必須） |
+| `version` | 数値（必須） |
+| `employeeId` | 文字列（必須） |
+| `sessionKey` | 文字列（必須） |
+| `laborDate` | 文字列（必須） |
+| `shiftId` | 文字列（null可） |
+| `kind` | 文字列（必須） |
+| `intervals` | JSON |
+| `reason` | 文字列（必須） |
+| `identityVerified` | 真偽 |
+| `actorId` | 文字列（必須） |
+| `actorKind` | 文字列（必須） |
+| `status` | 文字列（必須） |
+| `reviewStatus` | 文字列（必須） |
+| `reviewedAt` | 文字列（null可） |
+| `reviewedBy` | 文字列（null可） |
+| `reviewComment` | 文字列（必須） |
+
+## overtime_requests
+
+早出・残業申請／シフト外勤務の確認（申請状態と実労働の確認を分けて保持）
+
+| 列 | 型 |
+|---|---|
+| `id` | 文字列（必須） |
+| `createdAt` | 文字列（必須） |
+| `updatedAt` | 文字列（必須） |
+| `version` | 数値（必須） |
+| `employeeId` | 文字列（必須） |
+| `sessionKey` | 文字列（null可） |
+| `workDate` | 文字列（必須） |
+| `shiftId` | 文字列（null可） |
+| `category` | 文字列（必須） |
+| `requestedStart` | 文字列（必須） |
+| `requestedEnd` | 文字列（必須） |
+| `reason` | 文字列（必須） |
+| `identityVerified` | 真偽 |
+| `requestedBy` | 文字列（必須） |
+| `requestedByKind` | 文字列（必須） |
+| `status` | 文字列（必須） |
+| `workConfirmation` | 文字列（必須） |
+| `approvedStart` | 文字列（null可） |
+| `approvedEnd` | 文字列（null可） |
+| `reviewedBy` | 文字列（null可） |
+| `reviewedAt` | 文字列（null可） |
+| `reviewComment` | 文字列（必須） |
+
+## overtime_request_history
+
+早出・残業申請の履歴（追記専用）
+
+| 列 | 型 |
+|---|---|
+| `id` | 文字列（必須） |
+| `createdAt` | 文字列（必須） |
+| `updatedAt` | 文字列（必須） |
+| `version` | 数値（必須） |
+| `requestId` | 文字列（必須） |
+| `action` | 文字列（必須） |
+| `actorId` | 文字列（必須） |
+| `actorKind` | 文字列（必須） |
+| `before` | 文字列（必須） |
+| `after` | 文字列（必須） |
+| `comment` | 文字列（必須） |
+
 ## 業務データ以外の保存場所
 
 | 情報 | 保存場所 | 備考 |
 |---|---|---|
-| PIN の pepper、Admin/Setup との HMAC 鍵、DB ファイルID、フォルダID | Core の Script Properties | DB・バックアップに含めない |
+| PIN・管理者パスワードの pepper、Admin/Setup との HMAC 鍵、DB ファイルID、フォルダID | Core の Script Properties | DB・バックアップに含めない |
 | 端末トークン | iPad の localStorage（平文はここのみ）／ DB には SHA-256 | 端末認証情報のみ永続保存を許可 |
-| セッションの最終操作時刻・ノンス・試行回数 | Core の CacheService | 消失時は安全側（失効）に倒す |
-| Setup の進捗・リソースID | Setup の UserProperties ＋ 店長 Drive のレジストリ JSON | ペアリングコード・Setup 鍵は UserProperties のみ |
-| 給与明細 PDF・出力ファイル・バックアップ | 店長の Drive（Shiftly/02〜05 フォルダ） | drive.file スコープ（Shiftly 作成ファイルのみ） |
+| スタッフのセッショントークン・管理者セッショントークン | iPad の画面のメモリ上のみ（平文）／ DB には SHA-256 | ブラウザに永続保存しない。再読み込みで破棄 |
+| セッション（スタッフ・管理者）の最終操作時刻・ノンス・試行回数 | Core の CacheService | 消失時は安全側（失効）に倒す |
+| Setup の進捗・リソースID | Setup の UserProperties ＋ 管理者 Drive のレジストリ JSON | ペアリングコード・Setup 鍵は UserProperties のみ |
+| 給与明細 PDF・出力ファイル・バックアップ | 管理者の Drive（Shiftly/02〜05 フォルダ） | drive.file スコープ（Shiftly 作成ファイルのみ） |

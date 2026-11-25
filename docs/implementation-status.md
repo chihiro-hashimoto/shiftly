@@ -1,4 +1,4 @@
-# 実装状況（F01〜F37）
+# 実装状況（F01〜F41）
 
 凡例: **実装** = コード実装済み ／ **自動テスト** = モック（メモリ環境）・エミュレーションでの自動テスト済み ／ **画面確認** = プレビュー上で Playwright による操作確認済み ／ **実環境** = Google 実環境・iPad 実機での確認（**現時点ですべて未実施**）
 
@@ -7,24 +7,24 @@
 | ID | 機能 | 主な実装 | 実装 | 自動テスト | 画面確認 | 実環境 |
 |---|---|---|---|---|---|---|
 | F01 | 初期設定・DB自動生成 | gas/platform.ts provisionStorage, handlers/system.ts initialize, gas/core.ts shiftlyAuthorize | ○ | ○（エミュ） | — | 未 |
-| F02 | 店舗端末登録・管理 | auth.ts（登録コード・端末トークン・失効）, Devices.tsx, Kiosk 登録画面 | ○ | ○ | ○ | 未 |
-| F03 | 店長・スタッフ認証 | Admin 署名, PIN（PBKDF2+pepper）, セッション, ステップアップ | ○ | ○ | ○ | 未 |
+| F02 | 店舗端末登録・管理 | auth.ts（登録コード・端末トークン・失効）, Devices.tsx, Staff 登録画面 | ○ | ○ | ○ | 未 |
+| F03 | 管理者・スタッフ認証 | Admin 署名, PIN（PBKDF2+pepper）, セッション, ステップアップ。v1.3: PIN 任意（本人未確認セッション）・4〜12桁・段階的ロック延長 | ○ | ○ | ○ | 未 |
 | F04 | スタッフ個別権限 | permissions.ts, api.ts 認可, Staff.tsx | ○ | ○ | ○ | 未 |
-| F05 | スタッフ・雇用条件 | handlers/staff.ts, Staff.tsx, PayConditions.tsx | ○ | ○ | ○ | 未 |
-| F06 | 出勤・退勤打刻 | attendance.punch（サーバー時刻・冪等・状態遷移）, Kiosk | ○ | ○ | ○ | 未 |
-| F07 | 休憩管理 | 打刻休憩・固定休憩（二重控除防止）・手動休憩、休憩不足検出 | ○ | ○ | ○ | 未 |
+| F05 | スタッフ・雇用条件 | handlers/staff.ts, Staff.tsx, PayConditions.tsx（v1.3: スタッフ・権限の「時給ルール」「月給設定」から対象スタッフを固定して開く。独立したナビゲーションは廃止） | ○ | ○ | ○ | 未 |
+| F06 | 出勤・退勤打刻 | attendance.punch（サーバー時刻・冪等・状態遷移）, Staff | ○ | ○ | ○ | 未 |
+| F07 | 休憩管理 | v1.3: 予定休憩方式（標準。休憩ボタン非表示・退勤時に取得確認）／休憩打刻方式。予定休憩は取得を確認したものだけ控除、申告（取得なし・短縮・延長・時間帯違い・追加）、二重控除防止、休憩不足は警告のみ | ○ | ○ | ○ | 未 |
 | F08 | 勤務時間・勤怠確認 | sessionsFor, attendance.list/mine, Attendance.tsx | ○ | ○ | ○ | 未 |
-| F09 | 勤怠修正・修正履歴 | attendance.correct（原本不変・理由・修正者）, 紙タイムカード登録 | ○ | ○ | ○ | 未 |
+| F09 | 勤怠修正・修正履歴 | attendance.correct（原本不変・理由・修正者）, 紙タイムカード登録。v1.3: 確認状態・本人確認の有無の列を追加 | ○ | ○ | ○ | 未 |
 | F10 | シフト作成・編集・公開 | handlers/shifts-leave.ts, Shifts.tsx | ○ | ○ | ○ | 未 |
 | F11 | 遅刻・早退・欠勤検出 | notifications.ts, attendance.compareShifts（給与へ自動反映しない） | ○ | ○ | ○ | 未 |
 | F12 | 個人・曜日・時間帯別時給 | wage.ts（優先度・矛盾検出・営業日基準）, payconf | ○ | ○ | ○ | 未 |
 | F13 | 月給制 | payroll.ts（法定内残業・固定残業代・欠勤/遅刻早退控除は承認分のみ） | ○ | ○ | ○ | 未 |
-| F14 | 給与計算 | labor.ts / payroll.ts（BigInt 有理数、法令ルールセット版管理） | ○ | ○（ゴールデン50件） | ○ | 未 |
+| F14 | 給与計算 | labor.ts / payroll.ts（BigInt 有理数、法令ルールセット版管理）。v1.3: シフト基準の給与対象時間（F41） | ○ | ○（ゴールデン50件＋v1.3 期待値） | ○ | 未 |
 | F15 | 交通費 | 未設定/なし/日額/月額/実費、上限 | ○ | ○ | ○ | 未 |
 | F16 | 各種手当 | 頻度・期間・割増算定基礎（7種のみ除外可）・最低賃金算入 | ○ | ○ | ○ | 未 |
 | F17 | 控除 | 手動入力、未入力と控除なしの区別 | ○ | ○ | ○ | 未 |
 | F18 | 給与締め・確定・訂正 | 状態遷移・確定前チェック・スナップショット・訂正リビジョン | ○ | ○ | ○ | 未 |
-| F19 | 給与明細PDF・本人閲覧 | payslip.ts, payslips.*（iPad は HTML 表示のみ、PDF は店長端末） | ○ | ○ | ○（本人閲覧） | 未（PDF 変換未検証） |
+| F19 | 給与明細PDF・本人閲覧 | payslip.ts, payslips.*（iPad は HTML 表示のみ、PDF は管理者端末） | ○ | ○ | ○（本人閲覧） | 未（PDF 変換未検証） |
 | F20 | 有給休暇 | leave.ts（通常/比例付与・FIFO・時効・年5日）, Leave.tsx | ○ | ○ | ○ | 未 |
 | F21 | アプリ内通知 | notifications.scan（重複防止・日次）, Notifications.tsx | ○ | ○ | ○ | 未 |
 | F22 | 人件費分析 | analytics.ts（日・曜日・時間帯・スタッフ別、配賦、個人給与推定防止） | ○ | ○ | ○ | 未 |
@@ -40,20 +40,26 @@
 | F32 | GAS自動デプロイ | versions.create / deployments.create・update | ○ | ○（擬似） | — | 未 |
 | F33 | 既存環境の自動検出 | Registry（UserProperties＋Drive レジストリ）, Core の環境情報ファイル | ○ | ○（擬似） | — | 未 |
 | F34 | セットアップ中断・再開 | 工程ごとの冪等実行・進捗保存・再実行 | ○ | ○（擬似） | ○（デモ） | 未 |
-| F35 | DB構造の自動更新 | migrations.ts, system.migrate（破壊的変更は承認制）、ヘッダー追加 | ○（枠組み。現時点で移行定義なし） | ○ | ○ | 未 |
+| F35 | DB構造の自動更新 | migrations.ts, system.migrate（破壊的変更は承認制）、ヘッダー追加。v1.3: スキーマ v1→v2（列・テーブルの追加のみ） | ○ | ○ | ○ | 未 |
 | F36 | アプリアップデート | installer.applyUpdate（更新前バックアップ・URL維持） | ○ | ○（擬似） | ○（デモ） | 未 |
-| F37 | ロールバック・環境復旧 | rollbackCode, backup.restore, system.resetSetupPairing | ○ | ○ | ○ | 未 |
+| F37 | ロールバック・環境復旧 | rollbackCode, backup.restore, system.resetSetupPairing。v1.3: 復元で管理者パスワード・申請・確認状態を引き継ぎ、v1 のバックアップは候補を v2 に移行 | ○ | ○ | ○ | 未 |
+| **F38** | 店舗 iPad の管理者モード（v1.3） | adminAuth.*（管理者パスワード・管理者セッション・再認証・変更/再設定）, api.ts（principal=admin・adminAllowed・reauth）, StaffApp（管理者ページ・管理者モード）, System.tsx（Google 所有者の設定画面） | ○ | ○ | ○ | 未 |
+| **F39** | スタッフ本人の勤怠修正・休憩の申告（v1.3） | attendance.selfCorrect / myDetails / breaks.declare / attendance.review / reviewList, StaffApp「勤怠確認・修正」, Requests.tsx | ○ | ○ | ○ | 未 |
+| **F40** | 早出・残業申請と管理者確認（v1.3） | overtime.request / mine / cancel / resubmit / list / review, overtime_request_history, Requests.tsx, 通知 | ○ | ○ | ○（一部） | 未 |
+| **F41** | シフト基準の給与対象時間・シフト外勤務の確認（v1.3） | worktime.ts（A〜G）, services.payableSessionsFor, offshift.list / confirm, 給与の確定前チェック | ○ | ○（§9.2 の期待値） | ○（一部） | 未 |
 
-画面確認: 各ページの実装担当がプレビュー上で主要操作を Playwright で実行（コンソールエラー0、1440px/390px で横スクロールなし）。加えて管理画面全16ページの巡回 E2E（tests/e2e/admin.spec.ts）。店舗 iPad の委任メニューでの追加認証を伴う操作は一部未確認。
+画面確認: 各ページの実装担当がプレビュー上で主要操作を Playwright で実行（コンソールエラー0、1440px/390px で横スクロールなし）。加えて管理画面全16ページの巡回 E2E（tests/e2e/admin.spec.ts。v1.3 で「給与条件」を「申請・確認」に置き換え）と、店舗 iPad の管理者モード・PIN 未設定・退勤時の休憩確認・本人の勤怠修正の E2E（tests/e2e/staff.spec.ts）。F40/F41 の管理画面（申請の承認・シフト外勤務の一括確認）の操作は E2E 未自動化（API の統合テストで確認）。店舗 iPad の委任メニューでの追加認証を伴う操作は一部未確認。
 
 ## 既知の制約・未対応
 
 - 変形労働時間制・フレックス・標準報酬日額方式・出来高払の割増算定・期間途中の日割は未対応（選択・該当時は給与確定を禁止）
 - 時間単位年休は未対応（労使協定が必要なため）。半日単位は設定で許可した場合のみ
 - 月給制スタッフの時間帯別人件費は配賦しない（日別まで）
-- 店長交代時の環境間データ移行の自動化はなし（手順のみ）
+- 管理者交代時の環境間データ移行の自動化はなし（手順のみ）
 - Google 実環境・iPad 実機・WebKit での検証は未実施（docs/technical-verification.md §4）
-- Codex 独立監査: 1 回目を実施（2026-11-24、指摘 15 件。14 件修正、1 件はユーザー判断待ち。docs/review-log.md）
+- Codex 独立監査: 1 回目を実施（2026-11-24、指摘 15 件。14 件修正、#8 は v1.3 の休憩仕様で対応）。v1.3 実装後の監査は累計 2 回目（docs/review-log.md）
+- v1.3: 管理者モードでは「システム・更新」（構築・更新・復旧）と管理者パスワードの再設定はできない（Google 所有者の Shiftly-Admin で行う）
+- v1.3: PIN 未設定のスタッフは、本人確認ができないため給与・明細・勤怠の詳細を店舗 iPad で確認できない（管理者が対面で確認して伝えるか、PIN を設定する）
 
 ## 既知の画面側の制約（API 追加で改善可能）
 - シフトの週表示は月曜始まり固定（店舗の週の起算曜日はスタッフが参照できない）
