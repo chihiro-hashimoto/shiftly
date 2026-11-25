@@ -3,7 +3,7 @@
  * F14 給与計算 / F18 給与締め・確定・訂正 / F19 給与明細PDF発行・本人閲覧
  */
 import { defineOps } from '../api';
-import { audit, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
+import { actorId, audit, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PaySlip } from '../../shared/types';
@@ -81,7 +81,7 @@ function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], rea
       status: 'confirmed',
       computedAt: nowIso(ctx),
       confirmedAt: nowIso(ctx),
-      confirmedBy: isOwner(ctx) ? 'owner' : staff(ctx).employeeId,
+      confirmedBy: actorId(ctx),
       calcVersion: output.calcVersion,
       totals: output.totals,
       snapshot: snapshotOf(input, output),
@@ -189,6 +189,7 @@ defineOps([
   {
     name: 'payroll.confirm',
     auth: 'staff_or_owner',
+    reauth: true,
     perms: ['payroll_confirm'],
     sensitive: true,
     mutating: true,
@@ -209,6 +210,7 @@ defineOps([
   {
     name: 'payroll.correct',
     auth: 'staff_or_owner',
+    reauth: true,
     perms: ['payroll_confirm'],
     sensitive: true,
     mutating: true,

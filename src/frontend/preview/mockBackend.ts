@@ -46,7 +46,7 @@ export function startPreviewBackend(): PreviewBackend {
     paidLeaveWageMethod: 'normal',
   });
   const en = o<{ code: string }>('devices.createEnrollment', { deviceName: '店舗iPad（デモ）' });
-  const dev = handleRequest(be, { op: 'kiosk.enroll', args: { code: en.code, userAgent: 'preview' }, requestId: 'seed_enroll_01' });
+  const dev = handleRequest(be, { op: 'staff.enroll', args: { code: en.code, userAgent: 'preview' }, requestId: 'seed_enroll_01' });
   if (!dev.ok) throw new Error(dev.error.message);
   const deviceToken = (dev.data as { deviceToken: string }).deviceToken;
 

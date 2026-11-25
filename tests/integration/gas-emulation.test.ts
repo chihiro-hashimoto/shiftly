@@ -56,7 +56,7 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     const en = owner('devices.createEnrollment', { deviceName: 'iPad' });
 
     const kiosk = (req: unknown) => JSON.parse(core.kioskApi(JSON.stringify(req)));
-    const dev = kiosk({ op: 'kiosk.enroll', args: { code: en.code }, requestId: 'emu_enroll_1' });
+    const dev = kiosk({ op: 'staff.enroll', args: { code: en.code }, requestId: 'emu_enroll_1' });
     expect(dev.ok).toBe(true);
     const device = dev.data.deviceToken;
     const login = kiosk({ op: 'auth.login', args: { employeeId: e.id, pin: '482913' }, device, requestId: 'emu_login_01' });

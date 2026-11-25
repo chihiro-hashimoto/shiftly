@@ -89,6 +89,19 @@ export interface StoreSettings extends RowMeta {
   monthlyBackupGenerations: number;
   /** 設定済み項目の確認フラグ（給与確定前チェック用） */
   payrollRulesConfirmedAt: string | null;
+  /**
+   * 休憩の記録方式（v1.3）
+   * - scheduled: シフトの予定休憩を初期値とし、退勤時に取得状況を確認（休憩ボタンは非表示）
+   * - punch: 従来の休憩開始・終了の打刻
+   * どちらの方式でも、予定休憩は「取得した」と確認されたものだけを控除する
+   */
+  breakMode?: 'scheduled' | 'punch';
+  /**
+   * 給与計算の時間基準（v1.3）
+   * - shift: 公開済みシフトを基準とし、シフト外の時間は確認（申請・管理者確認）されたものだけを加算
+   * - actual: 打刻（修正後）の実績どおり
+   */
+  payrollTimeBasis?: 'shift' | 'actual';
 }
 
 // ---------------------------------------------------------------- 従業員
@@ -141,6 +154,34 @@ export interface Credential extends RowMeta {
   failedCount: number;
   lockedUntil: string | null;
   mustChange: boolean;
+  /** 連続ロック回数（v1.3: ロックのたびに時間を延長。認証成功で 0） */
+  lockCount: number;
+}
+
+/** 管理者パスワード（v1.3。店舗に 1 件。平文は保存しない） */
+export interface AdminCredential extends RowMeta {
+  hash: string;
+  salt: string;
+  iterations: number;
+  algo: 'pbkdf2-sha256-peppered-v1';
+  failedCount: number;
+  lockedUntil: string | null;
+  lockCount: number;
+  /** 設定・変更した経路（owner=Google 所有者 / admin=管理者本人の変更） */
+  setBy: 'owner' | 'admin';
+  passwordChangedAt: string;
+}
+
+/** 管理者セッション（v1.3。トークンはハッシュのみ。無操作 5 分・絶対期限あり） */
+export interface AdminSessionRow extends RowMeta {
+  tokenHash: string;
+  deviceId: Id;
+  expiresAt: string;
+  lastActivityAt: string;
+  /** 重要操作の再認証の有効期限 */
+  reauthUntil: string | null;
+  revokedAt: string | null;
+  revokeReason: string;
 }
 
 export type PermissionKey =
@@ -198,6 +239,8 @@ export interface SessionRow extends RowMeta {
   lastActivityAt: string;
   stepUpUntil: string | null;
   revokedAt: string | null;
+  /** PIN で本人確認したセッションか（v1.3: PIN 未設定のスタッフは false） */
+  verified: boolean;
 }
 
 // ---------------------------------------------------------------- 給与条件
@@ -338,16 +381,98 @@ export interface AttendanceCorrection extends RowMeta {
   newAt: string | null;
   reason: string;
   actorId: Id; // 'owner' or employeeId
-  actorKind: 'owner' | 'staff';
+  actorKind: 'owner' | 'admin' | 'staff';
   status: 'applied' | 'pending' | 'rejected';
   before: string; // JSON
   after: string; // JSON
+  /** v1.3: 本人確認（PIN）済みの申告か。管理者の修正は true（v1.2 以前の行には無い） */
+  identityVerified?: boolean;
+  /**
+   * v1.3: 管理者の確認状態
+   * not_required=管理者自身の修正 / unreviewed=本人修正（反映済み・未確認） / pending=承認待ち（未反映）
+   * approved=確認済み・承認 / rejected=却下（未反映）
+   */
+  reviewStatus?: 'not_required' | 'unreviewed' | 'pending' | 'approved' | 'rejected';
+  reviewedAt?: string | null;
+  reviewedBy?: Id | null;
+  reviewComment?: string;
+  /** 同じ申告（出勤・退勤の組）を束ねる ID */
+  groupId?: string | null;
+  /** 修正対象の勤務（出勤打刻の有効 ID）。打刻漏れの追加は null */
+  sessionKey?: string | null;
 }
 
 export interface BreakInterval {
   start: Instant;
   end: Instant | null;
-  source: 'punch' | 'fixed' | 'manual';
+  /** punch=休憩打刻 / fixed=予定休憩（取得を確認済み） / manual=管理者登録 / declared=本人・管理者の休憩申告 / excluded=給与計算の対象外（シフト外で実労働が確認されていない時間。休憩ではない） */
+  source: 'punch' | 'fixed' | 'manual' | 'declared' | 'excluded';
+}
+
+/**
+ * 休憩の取得申告（v1.3）。勤務（出勤打刻の有効 ID）ごと。追記専用で、同じ勤務の最新の有効な申告を使う
+ * - as_scheduled: 予定休憩どおり取得
+ * - not_taken: 休憩を取得できなかった
+ * - custom: 実際の休憩（短縮・延長・時間帯違い・追加）を intervals で申告
+ */
+export interface BreakDeclaration extends RowMeta {
+  employeeId: Id;
+  sessionKey: string;
+  laborDate: LocalDate;
+  shiftId: Id | null;
+  kind: 'as_scheduled' | 'not_taken' | 'custom';
+  intervals: Array<{ start: string; end: string }>;
+  reason: string;
+  identityVerified: boolean;
+  actorId: Id;
+  actorKind: 'owner' | 'admin' | 'staff';
+  /** applied=反映 / pending=管理者確認待ち（未反映） / rejected=却下 / superseded=新しい申告で置換 */
+  status: 'applied' | 'pending' | 'rejected' | 'superseded';
+  reviewStatus: 'not_required' | 'unreviewed' | 'pending' | 'approved' | 'rejected';
+  reviewedAt: string | null;
+  reviewedBy: Id | null;
+  reviewComment: string;
+}
+
+/**
+ * 早出・残業申請／シフト外勤務の確認（v1.3）
+ * 申請状態（status）と、実労働として確認されたか（workConfirmation）は区別する。
+ * 却下・差戻しは申請内容の扱いであり、実労働の賃金不払いを意味しない（未確認のシフト外時間は給与確定を止める）
+ */
+export interface OvertimeRequest extends RowMeta {
+  employeeId: Id;
+  /** 対象勤務（出勤打刻の有効 ID）。打刻漏れ等で勤務が特定できない場合は null */
+  sessionKey: string | null;
+  workDate: LocalDate;
+  shiftId: Id | null;
+  /** early=早出 / late=残業 / no_shift=シフト未登録の勤務 / between=シフト間 / other=打刻差異等 */
+  category: 'early' | 'late' | 'no_shift' | 'between' | 'other';
+  requestedStart: string;
+  requestedEnd: string;
+  reason: string;
+  identityVerified: boolean;
+  requestedBy: Id;
+  requestedByKind: 'owner' | 'admin' | 'staff';
+  /** pending=申請中 / approved=承認済み / returned=差戻し / rejected=却下 / cancelled=取消 / confirmed=確認済み（管理者の直接確認） */
+  status: 'pending' | 'approved' | 'returned' | 'rejected' | 'cancelled' | 'confirmed';
+  /** 実労働の確認: work=実労働 / no_work=実労働なし（私的滞在等） / unconfirmed=未確認 */
+  workConfirmation: 'unconfirmed' | 'work' | 'no_work';
+  /** 実労働として確認された区間（一部承認を含む） */
+  approvedStart: string | null;
+  approvedEnd: string | null;
+  reviewedBy: Id | null;
+  reviewedAt: string | null;
+  reviewComment: string;
+}
+
+export interface OvertimeRequestHistory extends RowMeta {
+  requestId: Id;
+  action: 'submit' | 'resubmit' | 'approve' | 'partial_approve' | 'return' | 'reject' | 'cancel' | 'confirm_work' | 'confirm_no_work' | 'admin_register' | 'reopen';
+  actorId: Id;
+  actorKind: 'owner' | 'admin' | 'staff';
+  before: string;
+  after: string;
+  comment: string;
 }
 
 /** 打刻原本＋修正から再構築される勤務（派生データ。いつでも再生成可能） */
@@ -510,7 +635,11 @@ export type NotificationKind =
   | 'backup_failed'
   | 'drive_capacity'
   | 'update_available'
-  | 'min_wage_violation';
+  | 'min_wage_violation'
+  | 'overtime_request_pending'
+  | 'self_correction_unreviewed'
+  | 'off_shift_unconfirmed'
+  | 'credential_locked';
 
 export interface NotificationRow extends RowMeta {
   kind: NotificationKind;
@@ -528,7 +657,7 @@ export interface NotificationRow extends RowMeta {
 // ---------------------------------------------------------------- 監査・システム
 export interface AuditLog extends RowMeta {
   at: string;
-  actorKind: 'owner' | 'staff' | 'system';
+  actorKind: 'owner' | 'admin' | 'staff' | 'system';
   actorId: Id | null;
   action: string;
   targetType: string;

@@ -26,7 +26,7 @@ describe('認証', () => {
   it('public 操作は限定（status / enroll）で、未登録端末に店舗名を返さない', () => {
     const { h } = setup();
     const pub = listOps().filter((o) => o.auth === 'public').map((o) => o.name).sort();
-    expect(pub).toEqual(['kiosk.enroll', 'system.status']);
+    expect(pub).toEqual(['staff.enroll', 'system.status']); // v1.3: kiosk.enroll → staff.enroll（名称変更。公開操作は 2 件のまま）
     const r: any = handleRequest(h.be, { op: 'system.status' });
     expect(r.data.storeName).toBeNull();
   });
@@ -64,17 +64,17 @@ describe('認証', () => {
     h.login(a, '482913');
     const sess = h.session;
     const en = h.ownerOk('devices.createEnrollment', { deviceName: '2台目' });
-    const d2 = h.kioskOk('kiosk.enroll', { code: en.code }, { device: '' }).deviceToken;
+    const d2 = h.kioskOk('staff.enroll', { code: en.code }, { device: '' }).deviceToken;
     expect(code(h.kiosk('auth.me', undefined, { device: d2, session: sess }))).toBe('UNAUTHENTICATED');
   });
   it('登録コードは使い捨て・期限付き', () => {
     const { h } = setup();
     const en = h.ownerOk('devices.createEnrollment', { deviceName: 'x' });
-    expect(h.kiosk('kiosk.enroll', { code: en.code }, { device: '' }).ok).toBe(true);
-    expect(h.kiosk('kiosk.enroll', { code: en.code }, { device: '' }).ok).toBe(false);
+    expect(h.kiosk('staff.enroll', { code: en.code }, { device: '' }).ok).toBe(true);
+    expect(h.kiosk('staff.enroll', { code: en.code }, { device: '' }).ok).toBe(false);
     const en2 = h.ownerOk('devices.createEnrollment', { deviceName: 'y' });
     h.advance(16 * 60_000);
-    expect(h.kiosk('kiosk.enroll', { code: en2.code }, { device: '' }).ok).toBe(false);
+    expect(h.kiosk('staff.enroll', { code: en2.code }, { device: '' }).ok).toBe(false);
   });
 });
 

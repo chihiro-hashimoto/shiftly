@@ -39,16 +39,22 @@ export class Harness {
     if (!r.ok) throw new Error(`${op} failed: ${r.error.code} ${r.error.message}`);
     return r.data as T;
   }
-  /** 初期化・店舗設定（給与計算に必要な項目を設定済み）・端末登録 */
-  setupStore(opts: { confirmRules?: boolean } = {}) {
+  /**
+   * 初期化・店舗設定（給与計算に必要な項目を設定済み）・端末登録
+   * timeBasis: v1.2 で作成した給与・勤怠のテストは「打刻（修正後）の実績どおり」を前提とするため既定は 'actual'。
+   *            v1.3 のシフト基準のテストは 'shift'（製品の既定値）を指定する
+   */
+  setupStore(opts: { confirmRules?: boolean; timeBasis?: 'shift' | 'actual'; breakMode?: 'scheduled' | 'punch' } = {}) {
     this.ownerOk('system.initialize', { storeName: 'テスト店舗', envId: 'env_test' });
     this.ownerOk('settings.update', {
       workingTimeSystem: 'standard', weekStartDay: 0, statutoryHolidayWeekday: 0, payrollClosingDay: 0, payMonthOffset: 1, payDay: 10,
       minimumWages: [{ effectiveFrom: '2025-10-01', hourly: 1000, label: 'テスト用（架空）', sourceNote: 'テスト' }], paidLeaveWageMethod: 'normal', agreement36: 'concluded',
+      payrollTimeBasis: opts.timeBasis ?? 'actual',
+      ...(opts.breakMode ? { breakMode: opts.breakMode } : {}),
     });
     if (opts.confirmRules !== false) this.ownerOk('settings.confirmPayrollRules');
     const en = this.ownerOk<{ code: string }>('devices.createEnrollment', { deviceName: '店舗iPad' });
-    const r = this.kioskOk<{ deviceToken: string }>('kiosk.enroll', { code: en.code, userAgent: 'test' }, { device: '' });
+    const r = this.kioskOk<{ deviceToken: string }>('staff.enroll', { code: en.code, userAgent: 'test' }, { device: '' });
     this.device = r.deviceToken;
   }
   addStaff(name: string, pin: string, opts: { payType?: 'hourly' | 'monthly'; rate?: number; perms?: string[]; stepUp?: string } = {}) {

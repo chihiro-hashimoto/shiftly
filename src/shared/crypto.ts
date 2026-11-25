@@ -103,6 +103,34 @@ export function validatePinFormat(pin: unknown, length = 6): string | null {
   return null;
 }
 
+/**
+ * v1.3 の PIN 方針: 4〜12 桁の数字（先頭 0 可）。同じ数字の繰り返し・連続した数字は不可。
+ * 短い PIN は推測されやすいため、サーバー側で試行回数制限と段階的なロック延長を行う（docs/security.md）
+ */
+export const PIN_MIN_LENGTH = 4;
+export const PIN_MAX_LENGTH = 12;
+export function validatePinPolicy(pin: unknown): string | null {
+  if (typeof pin !== 'string' || !/^\d+$/.test(pin) || pin.length < PIN_MIN_LENGTH || pin.length > PIN_MAX_LENGTH)
+    return `PINは${PIN_MIN_LENGTH}〜${PIN_MAX_LENGTH}桁の数字で入力してください`;
+  return validatePinFormat(pin, pin.length);
+}
+
+/**
+ * 管理者パスワードの方針（v1.3）: 12〜128 文字、英大文字・英小文字・数字・記号のうち 3 種類以上、
+ * 同じ文字の 4 回以上の連続や、推測しやすい語（password, shiftly, admin 等）を含まない
+ */
+export const ADMIN_PASSWORD_MIN = 12;
+export function validateAdminPassword(pw: unknown): string | null {
+  if (typeof pw !== 'string' || pw.length < ADMIN_PASSWORD_MIN || pw.length > 128) return `管理者パスワードは${ADMIN_PASSWORD_MIN}〜128文字で入力してください`;
+  if (/\s/.test(pw)) return '管理者パスワードに空白は使用できません';
+  const kinds = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((r) => r.test(pw)).length;
+  if (kinds < 3) return '英大文字・英小文字・数字・記号のうち3種類以上を含めてください';
+  if (/(.)\1{3,}/.test(pw)) return '同じ文字を4回以上続けることはできません';
+  const lower = pw.toLowerCase();
+  for (const w of ['password', 'passw0rd', 'shiftly', 'admin', 'qwerty', '123456', 'abcdef']) if (lower.includes(w)) return `推測されやすい語（${w}）は使用できません`;
+  return null;
+}
+
 export function validateStepUpSecret(s: unknown): string | null {
   if (typeof s !== 'string' || s.length < 10 || s.length > 64) return '管理用パスコードは10〜64文字で入力してください';
   if (!/[A-Za-z]/.test(s) || !/\d/.test(s)) return '管理用パスコードには英字と数字を含めてください';

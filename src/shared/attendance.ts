@@ -9,6 +9,7 @@
 import type {
   AttendanceCorrection,
   AttendanceEvent,
+  BreakDeclaration,
   BreakInterval,
   Id,
   ManualBreak,
@@ -124,6 +125,13 @@ export interface SessionBuildOptions {
   missingClockOutHours: number;
   /** 異常に長い勤務とみなす時間 */
   abnormalHours: number;
+  /**
+   * v1.3: 休憩の取得申告（勤務キー=出勤打刻の有効 ID ごとの最新の反映済み申告）。
+   * 指定した場合、シフトの予定休憩は「予定どおり取得（as_scheduled）」と申告された勤務にだけ控除する
+   * （予定休憩の存在だけで控除しない。shift.applyFixedBreak は使わない）。
+   * 未指定の場合は v1.2 の動作（applyFixedBreak の指定で、打刻休憩がない勤務に予定休憩を適用）
+   */
+  breakDeclarations?: BreakDeclaration[];
 }
 
 export const DEFAULT_SESSION_OPTIONS: Omit<SessionBuildOptions, 'now'> = {
@@ -230,21 +238,25 @@ export function buildSessions(
     target.breaks.push({ start: s, end: en, source: 'manual' });
   }
 
-  // 固定休憩: 打刻/手動休憩が 1 件もないセッションに限り、シフトで「固定休憩を適用」が指定されている場合のみ
-  for (const s of sessions) {
-    if (s.breaks.length > 0) continue;
-    const shift = shifts.find(
-      (sh) => sh.employeeId === employeeId && sh.date === s.laborDate && sh.status === 'published' && sh.applyFixedBreak,
-    );
-    if (!shift || shift.breakMinutes <= 0 || !shift.fixedBreakStart) continue;
-    const bs = localDateTime(shift.date, shift.fixedBreakStart);
-    const be = bs + shift.breakMinutes * MINUTE_MS;
-    if (s.end === null || bs < s.start || be > s.end) {
-      s.anomalies.push('fixed_break_outside_work');
-      continue;
+  if (opt.breakDeclarations) {
+    applyDeclarations(employeeId, sessions, shifts, opt.breakDeclarations);
+  } else {
+    // v1.2 の動作（純粋関数としての互換）: 打刻/手動休憩が 1 件もないセッションに限り、シフトで「固定休憩を適用」が指定されている場合のみ
+    for (const s of sessions) {
+      if (s.breaks.length > 0) continue;
+      const shift = shifts.find(
+        (sh) => sh.employeeId === employeeId && sh.date === s.laborDate && sh.status === 'published' && sh.applyFixedBreak,
+      );
+      if (!shift || shift.breakMinutes <= 0 || !shift.fixedBreakStart) continue;
+      const bs = localDateTime(shift.date, shift.fixedBreakStart);
+      const be = bs + shift.breakMinutes * MINUTE_MS;
+      if (s.end === null || bs < s.start || be > s.end) {
+        s.anomalies.push('fixed_break_outside_work');
+        continue;
+      }
+      s.breaks.push({ start: bs, end: be, source: 'fixed' });
+      s.anomalies.push('fixed_break_applied');
     }
-    s.breaks.push({ start: bs, end: be, source: 'fixed' });
-    s.anomalies.push('fixed_break_applied');
   }
 
   for (const s of sessions) {
@@ -261,6 +273,88 @@ export function buildSessions(
     }
   }
   return sessions;
+}
+
+/** 勤務キー（出勤打刻の有効 ID）。休憩申告・勤怠修正・早出残業申請で勤務を指す */
+export function sessionKeyOf(s: WorkSession): string {
+  return s.eventIds[0] ?? `${s.employeeId}:${s.start}`;
+}
+
+/** 勤務に対応する予定休憩（公開済みシフトの休憩。開始時刻が未設定なら start=null） */
+export function plannedBreakFor(s: WorkSession, shifts: Shift[]): { shiftId: string; start: Instant | null; end: Instant | null; minutes: number } | null {
+  const end = s.end ?? s.start;
+  const cands = shifts.filter((sh) => sh.employeeId === s.employeeId && sh.status === 'published' && sh.breakMinutes > 0);
+  // 勤務と時間が重なるシフトを優先し、なければ労働日が同じシフト
+  const overlap = cands.find((sh) => localDateTime(sh.date, sh.start) < end && localDateTime(sh.date, sh.end) > s.start);
+  const sh = overlap ?? cands.find((x) => x.date === s.laborDate);
+  if (!sh) return null;
+  if (!sh.fixedBreakStart) return { shiftId: sh.id, start: null, end: null, minutes: sh.breakMinutes };
+  const bs = localDateTime(sh.date, sh.fixedBreakStart);
+  return { shiftId: sh.id, start: bs, end: bs + sh.breakMinutes * MINUTE_MS, minutes: sh.breakMinutes };
+}
+
+/**
+ * v1.3 の休憩合成
+ * - as_scheduled: 予定休憩を控除（打刻・手動休憩がある場合は二重控除を避けて予定休憩を加えない）
+ * - not_taken: 休憩なし（打刻休憩があれば申告を優先し、矛盾として記録）
+ * - custom: 申告した休憩区間を実際の休憩とする（打刻休憩・予定休憩は使わない。管理者登録の手動休憩は残す）
+ * - 申告なし: 予定休憩は控除しない（予定休憩がある勤務は「取得未確認」として記録）
+ */
+function applyDeclarations(employeeId: Id, sessions: WorkSession[], shifts: Shift[], decls: BreakDeclaration[]) {
+  const byKey = new Map<string, BreakDeclaration>();
+  for (const d of decls) if (d.employeeId === employeeId && d.status === 'applied') {
+    const prev = byKey.get(d.sessionKey);
+    if (!prev || prev.createdAt <= d.createdAt) byKey.set(d.sessionKey, d);
+  }
+  for (const s of sessions) {
+    const d = byKey.get(sessionKeyOf(s));
+    const planned = plannedBreakFor(s, shifts);
+    const hasPunch = s.breaks.some((b) => b.source === 'punch');
+    if (!d) {
+      if (planned && s.end !== null && s.breaks.length === 0) s.anomalies.push('planned_break_unconfirmed');
+      continue;
+    }
+    if (d.kind === 'as_scheduled') {
+      if (!planned) {
+        s.anomalies.push('planned_break_missing');
+        continue;
+      }
+      if (planned.start === null || planned.end === null) {
+        s.anomalies.push('planned_break_time_unset');
+        continue;
+      }
+      if (s.breaks.length > 0) {
+        // 打刻・手動休憩がある勤務に予定休憩を重ねない（二重控除の防止）
+        s.anomalies.push('planned_break_not_added_due_to_punch');
+        continue;
+      }
+      if (s.end === null || planned.start < s.start || planned.end > s.end) {
+        s.anomalies.push('fixed_break_outside_work');
+        continue;
+      }
+      s.breaks.push({ start: planned.start, end: planned.end, source: 'fixed' });
+      s.anomalies.push('planned_break_confirmed');
+    } else if (d.kind === 'not_taken') {
+      if (hasPunch) s.anomalies.push('break_declaration_overrides_punch');
+      s.breaks = s.breaks.filter((b) => b.source === 'manual');
+      s.anomalies.push('break_not_taken_declared');
+    } else {
+      if (hasPunch) s.anomalies.push('break_declaration_overrides_punch');
+      s.breaks = s.breaks.filter((b) => b.source === 'manual');
+      for (const iv of d.intervals) {
+        const bs = parseIso(iv.start);
+        const be = parseIso(iv.end);
+        if (be <= bs) continue;
+        if (bs < s.start || (s.end !== null && be > s.end)) {
+          s.anomalies.push('declared_break_outside_work');
+          continue;
+        }
+        s.breaks.push({ start: bs, end: be, source: 'declared' });
+      }
+      s.anomalies.push('breaks_declared');
+    }
+    if (d.identityVerified === false) s.anomalies.push('break_declared_unverified');
+  }
 }
 
 /** 重複する休憩区間を統合（固定＋打刻の二重控除防止の最終防衛線） */

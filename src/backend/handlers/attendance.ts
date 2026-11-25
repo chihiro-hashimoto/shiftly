@@ -3,13 +3,15 @@
  * F06 出勤・退勤打刻 / F07 休憩 / F08 勤務時間・勤怠確認 / F09 勤怠修正・修正履歴 / F11 遅刻・早退・欠勤検出
  */
 import { defineOps } from '../api';
-import { audit, isOwner, settings, staff, today, type Ctx } from '../context';
+import { actorId, actorKindForRecord, audit, isOwner, settings, staff, today } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
-import type { AttendanceCorrection, AttendanceEvent, Employee, ManualBreak, PayrollPeriod, PayrollResult, PunchType, Shift, WorkSession } from '../../shared/types';
+import type { AttendanceCorrection, AttendanceEvent, Employee, ManualBreak, PunchType, Shift, WorkSession } from '../../shared/types';
 import { allowedPunches, breakMs, effectiveState, netWorkMs, PUNCH_LABEL, STATE_LABEL, validatePunch } from '../../shared/attendance';
 import { addDays, localDateTime, MINUTE_MS, toIsoJst, type LocalDate } from '../../shared/time';
-import { activeEmployees, loadEffective, loadEvents, sessionsFor } from '../services';
+import { activeEmployees, confirmedPeriodFor, loadEffective, loadEvents, sessionsFor } from '../services';
+import { openSessionKey, readBreakDeclaration, saveBreakDeclaration } from './requests';
+import { sessionKeyOf } from '../../shared/attendance';
 import { detectAttendanceNotifications } from '../../shared/notifications';
 
 const PUNCH_TYPES = ['clock_in', 'clock_out', 'break_start', 'break_end'] as const;
@@ -36,17 +38,11 @@ export function sessionView(s: WorkSession, now: number) {
   };
 }
 
-function confirmedPeriodFor(ctx: Ctx, d: LocalDate): PayrollPeriod | null {
-  const p = ctx.uow.list<PayrollPeriod>('payroll_periods').find((x) => x.from <= d && d <= x.to);
-  if (!p) return null;
-  const confirmed = ctx.uow.list<PayrollResult>('payroll_results').some((r) => r.periodId === p.id && (r.status === 'confirmed' || r.status === 'issued'));
-  return confirmed ? p : null;
-}
-
 defineOps([
   {
     name: 'attendance.punch',
     auth: 'session',
+    allowUnverified: true,
     perms: ['punch_self'],
     mutating: true,
     handler: (ctx, raw) => {
@@ -55,6 +51,8 @@ defineOps([
       if (!ctx.requestId) throw E.invalid('requestId が必要です');
       const type = v.oneOf(a, 'type', PUNCH_TYPES, '打刻種別') as PunchType;
       const endBreakConfirmed = v.bool(a, 'endBreakConfirmed');
+      // v1.3: 退勤と同時に休憩の取得状況を申告（予定どおり・取れなかった・実際の休憩）
+      const breakDecl = type === 'clock_out' && a.breakDeclaration !== undefined && a.breakDeclaration !== null ? readBreakDeclaration(v.obj(a.breakDeclaration)) : null;
       // 正式な打刻時刻はサーバー時刻（端末の時刻は使用しない）。秒未満は切り捨て
       const at = Math.floor(ctx.now / 1000) * 1000;
       const evs = loadEffective(ctx, me.employeeId, addDays(today(ctx), -3), today(ctx));
@@ -66,9 +64,19 @@ defineOps([
           { employeeId: me.employeeId, type: t, at: toIsoJst(at), deviceId: me.deviceId, source: 'kiosk', requestId: ctx.requestId!, actorId: null, note },
           'evt',
         );
-      if (check.autoBreakEnd) insert('break_end', '休憩中の退勤（本人確認済み）');
+      const openKey = type === 'clock_out' ? openSessionKey(evs) : null;
+      if (check.autoBreakEnd) insert('break_end', me.verified ? '休憩中の退勤（本人確認済み）' : '休憩中の退勤（本人未確認）');
       const ev = insert(type, check.staleOpenSession ? '前回勤務の退勤打刻漏れあり' : '');
-      audit(ctx, 'attendance.punch', 'attendance_event', ev.id, `${PUNCH_LABEL[type]}`);
+      audit(ctx, 'attendance.punch', 'attendance_event', ev.id, `${PUNCH_LABEL[type]}${me.verified ? '' : '（PIN未設定）'}`);
+      let breakStatus: string | null = null;
+      if (breakDecl && openKey) {
+        const ss = sessionsFor(ctx, me.employeeId, addDays(today(ctx), -2), today(ctx));
+        const target = ss.find((x) => sessionKeyOf(x) === openKey);
+        if (target) {
+          const shifts = ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === me.employeeId && x.status === 'published' && x.date >= addDays(target.laborDate, -1) && x.date <= addDays(target.laborDate, 1));
+          breakStatus = saveBreakDeclaration(ctx, me.employeeId, target, breakDecl, shifts).status;
+        }
+      }
       const after = effectiveState([...evs, ...(check.autoBreakEnd ? [{ id: 'x', employeeId: me.employeeId, type: 'break_end' as const, at, origin: 'original' as const }] : []), { id: ev.id, employeeId: me.employeeId, type, at, origin: 'original' as const }], at);
       return {
         eventId: ev.id,
@@ -78,12 +86,14 @@ defineOps([
         state: after.state,
         stateLabel: STATE_LABEL[after.state],
         staleOpenSession: !!check.staleOpenSession,
+        breakDeclaration: breakStatus,
       };
     },
   },
   {
     name: 'attendance.lookup',
     auth: 'session',
+    allowUnverified: true,
     perms: ['punch_self'],
     mutating: false,
     handler: (ctx, raw) => {
@@ -208,11 +218,18 @@ defineOps([
           newType,
           newAt,
           reason: source === 'paper_recovery' ? `【紙タイムカードから登録】${reason}` : reason,
-          actorId: isOwner(ctx) ? 'owner' : staff(ctx).employeeId,
-          actorKind: isOwner(ctx) ? 'owner' : 'staff',
+          actorId: actorId(ctx),
+          actorKind: actorKindForRecord(ctx),
           status: 'applied',
           before,
           after: JSON.stringify({ type: newType, at: newAt }),
+          identityVerified: true,
+          reviewStatus: 'not_required',
+          reviewedAt: null,
+          reviewedBy: null,
+          reviewComment: '',
+          groupId: null,
+          sessionKey: null,
         },
         'cor',
       );
@@ -238,7 +255,7 @@ defineOps([
       const ss = sessionsFor(ctx, employeeId, addDays(toIsoJst(start).slice(0, 10), -1), toIsoJst(start).slice(0, 10));
       const inside = ss.find((s) => s.end !== null && start >= s.start && end <= s.end);
       if (!inside) throw E.invalid('休憩は勤務時間内で登録してください');
-      const b = ctx.uow.insert<ManualBreak>('manual_breaks', { employeeId, start: toIsoJst(start), end: toIsoJst(end), reason, actorId: isOwner(ctx) ? 'owner' : staff(ctx).employeeId }, 'brk');
+      const b = ctx.uow.insert<ManualBreak>('manual_breaks', { employeeId, start: toIsoJst(start), end: toIsoJst(end), reason, actorId: actorId(ctx) }, 'brk');
       audit(ctx, 'attendance.add_break', 'manual_break', b.id, `対象スタッフ=${employeeId}`);
       return b;
     },

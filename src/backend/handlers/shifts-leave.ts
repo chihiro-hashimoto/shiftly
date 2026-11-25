@@ -3,7 +3,7 @@
  * F10 シフト作成・編集・公開 / F20 有給休暇管理
  */
 import { defineOps } from '../api';
-import { audit, has, isOwner, settings, staff, today, type Ctx } from '../context';
+import { actorId, audit, has, isOwner, settings, staff, today, type Ctx } from '../context';
 import { E } from '../errors';
 import * as v from '../validate';
 import type { Employee, EmploymentHistory, LeaveGrant, LeaveTransaction, Shift, ShiftPattern } from '../../shared/types';
@@ -18,15 +18,20 @@ function readShift(a: v.Args) {
   if (parseTimeToMinutes(end) <= parseTimeToMinutes(start)) throw E.invalid('終了時刻は開始時刻より後にしてください（翌日にまたがる場合は 26:00 のように入力）');
   if (parseTimeToMinutes(end) - parseTimeToMinutes(start) > 20 * 60) throw E.invalid('1回のシフトは20時間以内で入力してください');
   const breakMinutes = v.int(a, 'breakMinutes', { min: 0, max: 240, label: '休憩（分）' });
-  const applyFixedBreak = v.bool(a, 'applyFixedBreak');
-  const fixedBreakStart = applyFixedBreak ? v.time(a, 'fixedBreakStart', { allowNextDay: true, label: '固定休憩の開始時刻' }) : null;
+  // v1.3: 予定休憩の開始時刻（任意）。予定休憩は「取得した」と確認された勤務にだけ控除する（時刻の指定だけでは控除しない）
+  // applyFixedBreak は v1.2 の列との互換のため「予定休憩の時刻を指定した」ことを表す
+  const fixedBreakStart =
+    (a.fixedBreakStart !== undefined && a.fixedBreakStart !== null && a.fixedBreakStart !== '') || v.bool(a, 'applyFixedBreak')
+      ? v.time(a, 'fixedBreakStart', { allowNextDay: true, label: '予定休憩の開始時刻' })
+      : null;
+  const applyFixedBreak = fixedBreakStart !== null;
   if (fixedBreakStart && (parseTimeToMinutes(fixedBreakStart) < parseTimeToMinutes(start) || parseTimeToMinutes(fixedBreakStart) + breakMinutes > parseTimeToMinutes(end)))
-    throw E.invalid('固定休憩はシフト時間内に設定してください');
+    throw E.invalid('予定休憩はシフト時間内に設定してください');
   return { date, start, end, breakMinutes, applyFixedBreak, fixedBreakStart, note: v.optStr(a, 'note', 200) };
 }
 
 function history(ctx: Ctx, shiftId: string, action: string, before: unknown, after: unknown) {
-  ctx.uow.insert('shift_history', { shiftId, action, before: JSON.stringify(before ?? null), after: JSON.stringify(after ?? null), actorId: isOwner(ctx) ? 'owner' : staff(ctx).employeeId } as never, 'shh');
+  ctx.uow.insert('shift_history', { shiftId, action, before: JSON.stringify(before ?? null), after: JSON.stringify(after ?? null), actorId: actorId(ctx) } as never, 'shh');
 }
 
 function overlaps(a: Pick<Shift, 'date' | 'start' | 'end'>, b: Pick<Shift, 'date' | 'start' | 'end'>): boolean {
@@ -42,6 +47,8 @@ defineOps([
   {
     name: 'shifts.published',
     auth: 'session',
+    // 公開シフトは店舗内で共有される情報のため、本人未確認（PIN 未設定）でも閲覧可
+    allowUnverified: true,
     perms: ['shift_view_published'],
     mutating: false,
     handler: (ctx, raw) => {
@@ -288,7 +295,7 @@ defineOps([
       // 登録済みの未来日の取得も差し引いた残日数で判定（日付順を入れ替えた超過登録の防止）
       const bal = leaveBalance(grants, txs.map((t) => (t.kind === 'take' && t.date > date ? { ...t, date } : t)), date);
       if (bal.total < days) throw E.invalid(`有給残日数が不足しています（残 ${bal.total}日）`);
-      const t = ctx.uow.insert<LeaveTransaction>('leave_transactions', { employeeId, date, days, kind: 'take', scheduledMinutes, grantId: null, reason: v.optStr(a, 'reason', 200), actorId: isOwner(ctx) ? 'owner' : staff(ctx).employeeId }, 'ltx');
+      const t = ctx.uow.insert<LeaveTransaction>('leave_transactions', { employeeId, date, days, kind: 'take', scheduledMinutes, grantId: null, reason: v.optStr(a, 'reason', 200), actorId: actorId(ctx) }, 'ltx');
       audit(ctx, 'leave.take', 'leave_transaction', t.id, `取得 ${days}日 対象=${employeeId}`);
       return t;
     },
@@ -305,7 +312,7 @@ defineOps([
       if (!isOwner(ctx) && staff(ctx).employeeId === employeeId) throw E.forbidden('自分自身の有給調整');
       const days = v.num(a, 'days', { min: -40, max: 40 });
       if (days === 0 || Math.round(days * 2) !== days * 2) throw E.invalid('調整日数は0.5日単位で入力してください');
-      const t = ctx.uow.insert<LeaveTransaction>('leave_transactions', { employeeId, date: v.date(a, 'date'), days, kind: 'adjust', scheduledMinutes: null, grantId: null, reason: v.str(a, 'reason', { min: 2, max: 300, label: '理由' }), actorId: isOwner(ctx) ? 'owner' : staff(ctx).employeeId }, 'ltx');
+      const t = ctx.uow.insert<LeaveTransaction>('leave_transactions', { employeeId, date: v.date(a, 'date'), days, kind: 'adjust', scheduledMinutes: null, grantId: null, reason: v.str(a, 'reason', { min: 2, max: 300, label: '理由' }), actorId: actorId(ctx) }, 'ltx');
       audit(ctx, 'leave.adjust', 'leave_transaction', t.id, `調整 ${days}日 対象=${employeeId}`);
       return t;
     },

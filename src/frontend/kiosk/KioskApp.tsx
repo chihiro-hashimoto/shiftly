@@ -97,7 +97,7 @@ function Enroll({ client, onEnrolled }: { client: Client; onEnrolled: (t: string
     setBusy(true);
     setErr('');
     try {
-      const r = await client.call<{ deviceToken: string }>('kiosk.enroll', { code, userAgent: navigator.userAgent.slice(0, 200) });
+      const r = await client.call<{ deviceToken: string }>('staff.enroll', { code, userAgent: navigator.userAgent.slice(0, 200) });
       onEnrolled(r.deviceToken);
     } catch (e) {
       setErr(e instanceof Error ? e.message : '登録に失敗しました');
@@ -144,7 +144,7 @@ function KioskHome({ client, onDeviceRevoked }: { client: KioskClient; onDeviceR
   const now = useClock();
 
   const loadBoot = useCallback(async () => {
-    const r = await client.raw<typeof boot>('kiosk.bootstrap');
+    const r = await client.raw<typeof boot>('staff.bootstrap');
     if (r.ok) {
       setBoot(r.data);
       setOnline(true);

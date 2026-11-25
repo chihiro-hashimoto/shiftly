@@ -6,10 +6,10 @@ import { defineOps } from '../api';
 import { audit, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
 import { E } from '../errors';
 import * as v from '../validate';
-import { createEnrollment, enrollDevice, ensureSecrets, login, logout, revokeSessionsWhere, setCredential, stepUp, verifyCredential } from '../auth';
+import { createEnrollment, enrollDevice, ensureSecrets, login, logout, revokeAdminSessions, revokeSessionsWhere, setCredential, stepUp, verifyCredential } from '../auth';
 import type { AuditLog, BusinessHours, Device, Employee, MinimumWageEntry, StoreSettings } from '../../shared/types';
 import { SCHEMA_VERSION, TABLES } from '../schema';
-import { validatePinFormat } from '../../shared/crypto';
+import { validatePinPolicy } from '../../shared/crypto';
 import { effectiveState, STATE_LABEL, allowedPunches } from '../../shared/attendance';
 import { loadEffective, activeEmployees } from '../services';
 import { addDays } from '../../shared/time';
@@ -92,6 +92,8 @@ function validateSettingsPatch(a: v.Args): Partial<StoreSettings> {
   if (has('retentionYears')) out.retentionYears = v.int(a, 'retentionYears', { min: 5, max: 20, label: '保存期間（法定5年未満は不可）' });
   if (has('dailyBackupGenerations')) out.dailyBackupGenerations = v.int(a, 'dailyBackupGenerations', { min: 7, max: 120 });
   if (has('monthlyBackupGenerations')) out.monthlyBackupGenerations = v.int(a, 'monthlyBackupGenerations', { min: 12, max: 120 });
+  if (has('breakMode')) out.breakMode = v.oneOf(a, 'breakMode', ['scheduled', 'punch'] as const, '休憩の記録方式');
+  if (has('payrollTimeBasis')) out.payrollTimeBasis = v.oneOf(a, 'payrollTimeBasis', ['shift', 'actual'] as const, '給与計算の時間基準');
   return out;
 }
 
@@ -99,7 +101,25 @@ function validateSettingsPatch(a: v.Args): Partial<StoreSettings> {
 const PAYROLL_KEYS: Array<keyof StoreSettings> = [
   'workingTimeSystem', 'weekStartDay', 'statutoryHolidayWeekday', 'weekly44Confirmed', 'overtime60StartDay', 'payrollClosingDay',
   'payMonthOffset', 'payDay', 'yenRounding', 'minimumWages', 'paidLeaveWageMethod', 'businessDayCutoff', 'publicHolidays', 'halfDayLeaveAllowed',
+  'payrollTimeBasis',
 ];
+
+function enrollHandler(ctx: Ctx, raw: unknown) {
+  const a = v.obj(raw);
+  return enrollDevice(ctx, v.str(a, 'code', { max: 20, label: '登録コード' }), v.str(a, 'userAgent', { optional: true, max: 300 }));
+}
+
+function bootstrapHandler(ctx: Ctx) {
+  const s = settings(ctx);
+  // 初期画面に給与・詳細勤怠・PIN の有無は出さない（氏名と表示順のみ）
+  return {
+    storeName: s.storeName,
+    idleTimeoutSec: s.idleTimeoutSec,
+    breakMode: s.breakMode,
+    staff: activeEmployees(ctx).map((e) => ({ id: e.id, displayName: e.displayName, kana: e.kana })),
+    serverTime: ctx.now,
+  };
+}
 
 defineOps([
   {
@@ -134,6 +154,7 @@ defineOps([
   {
     name: 'system.info',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     allowInMaintenance: true,
     handler: (ctx) => ({
@@ -163,6 +184,7 @@ defineOps([
   {
     name: 'system.integrityCheck',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     allowInMaintenance: true,
     handler: (ctx) => integrityCheck(ctx),
@@ -170,12 +192,14 @@ defineOps([
   {
     name: 'settings.get',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: (ctx) => settings(ctx),
   },
   {
     name: 'settings.update',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx, raw) => {
       const patch = validateSettingsPatch(v.obj(raw));
@@ -191,6 +215,8 @@ defineOps([
   {
     name: 'settings.confirmPayrollRules',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx) => {
       const s = settings(ctx);
@@ -211,18 +237,23 @@ defineOps([
   {
     name: 'devices.list',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: (ctx) => ctx.uow.list<Device>('devices').map(({ tokenHash: _t, ...d }) => d),
   },
   {
     name: 'devices.createEnrollment',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => createEnrollment(ctx, v.str(v.obj(raw), 'deviceName', { max: 40, label: '端末名' })),
   },
   {
     name: 'devices.revoke',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => {
       const id = v.id(v.obj(raw), 'deviceId');
@@ -230,6 +261,7 @@ defineOps([
       if (!d) throw E.notFound('端末');
       ctx.uow.update('devices', { ...d, status: 'revoked', revokedAt: nowIso(ctx) });
       revokeSessionsWhere(ctx, (s) => s.deviceId === id);
+      revokeAdminSessions(ctx, (s) => s.deviceId === id, 'device_revoked');
       audit(ctx, 'device.revoke', 'device', id, '端末の失効');
       return { ok: true };
     },
@@ -237,6 +269,7 @@ defineOps([
   {
     name: 'devices.rename',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
@@ -248,29 +281,25 @@ defineOps([
     },
   },
   {
-    name: 'kiosk.enroll',
+    name: 'staff.enroll',
     auth: 'public',
     mutating: true,
     secretResponse: true,
-    handler: (ctx, raw) => {
-      const a = v.obj(raw);
-      return enrollDevice(ctx, v.str(a, 'code', { max: 20, label: '登録コード' }), v.str(a, 'userAgent', { optional: true, max: 300 }));
-    },
+    handler: (ctx, raw) => enrollHandler(ctx, raw),
   },
+  {
+    name: 'staff.bootstrap',
+    auth: 'device',
+    mutating: false,
+    handler: (ctx) => bootstrapHandler(ctx),
+  },
+  // 互換: v1.2 以前の名称（Kiosk）。更新の前から開いていた店舗端末の画面が、更新後も定期的なスタッフ一覧の再取得を行えるように残す
+  // （内部の API 識別子のみ。端末登録 kiosk.enroll は公開操作を増やさないため互換名を残さない。docs/decisions.md D-014）
   {
     name: 'kiosk.bootstrap',
     auth: 'device',
     mutating: false,
-    handler: (ctx) => {
-      const s = settings(ctx);
-      // 初期画面に給与・詳細勤怠は出さない（氏名と表示順のみ）
-      return {
-        storeName: s.storeName,
-        idleTimeoutSec: s.idleTimeoutSec,
-        staff: activeEmployees(ctx).map((e) => ({ id: e.id, displayName: e.displayName, kana: e.kana })),
-        serverTime: ctx.now,
-      };
-    },
+    handler: (ctx) => bootstrapHandler(ctx),
   },
   // ------------------------------------------------------------ スタッフ認証
   {
@@ -283,13 +312,17 @@ defineOps([
       if (ctx.principal.kind !== 'device') throw E.deviceNotRegistered();
       const dev = ctx.uow.get<Device>('devices', ctx.principal.deviceId);
       if (!dev) throw E.deviceNotRegistered();
-      const r = login(ctx, dev, v.id(a, 'employeeId', 'スタッフ'), v.str(a, 'pin', { max: 12, label: 'PIN' }));
+      // PIN は任意（未指定・null は「PIN なし」）。PIN の要否はサーバーの DB で判定する
+      const pin = a.pin === undefined || a.pin === null ? null : v.str(a, 'pin', { max: 12, label: 'PIN', optional: true });
+      const r = login(ctx, dev, v.id(a, 'employeeId', 'スタッフ'), pin);
       const evs = loadEffective(ctx, r.employee.id, addDays(today(ctx), -3), today(ctx));
       const { state: st, staleOpenSince } = effectiveState(evs, ctx.now);
       return {
         sessionToken: r.sessionToken,
         employee: { id: r.employee.id, displayName: r.employee.displayName, payType: r.employee.payType },
         permissions: r.permissions,
+        verified: r.verified,
+        breakMode: settings(ctx).breakMode,
         state: st,
         stateLabel: STATE_LABEL[st],
         allowedPunches: allowedPunches(st),
@@ -300,6 +333,7 @@ defineOps([
   {
     name: 'auth.logout',
     auth: 'session',
+    allowUnverified: true,
     mutating: true,
     handler: (ctx) => {
       logout(ctx, staff(ctx).sessionId);
@@ -310,6 +344,7 @@ defineOps([
   {
     name: 'auth.me',
     auth: 'session',
+    allowUnverified: true,
     mutating: false,
     handler: (ctx) => {
       const s = staff(ctx);
@@ -320,6 +355,8 @@ defineOps([
         employee: { id: e.id, displayName: e.displayName, payType: e.payType },
         permissions: s.permissions,
         stepUp: s.stepUp,
+        verified: s.verified,
+        breakMode: settings(ctx).breakMode,
         state: st,
         stateLabel: STATE_LABEL[st],
         allowedPunches: allowedPunches(st),
@@ -347,7 +384,7 @@ defineOps([
       const s = staff(ctx);
       const current = v.str(a, 'currentPin', { max: 12, label: '現在のPIN' });
       const next = v.str(a, 'newPin', { max: 12, label: '新しいPIN' });
-      const err = validatePinFormat(next);
+      const err = validatePinPolicy(next);
       if (err) throw E.invalid(err);
       // 本人確認として現在の PIN を再検証
       verifyCurrentPin(ctx, s.employeeId, current);
@@ -361,6 +398,7 @@ defineOps([
   {
     name: 'audit.list',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
@@ -390,7 +428,7 @@ export function integrityCheck(ctx: Ctx) {
     const idset = new Set(rows.map((r) => r.id));
     if (idset.size !== rows.length) issues.push(`${table}: 主キー重複`);
   };
-  for (const t of ['credentials', 'permissions', 'wage_rules', 'salary_rules', 'attendance_corrections', 'shifts', 'leave_grants', 'leave_transactions', 'payroll_results', 'pay_slips'] as const) check(t);
+  for (const t of ['credentials', 'permissions', 'wage_rules', 'salary_rules', 'attendance_corrections', 'shifts', 'leave_grants', 'leave_transactions', 'payroll_results', 'pay_slips', 'break_declarations', 'overtime_requests'] as const) check(t);
   check('attendance_events');
   const journal = ctx.uow.list<{ state: string }>('operation_journal', { partitions: ctx.uow.recentPartitions() });
   const pending = journal.filter((j) => j.state === 'started').length;
