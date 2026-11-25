@@ -748,4 +748,46 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.ok).toBe(false);
     expect(maintenance(s)).toBe(false);
   });
+
+  // ---- Codex 監査9 ----
+  const deployCalls = (s: ReturnType<typeof setup>, from: number) => s.api.calls.slice(from).filter((c) => c.startsWith('PUT') && c.includes('/deployments/'));
+
+  it('Codex 監査9 #3: 更新の開始前からメンテナンス中の環境で、準備の通信が例外になっても、配備を操作せずメンテナンスを継続する', () => {
+    const s = installed();
+    expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: 'req_mnt_000002' }, 'owner').ok).toBe(true);
+    const from = s.api.calls.length;
+    s.throwOps.add('system.prepareUpdate');
+    s.deps.release = release('0.3.0');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('開始前からメンテナンス中');
+    expect(deployCalls(s, from)).toEqual([]);
+    expect(maintenance(s)).toBe(true);
+  });
+
+  it('Codex 監査9 #3: 準備の通信が例外になった場合、コードを変更していないためロールバックせず、今回開始したメンテナンスだけを解除する', () => {
+    const s = installed();
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    const from = s.api.calls.length;
+    s.throwOps.add('system.prepareUpdate');
+    s.deps.release = release('0.3.0');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('メンテナンスを解除しました');
+    expect(deployCalls(s, from)).toEqual([]);
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(prevVersion);
+    expect(maintenance(s)).toBe(false);
+  });
+
+  it('Codex 監査9 #3: 更新の開始前からメンテナンス中の環境で、コードの更新に失敗して旧版へ戻した場合も、メンテナンスを継続する', () => {
+    const s = installed();
+    expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: 'req_mnt_000003' }, 'owner').ok).toBe(true);
+    s.api.faults.putContent = 1;
+    s.deps.release = release('0.3.0');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('メンテナンスを継続');
+    expect(maintenance(s)).toBe(true);
+  });
 });

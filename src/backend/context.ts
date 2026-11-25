@@ -172,6 +172,25 @@ export function metaValue(ctx: Ctx, key: string): string | null {
   return ctx.uow.list<{ key: string; value: string }>('system_metadata').find((m) => m.key === key)?.value ?? null;
 }
 
+/** 復元で引き継いだ確定済みの給与期間（給与条件の確認まで確定・訂正・明細の発行を止める。Codex 監査9 #1） */
+export interface PayrollRestoreLock {
+  restoredAt: string;
+  backupId: string;
+}
+export function payrollRestoreLocks(ctx: Ctx): Record<string, PayrollRestoreLock> {
+  const raw = metaValue(ctx, 'payrollRestoreLocks');
+  if (!raw) return {};
+  try {
+    const o = JSON.parse(raw) as unknown;
+    return o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, PayrollRestoreLock>) : {};
+  } catch {
+    return {};
+  }
+}
+export function setPayrollRestoreLocks(ctx: Ctx, locks: Record<string, PayrollRestoreLock>) {
+  setMeta(ctx, 'payrollRestoreLocks', JSON.stringify(locks));
+}
+
 export function setMeta(ctx: Ctx, key: string, value: string) {
   const row = ctx.uow.list<{ id: string; key: string; value: string; version: number; createdAt: string; updatedAt: string }>('system_metadata').find((m) => m.key === key);
   if (row) ctx.uow.update('system_metadata', { ...row, value });

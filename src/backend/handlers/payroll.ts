@@ -3,7 +3,7 @@
  * F14 給与計算 / F18 給与締め・確定・訂正 / F19 給与明細PDF発行・本人閲覧
  */
 import { defineOps } from '../api';
-import { actorId, audit, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
+import { actorId, audit, isOwner, nowIso, payrollRestoreLocks, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PaySlip } from '../../shared/types';
@@ -49,11 +49,23 @@ function updatePeriodStatus(ctx: Ctx, p: PayrollPeriod) {
   if (st !== p.status) ctx.uow.update('payroll_periods', { ...p, status: st });
 }
 
+/** 復元で引き継いだ確定済みの給与がある期間は、給与条件の確認（解除）まで確定・訂正・明細の発行をしない（Codex 監査9 #1） */
+function assertNoRestoreLock(ctx: Ctx, p: PayrollPeriod) {
+  const l = payrollRestoreLocks(ctx)[p.id];
+  if (l)
+    throw new ApiError(
+      'PAYROLL_BLOCKED',
+      `${p.periodKey} は、バックアップの復元（${l.restoredAt.slice(0, 16).replace('T', ' ')}）で確定済みの給与を引き継いだ期間です。復元後の給与条件（時給・手当・控除など）が確定時と異なる可能性があるため、条件を確認して「復元後の確認を完了」するまで、確定・訂正・明細の発行はできません`,
+      409,
+    );
+}
+
 function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], reason: string, isCorrection: boolean): PayrollResult {
   const prev = latestResult(ctx, p.id, e.id);
   const isConfirmed = prev && (prev.status === 'confirmed' || prev.status === 'issued');
   if (isConfirmed && !isCorrection) throw E.conflict(`${e.displayName}さんの給与はすでに確定しています（訂正を使用してください）`);
   if (!isConfirmed && isCorrection) throw E.invalid('確定済みの給与がないため訂正できません');
+  assertNoRestoreLock(ctx, p);
   if (ctx.now < periodClosedAt(ctx, p)) {
     throw new ApiError('PAYROLL_BLOCKED', `${p.periodKey} の給与期間（〜${p.to}）がまだ終了していないため確定できません（締め日の翌日の営業日切替時刻以降に確定できます）`, 409);
   }
@@ -122,7 +134,14 @@ defineOps([
       } catch {
         suggested = null;
       }
-      return { periods: ctx.uow.list<PayrollPeriod>('payroll_periods').sort((a, b) => (a.periodKey < b.periodKey ? 1 : -1)), suggestedPeriodKey: suggested };
+      const locks = payrollRestoreLocks(ctx);
+      return {
+        periods: ctx.uow
+          .list<PayrollPeriod>('payroll_periods')
+          .sort((a, b) => (a.periodKey < b.periodKey ? 1 : -1))
+          .map((p) => ({ ...p, restoreLock: locks[p.id] ?? null })),
+        suggestedPeriodKey: suggested,
+      };
     },
   },
   {
@@ -205,6 +224,28 @@ defineOps([
       const done = emps.map((e) => confirmOne(ctx, p, e, acks, '', false));
       updatePeriodStatus(ctx, p);
       return { confirmed: done.map((r) => ({ id: r.id, employeeId: r.employeeId, revision: r.revision, netPay: r.totals.netPay })) };
+    },
+  },
+  {
+    // 復元後の確認の完了（Codex 監査9 #1）。給与条件が確定時と一致する、または訂正の必要がないことを管理者が確認した後に解除する
+    name: 'payroll.releaseRestoreLock',
+    auth: 'staff_or_owner',
+    reauth: true,
+    perms: ['payroll_confirm'],
+    sensitive: true,
+    mutating: true,
+    handler: (ctx, raw) => {
+      const a = v.obj(raw);
+      const p = period(ctx, v.id(a, 'periodId'));
+      if (v.str(a, 'confirmText', { max: 20 }) !== '確認しました') throw E.invalid('確認のため「確認しました」と入力してください');
+      const note = v.str(a, 'note', { min: 2, max: 300, label: '確認した内容' });
+      const locks = payrollRestoreLocks(ctx);
+      const l = locks[p.id];
+      if (!l) throw E.conflict('この期間には復元後の確認の対象がありません');
+      delete locks[p.id];
+      setPayrollRestoreLocks(ctx, locks);
+      audit(ctx, 'payroll.releaseRestoreLock', 'payroll_period', p.id, `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認内容=${note}`);
+      return { periodId: p.id, released: true };
     },
   },
   {
@@ -292,6 +333,7 @@ defineOps([
     mutating: true,
     handler: (ctx, raw) => {
       const p = period(ctx, v.id(v.obj(raw), 'periodId'));
+      assertNoRestoreLock(ctx, p);
       let issued = 0;
       const failedPdf: string[] = [];
       for (const r of ctx.uow.list<PayrollResult>('payroll_results').filter((x) => x.periodId === p.id && x.status === 'confirmed')) {

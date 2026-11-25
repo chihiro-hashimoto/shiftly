@@ -76,6 +76,8 @@ export interface Registry {
     prevAdmin?: number;
     /** 更新開始時の DB のスキーマ版（記録のみ。移行の結果が不明な場合は移行済みとして扱い、この値では判断しない） */
     startSchema?: number;
+    /** 更新の開始前からメンテナンス中だったか（不明なら undefined）。失敗時に解除してよいのは、今回開始したメンテナンスだけ（Codex 監査9 #3） */
+    maintenanceBefore?: boolean;
     /**
      * DB の移行が行われた可能性があるか（移行の要求を送る前に true として保存し、明確に拒否された場合だけ戻す）。
      * true の更新は、以後この更新の中で旧版へ自動で戻さない（配備の照会の結果に左右されない。Codex 監査7 #1）
@@ -516,7 +518,13 @@ export class Installer {
     const prevCore = continuing ? u0!.prevCore : reg.core.versionNumber;
     const prevAdmin = continuing ? u0!.prevAdmin : reg.admin.versionNumber;
     if (!continuing) {
-      reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin, startSchema: this.coreInfo()?.schemaVersion };
+      let info: ReturnType<Installer['coreInfo']>;
+      try {
+        info = this.coreInfo();
+      } catch {
+        info = null;
+      }
+      reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin, startSchema: info?.schemaVersion, maintenanceBefore: info ? info.maintenance : undefined };
       this.persist();
     }
     const step = (stage: string) => {
@@ -525,11 +533,11 @@ export class Installer {
     };
     // この実行で失敗したときに旧版へ戻さないか
     let migrated = protect;
+    // この実行でコードの更新に着手したか（準備の段階の失敗は、コードを変更していないためロールバックしない。Codex 監査9 #3）
+    let codeTouched = skipDeploy;
     try {
       if (!skipDeploy) {
         step('prepare');
-        // 更新の開始前の状態（準備に失敗した場合は、今回開始したメンテナンスだけを解除する。Codex 監査8 #3）
-        const before = protect ? null : this.coreInfo();
         // 準備の前に、メンテナンスの開始を独立した要求として確定する。更新前バックアップ（準備の中で DB を複製）に
         // 「メンテナンス中」を含めるため。旧版（v1.2）の Core は準備の中の変更を複製の前に確定しないため、Setup 側で行う
         // （旧版へ戻してからそのバックアップを旧版の Core で復元しても、確認前に打刻が再開しない。Codex 監査7 #2）
@@ -539,22 +547,11 @@ export class Installer {
           // DB は移行済みの可能性があるため、更新前バックアップを取り直さない（最初の更新前バックアップの参照を Core・Setup とも保持する）
         } else {
           const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
-          if (!prep.ok) {
-            // コード・DB は変更していない。今回開始したメンテナンスは、プログラムと DB の構造の一致を確認できた場合だけ解除する
-            let note: string;
-            if (before && !before.maintenance && before.schemaVersion === before.expectedSchemaVersion) {
-              const off = this.callCore('system.setMaintenance', { on: false });
-              note = off.ok ? 'メンテナンスを解除しました' : 'メンテナンスの解除に失敗したため、メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態を確認してから解除してください';
-            } else if (before?.maintenance) {
-              note = '更新の開始前からメンテナンス中だったため、メンテナンスを継続しています';
-            } else {
-              note = '更新の開始前の状態を確認できなかったため、メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態を確認してから解除してください';
-            }
-            return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません。${note}`);
-          }
+          if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません。${this.releaseStartedMaintenance()}`);
           // 中断からの再開でも、最初の更新前バックアップの参照を保持する
           reg.update!.backupId = reg.update!.backupId ?? (prep.data as { backupId: string }).backupId;
         }
+        codeTouched = true;
         step('code');
         this.upload('core');
         this.upload('admin');
@@ -608,7 +605,13 @@ export class Installer {
             '原因（整合性の確認結果など）を管理画面「システム・更新」で確認し、解消してから更新を再実行してください。旧版に戻す必要がある場合は docs/update-rollback.md の手順（更新前バックアップの復元と旧版への切替）に従ってください',
         );
       }
-      const rb = this.rollbackCode(prevCore, prevAdmin);
+      if (!codeTouched) {
+        // 準備の段階（メンテナンスの開始・更新前バックアップ）の失敗・通信の例外。コードは変更していないため配備を操作せず、
+        // 今回開始したメンテナンスだけを、現在の状態を確認できた場合に解除する（Codex 監査9 #3）
+        return this.failUpdate(`更新に失敗しました: ${msg}。更新は行っていません。${this.releaseStartedMaintenance()}`);
+      }
+      // 更新の開始前からメンテナンス中だった（または不明な）場合は、ロールバック後もメンテナンスを継続する
+      const rb = this.rollbackCode(prevCore, prevAdmin, { keepMaintenance: reg.update?.maintenanceBefore !== false });
       return this.failUpdate(`更新に失敗しました: ${msg}。${rb}`);
     }
   }
@@ -639,6 +642,32 @@ export class Installer {
     return allNew ? 'new' : 'old';
   }
 
+  /**
+   * 更新の準備の段階で失敗したときのメンテナンスの扱い（Codex 監査8 #3・監査9 #3）
+   * 解除するのは、①この更新で開始したメンテナンス（開始前は解除中と記録済み）で、②現在のプログラムと DB の構造の一致を
+   * 確認できた場合だけ。それ以外は継続し、その旨と復旧の操作を返す
+   */
+  private releaseStartedMaintenance(): string {
+    const before = this.reg?.update?.maintenanceBefore;
+    if (before === true) return '更新の開始前からメンテナンス中だったため、メンテナンスを継続しています';
+    const keep = 'メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態（DB の構造とプログラムの一致）を確認してから解除してください';
+    if (before !== false) return `更新の開始前の状態を確認できなかったため、${keep}`;
+    let now: ReturnType<Installer['coreInfo']>;
+    try {
+      now = this.coreInfo();
+    } catch {
+      now = null;
+    }
+    if (!now) return `現在の状態を確認できなかったため、${keep}`;
+    if (now.schemaVersion !== now.expectedSchemaVersion) return `DB の構造がプログラムと一致しないため、${keep}`;
+    try {
+      const off = this.callCore('system.setMaintenance', { on: false });
+      return off.ok ? 'メンテナンスを解除しました' : `メンテナンスの解除に失敗したため、${keep}`;
+    } catch {
+      return `メンテナンスの解除に失敗したため、${keep}`;
+    }
+  }
+
   private failUpdate(message: string) {
     if (this.reg) {
       this.reg.update = this.reg.update ? { ...this.reg.update, stage: 'failed', message } : null;
@@ -648,7 +677,7 @@ export class Installer {
   }
 
   /** GAS コードのロールバック（デプロイを以前のバージョン番号へ戻す。URL は変わらない） */
-  rollbackCode(prevCore?: number, prevAdmin?: number): string {
+  rollbackCode(prevCore?: number, prevAdmin?: number, opts: { keepMaintenance?: boolean } = {}): string {
     const reg = this.reg!;
     const out: string[] = [];
     // 配備を切り替える前に、現在の Core で書き込みを止める（旧版と DB の組み合わせを確認するまで営業を再開しない。Codex 監査4）
@@ -676,6 +705,8 @@ export class Installer {
         `DB の構造（v${d.schemaVersion}）が戻したプログラム（v${d.expectedSchemaVersion}）と一致しないため、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
           `管理画面「バックアップ」で更新前バックアップ${this.reg?.update?.backupId ? `（${this.reg.update.backupId}）` : ''}を復元してからメンテナンスを解除するか、原因を解消して更新を再実行してください`,
       );
+    } else if (opts.keepMaintenance) {
+      out.push('更新の開始前からメンテナンス中だった（または開始前の状態を確認できない）ため、メンテナンスを継続しています。管理画面「システム・更新」で状態を確認してから解除してください');
     } else {
       const off = this.callCore('system.setMaintenance', { on: false });
       out.push(off.ok ? 'メンテナンスを解除しました' : 'メンテナンス解除に失敗しました（管理画面「システム・更新」から解除してください）');

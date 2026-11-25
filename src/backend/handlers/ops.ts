@@ -3,7 +3,7 @@
  * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ・復元
  */
 import { defineOps } from '../api';
-import { actorId, audit, has, isGoogleOwner, isOwner, metaValue, nowIso, setMeta, settings, staff, today, type Ctx } from '../context';
+import { actorId, audit, has, isGoogleOwner, isOwner, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { AdminCredential, AttendanceCorrection, BackupHistory, BreakDeclaration, Budget, Credential, Device, Employee, OvertimeRequest, PermissionRow, NotificationRow, PayrollPeriod, PayrollResult, PaySlip, Shift, WorkSession } from '../../shared/types';
@@ -533,6 +533,17 @@ defineOps([
         carry<OvertimeRequest>('overtime_requests', (r) => r.id);
         // 給与の確定データ（期間・計算結果のリビジョン・明細）も現行を引き継ぐ。バックアップ後に確定・訂正・発行した給与を
         // 復元で消さない（同じ期間の再確定・支払い済みの期間の再処理を防ぐ。Codex 監査8 #1）
+        // 候補（バックアップ）と異なる確定済みの給与（バックアップ後の確定・訂正・発行）がある期間は、復元後の給与条件で
+        // 訂正・再発行すると確定時と異なる条件で計算されるため、管理者が給与条件を確認するまで止める（Codex 監査9 #1）
+        const locks = payrollRestoreLocks(ctx);
+        const candVersion = (t: 'payroll_results' | 'pay_slips') => new Map(uowC.list<{ id: string; version: number }>(t).map((r) => [r.id, r.version]));
+        const cr = candVersion('payroll_results');
+        const cs = candVersion('pay_slips');
+        const lock = { restoredAt: nowIso(ctx), backupId: b.id };
+        for (const r of ctx.uow.list<PayrollResult & { version: number }>('payroll_results'))
+          if ((r.status === 'confirmed' || r.status === 'issued' || r.status === 'superseded') && cr.get(r.id) !== r.version) locks[r.periodId] = lock;
+        for (const sl of ctx.uow.list<PaySlip & { version: number }>('pay_slips')) if (cs.get(sl.id) !== sl.version) locks[sl.periodId] = lock;
+        setPayrollRestoreLocks(ctxC, locks);
         carry<PayrollPeriod & { version: number }>('payroll_periods', (r) => r.id);
         carry<PayrollResult & { version: number }>('payroll_results', (r) => r.id);
         carry<PaySlip & { version: number }>('pay_slips', (r) => r.id);
