@@ -31,11 +31,11 @@ export class Harness {
     if (!r.ok) throw new Error(`${op} failed: ${r.error.code} ${r.error.message}`);
     return r.data as T;
   }
-  kiosk(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string } = {}): ApiResponse {
+  staff(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string } = {}): ApiResponse {
     return handleRequest(this.be, { op, args, requestId: o.requestId ?? this.rid(), device: o.device ?? this.device, session: o.session ?? this.session });
   }
-  kioskOk<T = any>(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string } = {}): T {
-    const r = this.kiosk(op, args, o);
+  staffOk<T = any>(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string } = {}): T {
+    const r = this.staff(op, args, o);
     if (!r.ok) throw new Error(`${op} failed: ${r.error.code} ${r.error.message}`);
     return r.data as T;
   }
@@ -54,7 +54,7 @@ export class Harness {
     });
     if (opts.confirmRules !== false) this.ownerOk('settings.confirmPayrollRules');
     const en = this.ownerOk<{ code: string }>('devices.createEnrollment', { deviceName: '店舗iPad' });
-    const r = this.kioskOk<{ deviceToken: string }>('staff.enroll', { code: en.code, userAgent: 'test' }, { device: '' });
+    const r = this.staffOk<{ deviceToken: string }>('staff.enroll', { code: en.code, userAgent: 'test' }, { device: '' });
     this.device = r.deviceToken;
   }
   addStaff(name: string, pin: string, opts: { payType?: 'hourly' | 'monthly'; rate?: number; perms?: string[]; stepUp?: string } = {}) {
@@ -67,12 +67,12 @@ export class Harness {
     return e.id;
   }
   login(employeeId: string, pin: string) {
-    const r = this.kioskOk<{ sessionToken: string; state: string }>('auth.login', { employeeId, pin }, { session: '' });
+    const r = this.staffOk<{ sessionToken: string; state: string }>('auth.login', { employeeId, pin }, { session: '' });
     this.session = r.sessionToken;
     return r;
   }
   punch(type: string, extra: Record<string, unknown> = {}) {
-    return this.kiosk('attendance.punch', { type, ...extra });
+    return this.staff('attendance.punch', { type, ...extra });
   }
   /** ログイン→打刻→ログアウト（共用 iPad の典型操作） */
   punchAt(employeeId: string, pin: string, d: string, t: string, type: string, extra: Record<string, unknown> = {}) {
@@ -80,7 +80,7 @@ export class Harness {
     this.login(employeeId, pin);
     const r = this.punch(type, extra);
     if (!r.ok) throw new Error(`punch ${type} ${d} ${t}: ${r.error.message}`);
-    this.kiosk('auth.logout');
+    this.staff('auth.logout');
     this.session = '';
     return r.data as any;
   }

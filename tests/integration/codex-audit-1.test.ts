@@ -18,7 +18,7 @@ describe('Codex 監査1 #10: 月初に直前月のセッション・冪等性キ
     h.login(a, '482913');
     h.setNow('2026-12-01', '00:00');
     h.advance(2_000);
-    expect(code(h.kiosk('auth.me'))).toBe('OK');
+    expect(code(h.staff('auth.me'))).toBe('OK');
   });
 
   it('11/30 に保存した打刻を 12/1 に同じ requestId で再送しても二重登録しない', () => {
@@ -27,10 +27,10 @@ describe('Codex 監査1 #10: 月初に直前月のセッション・冪等性キ
     const a = h.addStaff('山田', '482913');
     h.setNow('2026-11-30', '23:59');
     h.login(a, '482913');
-    const r1 = h.kioskOk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' });
+    const r1 = h.staffOk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' });
     h.setNow('2026-12-01', '00:00');
     h.advance(10_000);
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' }) as any;
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' }) as any;
     expect(r2.ok).toBe(true);
     expect(r2.data.eventId).toBe(r1.eventId);
     expect(r2.data.replayed).toBe(true);
@@ -177,7 +177,7 @@ describe('Codex 監査1 #1・#2: 復元', () => {
     h.advance(400); // 同じ秒（18:00:00.400）
     h.login(a, '482913');
     expect(h.punch('clock_out').ok).toBe(true);
-    h.kiosk('auth.logout');
+    h.staff('auth.logout');
     h.session = '';
     h.setNow('2026-11-02', '18:30');
     const b = h.addStaff('佐藤', '582914');
@@ -204,7 +204,7 @@ describe('Codex 監査1 #1・#2: 復元', () => {
     h.ownerOk('employees.retire', { employeeId: c, retireDate: '2026-11-02', reason: '退職' });
     h.setNow('2026-11-02', '12:00');
     h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
-    expect(code(h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).not.toBe('OK');
+    expect(code(h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).not.toBe('OK');
     h.setNow('2026-11-02', '12:01');
     h.login(a, '739154');
     const perms = h.ownerOk<any[]>('employees.list').find((e: any) => e.id === a);
@@ -214,7 +214,7 @@ describe('Codex 監査1 #1・#2: 復元', () => {
 });
 
 describe('Codex 監査1 #13: 整合性 NG での更新完了', () => {
-  it('整合性チェックが不合格ならメンテナンスを継続し、店長の明示的な承認があれば完了する', () => {
+  it('整合性チェックが不合格ならメンテナンスを継続し、管理者の明示的な承認があれば完了する', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913');
@@ -242,11 +242,11 @@ describe('Codex 監査1 #11: 保存結果が不明な打刻の再送', () => {
     h.login(a, '482913');
     const ad = h.env.adapter as any;
     ad.failOnWrite = ad.writes + 2; // ジャーナル（started）の次＝業務データの書き込みで失敗
-    const r1 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' });
+    const r1 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' });
     expect(code(r1)).toBe('INTERNAL');
     ad.failOnWrite = null;
     h.advance(5_000);
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' }) as any;
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' }) as any;
     expect(r2.ok).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     expect(det.originals.filter((x: any) => x.type === 'clock_in')).toHaveLength(1);

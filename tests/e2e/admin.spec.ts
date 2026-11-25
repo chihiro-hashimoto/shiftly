@@ -1,7 +1,8 @@
-/** 店長用管理画面の巡回 E2E（プレビュー: モック Core）。全ページでエラーがなく、横スクロールが発生しないこと */
+/** Google 所有者の管理画面の巡回 E2E（プレビュー: モック Core）。全ページでエラーがなく、横スクロールが発生しないこと
+ * v1.3: 「給与条件」の独立したナビゲーションを廃止（スタッフ・権限から開く）、「申請・確認」を追加 */
 import { expect, test } from '@playwright/test';
 
-const PAGES = ['ダッシュボード', '勤怠', 'シフト', '有給休暇', '通知', '給与計算', '給与明細', '給与条件', '人件費・予算', 'データ出力', 'スタッフ・権限', '店舗端末', '店舗設定', '監査ログ', 'バックアップ', 'システム・更新'];
+const PAGES = ['ダッシュボード', '勤怠', '申請・確認', 'シフト', '有給休暇', '通知', '給与計算', '給与明細', '人件費・予算', 'データ出力', 'スタッフ・権限', '店舗端末', '店舗設定', '監査ログ', 'バックアップ', 'システム・更新'];
 
 test('全ページを表示してもエラーが出ない', async ({ page, isMobile }) => {
   const errors: string[] = [];
@@ -24,7 +25,7 @@ test('全ページを表示してもエラーが出ない', async ({ page, isMob
   expect(errors).toEqual([]);
 });
 
-test('店長は勤怠を修正でき、修正履歴に理由が残る', async ({ page }) => {
+test('管理者は勤怠を修正でき、修正履歴に理由が残る', async ({ page }) => {
   await page.goto('/preview.html?view=admin');
   const menu = page.getByRole('button', { name: 'メニュー' });
   if (await menu.isVisible()) await menu.click();

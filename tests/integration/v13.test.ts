@@ -34,7 +34,7 @@ const issueCodes = (r: { issues: Array<{ code: string }> }) => r.issues.map((i) 
 /** 管理者パスワードを設定し、店舗端末で管理者モードに入る */
 function adminLogin(h: Harness) {
   h.ownerOk('adminAuth.setPassword', { password: ADMIN_PW });
-  const r = h.kioskOk<{ adminSessionToken: string }>('adminAuth.login', { password: ADMIN_PW }, { session: '' });
+  const r = h.staffOk<{ adminSessionToken: string }>('adminAuth.login', { password: ADMIN_PW }, { session: '' });
   return r.adminSessionToken;
 }
 
@@ -94,8 +94,8 @@ describe('シフト基準の給与計算（§9.2: シフト 18:00〜23:00・打�
   it('スタッフの申請 → 管理者の承認でも同じ（5時間15分）。重ねて確認しても二重に加算しない', () => {
     const { h, a } = scenario();
     h.login(a, '482913');
-    const e = h.kioskOk('overtime.request', { category: 'early', start: '2026-11-03T17:55', end: '2026-11-03T18:00', reason: '開店準備' });
-    const l = h.kioskOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
+    const e = h.staffOk('overtime.request', { category: 'early', start: '2026-11-03T17:55', end: '2026-11-03T18:00', reason: '開店準備' });
+    const l = h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
     expect(e.status).toBe('pending');
     let r = compute(h, a);
     expect(issueCodes(r)).toContain('OVERTIME_REQUEST_PENDING');
@@ -112,7 +112,7 @@ describe('シフト基準の給与計算（§9.2: シフト 18:00〜23:00・打�
     const { h, a } = scenario();
     confirm(h, a, [['2026-11-03T17:55', '2026-11-03T18:00', 'no_work', 'early']]);
     h.login(a, '482913');
-    const l = h.kioskOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
+    const l = h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
     h.ownerOk('overtime.review', { requestId: l.id, action: 'partial', approvedStart: '2026-11-03T23:00', approvedEnd: '2026-11-03T23:05', comment: '5分は私的滞在' });
     const r = compute(h, a);
     expect(r.totals.workMinutes).toBe(305);
@@ -121,16 +121,16 @@ describe('シフト基準の給与計算（§9.2: シフト 18:00〜23:00・打�
   it('却下（実労働は未確認）・差戻しでは無給扱いにせず、未確認として確定を止める', () => {
     const { h, a } = scenario();
     h.login(a, '482913');
-    const l = h.kioskOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
+    const l = h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
     h.ownerOk('overtime.review', { requestId: l.id, action: 'reject', workConfirmation: 'unconfirmed', comment: '時間の記載に誤り' });
     let r = compute(h, a);
     expect(r.issues.find((i) => i.code === 'OFF_SHIFT_UNCONFIRMED')?.severity).toBe('blocking');
-    const e = h.kioskOk('overtime.request', { category: 'early', start: '2026-11-03T17:55', end: '2026-11-03T18:00', reason: '準備' });
+    const e = h.staffOk('overtime.request', { category: 'early', start: '2026-11-03T17:55', end: '2026-11-03T18:00', reason: '準備' });
     h.ownerOk('overtime.review', { requestId: e.id, action: 'return', comment: '理由を詳しく' });
     r = compute(h, a);
     expect(r.issues.find((i) => i.code === 'OFF_SHIFT_UNCONFIRMED')?.severity).toBe('blocking');
     // 差戻し → 再申請 → 承認
-    h.kioskOk('overtime.resubmit', { requestId: e.id, category: 'early', start: '2026-11-03T17:55', end: '2026-11-03T18:00', reason: '開店前の仕込み' });
+    h.staffOk('overtime.resubmit', { requestId: e.id, category: 'early', start: '2026-11-03T17:55', end: '2026-11-03T18:00', reason: '開店前の仕込み' });
     h.ownerOk('overtime.review', { requestId: e.id, action: 'approve' });
     // 未申請の残業も管理者が実労働として登録できる
     confirm(h, a, [['2026-11-03T23:00', '2026-11-03T23:10', 'work', 'late']]);
@@ -141,7 +141,7 @@ describe('シフト基準の給与計算（§9.2: シフト 18:00〜23:00・打�
   it('申請履歴（申請・承認・取消）が残る', () => {
     const { h, a } = scenario();
     h.login(a, '482913');
-    const l = h.kioskOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
+    const l = h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
     h.ownerOk('overtime.review', { requestId: l.id, action: 'approve' });
     h.ownerOk('overtime.review', { requestId: l.id, action: 'cancel', comment: '誤って承認したため取消' });
     const list = h.ownerOk('overtime.list', { status: 'all' });
@@ -150,8 +150,8 @@ describe('シフト基準の給与計算（§9.2: シフト 18:00〜23:00・打�
   it('同じ時間帯の重複申請は拒否', () => {
     const { h, a } = scenario();
     h.login(a, '482913');
-    h.kioskOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
-    expect(code(h.kiosk('overtime.request', { category: 'late', start: '2026-11-03T23:05', end: '2026-11-03T23:10', reason: '重複' }))).toBe('CONFLICT');
+    h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
+    expect(code(h.staff('overtime.request', { category: 'late', start: '2026-11-03T23:05', end: '2026-11-03T23:10', reason: '重複' }))).toBe('CONFLICT');
   });
 });
 
@@ -273,8 +273,8 @@ describe('休憩（予定休憩は取得を確認したものだけ控除）', (
     out(h, a, { kind: 'as_scheduled' });
     h.setNow('2026-11-04', '10:00');
     h.login(a, '482913');
-    const det = h.kioskOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });
-    h.kioskOk('breaks.declare', { workDate: '2026-11-03', sessionKey: det.sessions[0].sessionKey, kind: 'custom', intervals: [{ start: '2026-11-03T12:00', end: '2026-11-03T12:45' }], reason: '45分で戻った' });
+    const det = h.staffOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });
+    h.staffOk('breaks.declare', { workDate: '2026-11-03', sessionKey: det.sessions[0].sessionKey, kind: 'custom', intervals: [{ start: '2026-11-03T12:00', end: '2026-11-03T12:45' }], reason: '45分で戻った' });
     expect(compute(h, a).totals.workMinutes).toBe(435);
   });
 });
@@ -289,7 +289,7 @@ describe('管理者パスワード認証（店舗 iPad の管理者モード）'
   }
   it('未設定では管理者ログインできない（認証を省略しない）', () => {
     const { h } = store();
-    expect(code(h.kiosk('adminAuth.login', { password: ADMIN_PW }, { session: '' }))).toBe('ADMIN_PASSWORD_NOT_SET');
+    expect(code(h.staff('adminAuth.login', { password: ADMIN_PW }, { session: '' }))).toBe('ADMIN_PASSWORD_NOT_SET');
   });
   it('パスワードの強度要件（12文字以上・3種類以上・推測されやすい語の禁止）', () => {
     const { h } = store();
@@ -299,16 +299,16 @@ describe('管理者パスワード認証（店舗 iPad の管理者モード）'
   it('正しいパスワードでログイン・誤りは拒否・連続失敗でロック（ロック中は正しいパスワードでも不可）', () => {
     const { h } = store();
     h.ownerOk('adminAuth.setPassword', { password: ADMIN_PW });
-    for (let i = 0; i < 4; i++) expect(code(h.kiosk('adminAuth.login', { password: 'Wrong#Password99' }, { session: '' }))).toBe('INVALID_INPUT');
-    expect(code(h.kiosk('adminAuth.login', { password: 'Wrong#Password99' }, { session: '' }))).toBe('LOCKED');
-    expect(code(h.kiosk('adminAuth.login', { password: ADMIN_PW }, { session: '' }))).toBe('LOCKED');
+    for (let i = 0; i < 4; i++) expect(code(h.staff('adminAuth.login', { password: 'Wrong#Password99' }, { session: '' }))).toBe('INVALID_INPUT');
+    expect(code(h.staff('adminAuth.login', { password: 'Wrong#Password99' }, { session: '' }))).toBe('LOCKED');
+    expect(code(h.staff('adminAuth.login', { password: ADMIN_PW }, { session: '' }))).toBe('LOCKED');
     h.advance(16 * 60_000);
-    expect(code(h.kiosk('adminAuth.login', { password: ADMIN_PW }, { session: '' }))).toBe('OK');
+    expect(code(h.staff('adminAuth.login', { password: ADMIN_PW }, { session: '' }))).toBe('OK');
   });
   it('未登録端末からは管理者ログインできない', () => {
     const { h } = store();
     h.ownerOk('adminAuth.setPassword', { password: ADMIN_PW });
-    expect(code(h.kiosk('adminAuth.login', { password: ADMIN_PW }, { device: '' }))).toBe('DEVICE_NOT_REGISTERED');
+    expect(code(h.staff('adminAuth.login', { password: ADMIN_PW }, { device: '' }))).toBe('DEVICE_NOT_REGISTERED');
   });
   it('管理者モードで管理業務ができ、Google 所有者に限定した操作はできない', () => {
     const { h, a } = store();
@@ -340,7 +340,7 @@ describe('管理者パスワード認証（店舗 iPad の管理者モード）'
     let t = adminLogin(h);
     h.advance(5 * 60_000 + 30_000);
     expect(code(asAdmin(h, t, 'employees.list'))).toBe('ADMIN_UNAUTHENTICATED');
-    t = h.kioskOk('adminAuth.login', { password: ADMIN_PW }, { session: '' }).adminSessionToken;
+    t = h.staffOk('adminAuth.login', { password: ADMIN_PW }, { session: '' }).adminSessionToken;
     expect(code(asAdmin(h, t, 'adminAuth.logout'))).toBe('OK');
     expect(code(asAdmin(h, t, 'employees.list'))).toBe('ADMIN_UNAUTHENTICATED');
   });
@@ -353,14 +353,14 @@ describe('管理者パスワード認証（店舗 iPad の管理者モード）'
     // スタッフのセッショントークンを管理者トークンとして送っても無効
     expect(code(handleRequest(h.be, { op: 'settings.get', requestId: h.rid(), device: h.device, adminSession: s }))).toBe('ADMIN_UNAUTHENTICATED');
     // 管理者モード専用の操作・Google 所有者専用の操作はスタッフのセッションでは不可
-    expect(code(h.kiosk('adminAuth.me'))).toBe('ADMIN_UNAUTHENTICATED');
-    expect(code(h.kiosk('settings.update', { storeName: 'x' }))).toBe('FORBIDDEN');
+    expect(code(h.staff('adminAuth.me'))).toBe('ADMIN_UNAUTHENTICATED');
+    expect(code(h.staff('settings.update', { storeName: 'x' }))).toBe('FORBIDDEN');
   });
   it('別の端末の管理者セッションは使えない・端末の失効で管理者セッションも失効', () => {
     const { h } = store();
     const t = adminLogin(h);
     const en = h.ownerOk('devices.createEnrollment', { deviceName: '別端末' });
-    const other = h.kioskOk('staff.enroll', { code: en.code }, { device: '' }).deviceToken;
+    const other = h.staffOk('staff.enroll', { code: en.code }, { device: '' }).deviceToken;
     expect(code(handleRequest(h.be, { op: 'employees.list', requestId: h.rid(), device: other, adminSession: t }))).toBe('ADMIN_UNAUTHENTICATED');
     const devs = h.ownerOk('devices.list');
     h.ownerOk('devices.revoke', { deviceId: devs[0].id });
@@ -372,7 +372,7 @@ describe('管理者パスワード認証（店舗 iPad の管理者モード）'
     expect(code(asAdmin(h, t, 'adminAuth.changePassword', { currentPassword: 'Wrong#Password99', newPassword: 'New#Manager2027' }))).toBe('INVALID_INPUT');
     expect(code(asAdmin(h, t, 'adminAuth.changePassword', { currentPassword: ADMIN_PW, newPassword: 'New#Manager2027' }))).toBe('OK');
     expect(code(asAdmin(h, t, 'employees.list'))).toBe('ADMIN_UNAUTHENTICATED');
-    const t2 = h.kioskOk('adminAuth.login', { password: 'New#Manager2027' }, { session: '' }).adminSessionToken;
+    const t2 = h.staffOk('adminAuth.login', { password: 'New#Manager2027' }, { session: '' }).adminSessionToken;
     h.ownerOk('adminAuth.setPassword', { password: 'Reset#Manager2028' });
     expect(code(asAdmin(h, t2, 'employees.list'))).toBe('ADMIN_UNAUTHENTICATED');
   });
@@ -403,32 +403,32 @@ describe('スタッフ PIN の任意化', () => {
   }
   it('PIN 未設定: 氏名選択のみで出退勤できるが、本人未確認として給与・明細・勤怠詳細・有給は表示しない', () => {
     const { h, noPin } = store();
-    const r = h.kioskOk('auth.login', { employeeId: noPin, pin: null }, { session: '' });
+    const r = h.staffOk('auth.login', { employeeId: noPin, pin: null }, { session: '' });
     h.session = r.sessionToken;
     expect(r.verified).toBe(false);
     expect(r.permissions.sort()).toEqual(['punch_self', 'shift_view_published']);
     expect(code(h.punch('clock_in'))).toBe('OK');
-    expect(code(h.kiosk('shifts.published', { from: '2026-11-01', to: '2026-11-07' }))).toBe('OK');
+    expect(code(h.staff('shifts.published', { from: '2026-11-01', to: '2026-11-07' }))).toBe('OK');
     for (const op of ['attendance.mine', 'attendance.myDetails', 'payroll.mine', 'payslips.mine', 'leave.mine', 'notifications.list', 'overtime.mine'])
-      expect(code(h.kiosk(op, { from: '2026-11-01', to: '2026-11-02' }))).toBe('IDENTITY_REQUIRED');
-    expect(code(h.kiosk('auth.stepUp', { passcode: 'Passcode2026x' }))).toBe('IDENTITY_REQUIRED');
+      expect(code(h.staff(op, { from: '2026-11-01', to: '2026-11-02' }))).toBe('IDENTITY_REQUIRED');
+    expect(code(h.staff('auth.stepUp', { passcode: 'Passcode2026x' }))).toBe('IDENTITY_REQUIRED');
   });
   it('PIN 設定済みは PIN なし・空欄・誤った PIN で認証できない（本人未確認ログインに切り替わらない）', () => {
     const { h, withPin } = store();
-    expect(code(h.kiosk('auth.login', { employeeId: withPin, pin: null }, { session: '' }))).toBe('PIN_REQUIRED');
-    expect(code(h.kiosk('auth.login', { employeeId: withPin, pin: '' }, { session: '' }))).toBe('PIN_REQUIRED');
-    expect(code(h.kiosk('auth.login', { employeeId: withPin }, { session: '' }))).toBe('PIN_REQUIRED');
-    expect(code(h.kiosk('auth.login', { employeeId: withPin, pin: '111112' }, { session: '' }))).toBe('INVALID_INPUT');
+    expect(code(h.staff('auth.login', { employeeId: withPin, pin: null }, { session: '' }))).toBe('PIN_REQUIRED');
+    expect(code(h.staff('auth.login', { employeeId: withPin, pin: '' }, { session: '' }))).toBe('PIN_REQUIRED');
+    expect(code(h.staff('auth.login', { employeeId: withPin }, { session: '' }))).toBe('PIN_REQUIRED');
+    expect(code(h.staff('auth.login', { employeeId: withPin, pin: '111112' }, { session: '' }))).toBe('INVALID_INPUT');
   });
   it('PIN 未設定のスタッフに PIN を送ると拒否（未設定と誤入力を混同しない）', () => {
     const { h, noPin } = store();
-    expect(code(h.kiosk('auth.login', { employeeId: noPin, pin: '1234' }, { session: '' }))).toBe('PIN_NOT_SET');
+    expect(code(h.staff('auth.login', { employeeId: noPin, pin: '1234' }, { session: '' }))).toBe('PIN_NOT_SET');
   });
   it('4桁・先頭0・5桁・6桁以上の PIN を設定でき、正しく認証する', () => {
     const { h, noPin } = store();
     for (const pin of ['0739', '07391', '073915', '07391548']) {
       h.ownerOk('credentials.setPin', { employeeId: noPin, pin });
-      const r = h.kioskOk('auth.login', { employeeId: noPin, pin }, { session: '' });
+      const r = h.staffOk('auth.login', { employeeId: noPin, pin }, { session: '' });
       expect(r.verified).toBe(true);
     }
     for (const pin of ['123', '1234567890123', '1111', '1234', '12a4']) expect(code(h.owner('credentials.setPin', { employeeId: noPin, pin }))).toBe('INVALID_INPUT');
@@ -436,18 +436,18 @@ describe('スタッフ PIN の任意化', () => {
   it('本人による PIN 変更（4桁可）と管理者による PIN 解除。解除後は既存セッションを失効し、本人未確認になる', () => {
     const { h, withPin } = store();
     h.login(withPin, '482913');
-    expect(code(h.kiosk('auth.changePin', { currentPin: '482913', newPin: '0739' }))).toBe('OK');
-    expect(h.kioskOk('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }).verified).toBe(true);
-    const s = h.kioskOk('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }).sessionToken;
+    expect(code(h.staff('auth.changePin', { currentPin: '482913', newPin: '0739' }))).toBe('OK');
+    expect(h.staffOk('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }).verified).toBe(true);
+    const s = h.staffOk('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }).sessionToken;
     h.ownerOk('credentials.clearPin', { employeeId: withPin });
-    expect(code(h.kiosk('auth.me', undefined, { session: s }))).toBe('UNAUTHENTICATED');
-    const r = h.kioskOk('auth.login', { employeeId: withPin, pin: null }, { session: '' });
+    expect(code(h.staff('auth.me', undefined, { session: s }))).toBe('UNAUTHENTICATED');
+    const r = h.staffOk('auth.login', { employeeId: withPin, pin: null }, { session: '' });
     expect(r.verified).toBe(false);
   });
   it('短い PIN の総当たり対策: ロックのたびにロック時間を延長（15分 → 30分）', () => {
     const { h, withPin } = store();
     h.ownerOk('credentials.setPin', { employeeId: withPin, pin: '0739' });
-    const fail = () => code(h.kiosk('auth.login', { employeeId: withPin, pin: '9999' }, { session: '' }));
+    const fail = () => code(h.staff('auth.login', { employeeId: withPin, pin: '9999' }, { session: '' }));
     for (let i = 0; i < 4; i++) expect(fail()).toBe('INVALID_INPUT');
     expect(fail()).toBe('LOCKED');
     h.advance(16 * 60_000);
@@ -455,14 +455,14 @@ describe('スタッフ PIN の任意化', () => {
     expect(fail()).toBe('LOCKED');
     h.advance(16 * 60_000);
     // 2回目のロックは30分: 16分後もまだロック中
-    expect(code(h.kiosk('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }))).toBe('LOCKED');
+    expect(code(h.staff('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }))).toBe('LOCKED');
     h.advance(15 * 60_000);
-    expect(code(h.kiosk('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }))).toBe('OK');
+    expect(code(h.staff('auth.login', { employeeId: withPin, pin: '0739' }, { session: '' }))).toBe('OK');
   });
   it('本人未確認の勤怠修正・早出残業申請・休憩申告は承認待ちとして保存し、応答に勤怠の詳細を含めない', () => {
     const { h, noPin } = store();
     const login = () => {
-      h.session = h.kioskOk('auth.login', { employeeId: noPin, pin: null }, { session: '' }).sessionToken;
+      h.session = h.staffOk('auth.login', { employeeId: noPin, pin: null }, { session: '' }).sessionToken;
     };
     h.setNow('2026-11-03', '09:00');
     login();
@@ -472,11 +472,11 @@ describe('スタッフ PIN の任意化', () => {
     h.punch('clock_out');
     h.setNow('2026-11-04', '10:00');
     login();
-    const c = h.kioskOk('attendance.selfCorrect', { clockIn: '2026-11-03T08:50', clockOut: '2026-11-03T17:00', reason: '打刻が遅れた' });
+    const c = h.staffOk('attendance.selfCorrect', { clockIn: '2026-11-03T08:50', clockOut: '2026-11-03T17:00', reason: '打刻が遅れた' });
     expect(c).toEqual({ status: 'pending' });
-    const o = h.kioskOk('overtime.request', { category: 'early', start: '2026-11-03T08:50', end: '2026-11-03T09:00', reason: '準備' });
+    const o = h.staffOk('overtime.request', { category: 'early', start: '2026-11-03T08:50', end: '2026-11-03T09:00', reason: '準備' });
     expect(o).toEqual({ status: 'pending' });
-    const b = h.kioskOk('breaks.declare', { workDate: '2026-11-03', kind: 'not_taken', reason: '取れなかった' });
+    const b = h.staffOk('breaks.declare', { workDate: '2026-11-03', kind: 'not_taken', reason: '取れなかった' });
     expect(b).toEqual({ status: 'pending' });
     // 管理者は本人未確認として確認できる
     const list = h.ownerOk('attendance.reviewList');
@@ -501,15 +501,15 @@ describe('スタッフ本人の勤怠修正', () => {
     h.setNow('2026-11-04', '10:00');
     return { h, a, b };
   }
-  const myKey = (h: Harness) => h.kioskOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' }).sessions[0].sessionKey as string;
+  const myKey = (h: Harness) => h.staffOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' }).sessions[0].sessionKey as string;
 
   it('本人（PIN）の修正は反映し、管理者は未確認として確認できる。打刻原本は変更しない', () => {
     const { h, a } = store();
     h.login(a, '482913');
     const key = myKey(h);
-    const r = h.kioskOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T17:00', reason: '打刻が遅れた' });
+    const r = h.staffOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T17:00', reason: '打刻が遅れた' });
     expect(r.status).toBe('applied');
-    const det = h.kioskOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });
+    const det = h.staffOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });
     expect(det.sessions[0].start.slice(11, 16)).toBe('09:00');
     expect(det.sessions[0].original.clockIn.slice(11, 16)).toBe('09:05');
     const rl = h.ownerOk('attendance.reviewList');
@@ -524,17 +524,17 @@ describe('スタッフ本人の勤怠修正', () => {
     h.login(b, '582914');
     const bKey = myKey(h);
     h.login(a, '482913');
-    expect(code(h.kiosk('attendance.selfCorrect', { sessionKey: bKey, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T15:00', reason: 'なりすまし' }))).toBe('NOT_FOUND');
+    expect(code(h.staff('attendance.selfCorrect', { sessionKey: bKey, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T15:00', reason: 'なりすまし' }))).toBe('NOT_FOUND');
     // 管理者向けの修正 API もスタッフは使えない
-    expect(code(h.kiosk('attendance.adminCorrectSession', { employeeId: b, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T15:00', reason: 'x' }))).toBe('FORBIDDEN');
+    expect(code(h.staff('attendance.adminCorrectSession', { employeeId: b, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T15:00', reason: 'x' }))).toBe('FORBIDDEN');
   });
   it('複数回の修正でも初回の原本とすべての修正履歴を追跡できる', () => {
     const { h, a } = store();
     h.login(a, '482913');
     const key = myKey(h);
-    h.kioskOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T17:00', reason: '1回目' });
-    h.kioskOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T08:55', clockOut: '2026-11-03T17:10', reason: '2回目' });
-    const det = h.kioskOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });
+    h.staffOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T17:00', reason: '1回目' });
+    h.staffOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T08:55', clockOut: '2026-11-03T17:10', reason: '2回目' });
+    const det = h.staffOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' });
     expect(det.sessions[0].start.slice(11, 16)).toBe('08:55');
     expect(det.sessions[0].end.slice(11, 16)).toBe('17:10');
     expect(det.sessions[0].original.clockIn.slice(11, 16)).toBe('09:05');
@@ -543,8 +543,8 @@ describe('スタッフ本人の勤怠修正', () => {
   it('打刻漏れ（出勤・退勤の記録なし）・日付をまたぐ勤務を申告できる', () => {
     const { h, a } = store();
     h.login(a, '482913');
-    h.kioskOk('attendance.selfCorrect', { clockIn: '2026-11-01T20:00', clockOut: '2026-11-02T02:00', reason: '打刻を忘れた' });
-    const det = h.kioskOk('attendance.myDetails', { from: '2026-11-01', to: '2026-11-01' });
+    h.staffOk('attendance.selfCorrect', { clockIn: '2026-11-01T20:00', clockOut: '2026-11-02T02:00', reason: '打刻を忘れた' });
+    const det = h.staffOk('attendance.myDetails', { from: '2026-11-01', to: '2026-11-01' });
     expect(det.sessions[0].laborDate).toBe('2026-11-01');
     expect(det.sessions[0].workMinutes).toBe(360);
   });
@@ -552,12 +552,12 @@ describe('スタッフ本人の勤怠修正', () => {
     const { h, a } = store();
     h.login(a, '482913');
     const key = myKey(h);
-    expect(code(h.kiosk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-05T09:00', clockOut: '2026-11-05T17:00', reason: '未来' }))).toBe('INVALID_INPUT');
-    expect(code(h.kiosk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T17:00', clockOut: '2026-11-03T09:00', reason: '逆転' }))).toBe('INVALID_INPUT');
+    expect(code(h.staff('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-05T09:00', clockOut: '2026-11-05T17:00', reason: '未来' }))).toBe('INVALID_INPUT');
+    expect(code(h.staff('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T17:00', clockOut: '2026-11-03T09:00', reason: '逆転' }))).toBe('INVALID_INPUT');
     // 別の勤務（打刻漏れの申告 18:00〜20:00）と重なる修正
-    h.kioskOk('attendance.selfCorrect', { clockIn: '2026-11-03T18:00', clockOut: '2026-11-03T20:00', reason: '夜の打刻漏れ' });
-    expect(code(h.kiosk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T19:00', reason: '重複' }))).toBe('INVALID_INPUT');
-    expect(code(h.kiosk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T17:00', reason: '' }))).toBe('INVALID_INPUT');
+    h.staffOk('attendance.selfCorrect', { clockIn: '2026-11-03T18:00', clockOut: '2026-11-03T20:00', reason: '夜の打刻漏れ' });
+    expect(code(h.staff('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T19:00', reason: '重複' }))).toBe('INVALID_INPUT');
+    expect(code(h.staff('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T17:00', reason: '' }))).toBe('INVALID_INPUT');
   });
   it('給与確定済みの期間は反映せず訂正の申告（承認待ち）として保存し、確定済み給与は変更しない', () => {
     const h = new Harness();
@@ -572,8 +572,8 @@ describe('スタッフ本人の勤怠修正', () => {
     const acks = comp.employees.flatMap((e: any) => e.issues.filter((i: any) => i.severity === 'confirm').map((i: any) => i.key));
     h.ownerOk('payroll.confirm', { periodId: p.id, acknowledgements: acks });
     h.login(a, '482913');
-    const key = h.kioskOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' }).sessions[0].sessionKey;
-    const r = h.kioskOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T14:00', reason: '退勤を押し忘れ' });
+    const key = h.staffOk('attendance.myDetails', { from: '2026-11-03', to: '2026-11-03' }).sessions[0].sessionKey;
+    const r = h.staffOk('attendance.selfCorrect', { sessionKey: key, clockIn: '2026-11-03T09:00', clockOut: '2026-11-03T14:00', reason: '退勤を押し忘れ' });
     expect(r.status).toBe('pending');
     expect(r.warning).toContain('給与確定済み');
     const results = h.ownerOk('payroll.results', { periodId: p.id });
@@ -586,6 +586,6 @@ describe('互換・移行', () => {
     const h = new Harness();
     h.setupStore();
     h.addStaff('山田', '482913');
-    expect(h.kioskOk('kiosk.bootstrap').staff).toEqual(h.kioskOk('staff.bootstrap').staff);
+    expect(h.staffOk('kiosk.bootstrap').staff).toEqual(h.staffOk('staff.bootstrap').staff);
   });
 });

@@ -20,7 +20,7 @@ function ownerEnvelope(keyHex: string, body: unknown, role: 'admin' | 'setup' = 
 }
 
 describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () => {
-  it('初期化 → Admin ペアリング → 店長操作 → 端末登録 → PIN ログイン → 打刻 → 日次ジョブ', () => {
+  it('初期化 → Admin ペアリング → 管理者操作 → 端末登録 → PIN ログイン → 打刻 → 日次ジョブ', () => {
     const emu = new GasEmulator();
     const adminCode = randomBytes(32).toString('hex');
     const setupCode = randomBytes(32).toString('hex');
@@ -55,16 +55,16 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     owner('credentials.setPin', { employeeId: e.id, pin: '482913' });
     const en = owner('devices.createEnrollment', { deviceName: 'iPad' });
 
-    const kiosk = (req: unknown) => JSON.parse(core.kioskApi(JSON.stringify(req)));
-    const dev = kiosk({ op: 'staff.enroll', args: { code: en.code }, requestId: 'emu_enroll_1' });
+    const staffApi = (req: unknown) => JSON.parse(core.staffApi(JSON.stringify(req)));
+    const dev = staffApi({ op: 'staff.enroll', args: { code: en.code }, requestId: 'emu_enroll_1' });
     expect(dev.ok).toBe(true);
     const device = dev.data.deviceToken;
-    const login = kiosk({ op: 'auth.login', args: { employeeId: e.id, pin: '482913' }, device, requestId: 'emu_login_01' });
+    const login = staffApi({ op: 'auth.login', args: { employeeId: e.id, pin: '482913' }, device, requestId: 'emu_login_01' });
     expect(login.ok).toBe(true);
-    const punch = kiosk({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login.data.sessionToken, requestId: 'emu_punch_01' });
+    const punch = staffApi({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login.data.sessionToken, requestId: 'emu_punch_01' });
     expect(punch.ok).toBe(true);
     // 冪等: 同じ requestId の再送
-    const again = kiosk({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login.data.sessionToken, requestId: 'emu_punch_01' });
+    const again = staffApi({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login.data.sessionToken, requestId: 'emu_punch_01' });
     expect(again.data.eventId).toBe(punch.data.eventId);
 
     // Sheets 上のデータ: 月別パーティション、RAW 書き込み（数式として評価されない文字列のまま）
@@ -105,9 +105,11 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     const e2 = owner('employees.create', { displayName: '計測', kana: 'けいそく', payType: 'hourly', hireDate: '2025-01-01' });
     owner('credentials.setPin', { employeeId: e2.id, pin: '582914' });
     const w0 = emu.writeCalls;
-    const login2 = kiosk({ op: 'auth.login', args: { employeeId: e2.id, pin: '582914' }, device, requestId: 'emu_login_02' });
-    expect(kiosk({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login2.data.sessionToken, requestId: 'emu_punch_02' }).ok).toBe(true);
-    expect(kiosk({ op: 'auth.logout', device, session: login2.data.sessionToken, requestId: 'emu_logout_02' }).ok).toBe(true);
+    const login2 = staffApi({ op: 'auth.login', args: { employeeId: e2.id, pin: '582914' }, device, requestId: 'emu_login_02' });
+    expect(staffApi({ op: 'attendance.punch', args: { type: 'clock_in' }, device, session: login2.data.sessionToken, requestId: 'emu_punch_02' }).ok).toBe(true);
+    expect(staffApi({ op: 'auth.logout', device, session: login2.data.sessionToken, requestId: 'emu_logout_02' }).ok).toBe(true);
+    // 互換: v1.2 までの関数名 kioskApi も同じ処理（更新前から開いていた画面向け）
+    expect(JSON.parse(core.kioskApi(JSON.stringify({ op: 'staff.bootstrap', device, requestId: 'emu_boot_compat' }))).ok).toBe(true);
     expect(emu.writeCalls - w0).toBeLessThanOrEqual(9);
   });
 
@@ -125,7 +127,7 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(JSON.stringify(again)).not.toContain(clientKey);
     // 保存済みの鍵で署名した呼び出しは通る（登録済みの確認）
     expect(post(ownerEnvelope(clientKey, { op: 'settings.get' })).ok).toBe(true);
-    // 店長のエディタ実行でのみリセットできる
+    // 管理者のエディタ実行でのみリセットできる
     emu.activeUser = '';
     expect(() => core.shiftlyResetAdminPairing()).toThrow();
     emu.activeUser = 'owner@example.invalid';

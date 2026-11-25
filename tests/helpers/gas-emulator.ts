@@ -48,6 +48,8 @@ interface Spreadsheet {
 export interface GasFns {
   doGet: (...a: unknown[]) => any;
   doPost: (...a: unknown[]) => any;
+  staffApi: (...a: unknown[]) => any;
+  /** 互換（v1.2 までの関数名） */
   kioskApi: (...a: unknown[]) => any;
   shiftlyAuthorize: (...a: unknown[]) => any;
   shiftlyDailyJob: (...a: unknown[]) => any;
@@ -63,7 +65,7 @@ export class GasEmulator {
   files = new Map<string, { name: string; mimeType: string; parents: string[]; data: Buffer | null; appProperties?: Record<string, string>; trashed?: boolean }>();
   spreadsheets = new Map<string, Spreadsheet>();
   triggers: string[] = [];
-  /** エディタ実行（店長）を模す場合は店長のメール。匿名 Web アプリ経由は空文字 */
+  /** エディタ実行（管理者）を模す場合は管理者のメール。匿名 Web アプリ経由は空文字 */
   activeUser = 'owner@example.invalid';
   apiCalls = 0;
   /** Sheets API の書き込み系呼び出し回数（割当の消費の目安） */

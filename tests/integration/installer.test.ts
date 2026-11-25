@@ -106,7 +106,7 @@ function fakeCore(installed: { bootstrap?: Record<string, string> }) {
 }
 
 function release(version = '0.1.0'): ReleaseBundle {
-  const core: ScriptFile[] = [{ name: 'appsscript', type: 'JSON', source: '{"webapp":{}}' }, { name: 'Code', type: 'SERVER_JS', source: 'function doGet(){}' }, { name: 'kiosk', type: 'HTML', source: '<html></html>' }];
+  const core: ScriptFile[] = [{ name: 'appsscript', type: 'JSON', source: '{"webapp":{}}' }, { name: 'Code', type: 'SERVER_JS', source: 'function doGet(){}' }, { name: 'staff', type: 'HTML', source: '<html></html>' }];
   const admin: ScriptFile[] = [{ name: 'appsscript', type: 'JSON', source: '{"webapp":{}}' }, { name: 'Code', type: 'SERVER_JS', source: 'function adminApi(){}' }];
   const hashes: Record<string, string> = {};
   for (const f of core) hashes[`core/${f.name}`] = sha(f.source);
@@ -134,7 +134,7 @@ function setup(o: { apiDisabled?: boolean; failCreateOnce?: boolean; loseCreateR
     now: () => new Date().toISOString(),
     postCore: (_url, body) => {
       // デプロイ済みの core の bootstrap を取り出す
-      const p = [...api.projects.values()].find((x) => x.title.startsWith('Shiftly-Kiosk'));
+      const p = [...api.projects.values()].find((x) => x.title.startsWith('Shiftly-Staff'));
       const bs = p?.files.find((f) => f.name === 'bootstrap');
       if (bs) installed.bootstrap = JSON.parse(bs.source.replace(/^var SHIFTLY_BOOTSTRAP = /, '').replace(/;\n$/, ''));
       const res = core.post(body as Record<string, unknown>);
@@ -164,7 +164,7 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     r = inst.runUntilBlocked({ storeName: 'テスト店' }, 20);
     expect(r.waitingFor?.step).toBe('core.authorize');
     expect(r.waitingFor?.openUrl).toContain('script.google.com/home/projects/script_1');
-    // 店長が shiftlyAuthorize を実行
+    // 管理者が shiftlyAuthorize を実行
     s.core.authorize();
     r = s.make().runUntilBlocked({}, 20);
     expect(r.waitingFor?.step).toBe('admin.authorize');
@@ -175,7 +175,7 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     r = s.make().runUntilBlocked({}, 20);
     expect(r.error).toBeNull();
     expect(r.state.complete).toBe(true);
-    expect(r.state.kioskUrl).toMatch(/\/exec$/);
+    expect(r.state.staffUrl).toMatch(/\/exec$/);
     expect(r.state.adminUrl).toMatch(/\/exec$/);
     expect(s.api.projects.size).toBe(2);
     // レジストリには秘密情報（pairing code / setup key）を含めない
@@ -218,7 +218,7 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     const inst = s.make();
     inst.retry('core.create');
     inst.runUntilBlocked({}, 20);
-    expect([...s.api.projects.values()].filter((p) => p.title.startsWith('Shiftly-Kiosk'))).toHaveLength(1);
+    expect([...s.api.projects.values()].filter((p) => p.title.startsWith('Shiftly-Staff'))).toHaveLength(1);
   });
 
   it('Codex 監査1 #12: 作成成功の応答が失われた場合は自動で作り直さず、確認後の再実行で 1 つだけになる', () => {
@@ -227,14 +227,14 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     const r = s.make().runUntilBlocked({}, 20); // 再実行しても自動では作らない
     expect(r.error?.step).toBe('core.create');
     expect(r.error?.fix).toContain('script.google.com/home');
-    const kiosks = () => [...s.api.projects.entries()].filter(([, p]) => p.title.startsWith('Shiftly-Kiosk'));
-    expect(kiosks()).toHaveLength(1);
-    // 店長が一覧で確認し、応答の失われたプロジェクトをゴミ箱へ移動してから再実行
-    s.api.projects.delete(kiosks()[0]![0]);
+    const staffProjects = () => [...s.api.projects.entries()].filter(([, p]) => p.title.startsWith('Shiftly-Staff'));
+    expect(staffProjects()).toHaveLength(1);
+    // 管理者が一覧で確認し、応答の失われたプロジェクトをゴミ箱へ移動してから再実行
+    s.api.projects.delete(staffProjects()[0]![0]);
     const inst = s.make();
     inst.retry('core.create');
     inst.runUntilBlocked({}, 20);
-    expect(kiosks()).toHaveLength(1);
+    expect(staffProjects()).toHaveLength(1);
   });
 
   it('Apps Script API 無効時は設定ページへの案内', () => {
@@ -269,13 +269,13 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
     const done = s.make().runUntilBlocked({}, 20);
     expect(done.state.complete).toBe(true);
-    const urlBefore = done.state.kioskUrl;
+    const urlBefore = done.state.staffUrl;
     s.deps.release = release('0.2.0');
     const inst = s.make();
     expect(inst.checkUpdate().needsUpdate).toBe(true);
     const u = inst.applyUpdate({ approveDestructive: false });
     expect(u.ok).toBe(true);
-    expect(inst.state().kioskUrl).toBe(urlBefore);
+    expect(inst.state().staffUrl).toBe(urlBefore);
     expect(inst.state().installedVersion).toBe('0.2.0');
     const backups = handleRequest(s.core.be, { op: 'backup.list' }, 'owner');
     expect(backups.ok && (backups.data as Array<{ kind: string }>).some((b) => b.kind === 'pre_update')).toBe(true);

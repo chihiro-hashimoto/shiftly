@@ -46,11 +46,11 @@ describe('初期化・端末登録・打刻（F01/F02/F03/F06/F07）', () => {
     h.setupStore();
     const a = h.addStaff('山田', '482913');
     h.login(a, '482913');
-    const r1 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
+    const r1 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
     expect(r1.ok && r2.ok).toBe(true);
     if (r1.ok && r2.ok) expect((r2.data as any).eventId).toBe((r1.data as any).eventId);
-    expect((h.kioskOk('attendance.lookup', { requestId: 'punch_retry_0001' }) as any).saved).toBe(true);
+    expect((h.staffOk('attendance.lookup', { requestId: 'punch_retry_0001' }) as any).saved).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     expect(det.originals).toHaveLength(1);
   });
@@ -95,7 +95,7 @@ describe('勤怠修正（F09）', () => {
     h.punchAt(a, '482913', '2026-11-02', '18:00', 'clock_out');
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     const inEv = det.originals[0];
-    h.ownerOk('attendance.correct', { employeeId: a, action: 'replace', targetEventId: inEv.id, type: 'clock_in', at: '2026-11-02T09:00', reason: '打刻忘れ（本人申告・店長確認）' });
+    h.ownerOk('attendance.correct', { employeeId: a, action: 'replace', targetEventId: inEv.id, type: 'clock_in', at: '2026-11-02T09:00', reason: '打刻忘れ（本人申告・管理者確認）' });
     h.ownerOk('attendance.correct', { employeeId: a, action: 'add', type: 'break_start', at: '2026-11-02T12:00', reason: '休憩打刻漏れ' });
     h.ownerOk('attendance.correct', { employeeId: a, action: 'add', type: 'break_end', at: '2026-11-02T13:00', reason: '休憩打刻漏れ' });
     const det2 = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
@@ -124,11 +124,11 @@ describe('シフト（F10/F11）', () => {
     const a = h.addStaff('山田', '482913');
     h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-02', start: '18:00', end: '26:00', breakMinutes: 60, applyFixedBreak: false });
     h.login(a, '482913');
-    expect(h.kioskOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(0);
+    expect(h.staffOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(0);
     expect(h.ownerOk('shifts.copyWeek', { fromWeekStart: '2026-11-01', toWeekStart: '2026-11-08' }).created).toBe(1);
     expect(h.ownerOk('shifts.publish', { from: '2026-11-01', to: '2026-11-14' }).published).toBe(2);
-    expect(h.kioskOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(2);
-    h.kiosk('auth.logout');
+    expect(h.staffOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(2);
+    h.staff('auth.logout');
     h.punchAt(a, '482913', '2026-11-02', '18:20', 'clock_in');
     h.punchAt(a, '482913', '2026-11-03', '02:00', 'clock_out');
     const cmp = h.ownerOk('attendance.compareShifts', { from: '2026-11-02', to: '2026-11-02' });
@@ -156,7 +156,7 @@ describe('有給（F20）', () => {
     h.ownerOk('leave.take', { employeeId: a, date: '2026-11-05', days: 1, scheduledMinutes: 480 });
     expect(h.owner('leave.take', { employeeId: a, date: '2026-11-06', days: 0.5 }).ok).toBe(false); // 半日は未許可
     h.login(a, '482913');
-    expect(h.kioskOk('leave.mine').balance).toBe(9);
+    expect(h.staffOk('leave.mine').balance).toBe(9);
   });
   it('既存残日数は根拠なしでは登録できない', () => {
     const h = new Harness();
@@ -213,9 +213,9 @@ describe('給与（F14/F18/F19）', () => {
     // 明細発行・本人閲覧
     expect(h.ownerOk('payslips.issue', { periodId: p.id }).issued).toBe(1);
     h.login(a, '482913');
-    const mine = h.kioskOk<any[]>('payslips.mine');
+    const mine = h.staffOk<any[]>('payslips.mine');
     expect(mine).toHaveLength(1);
-    const view = h.kioskOk('payslips.view', { payslipId: mine[0].id });
+    const view = h.staffOk('payslips.view', { payslipId: mine[0].id });
     expect(view.net).toBe(res2.find((x) => x.status === 'issued' || x.status === 'confirmed')?.totals.netPay ?? view.net);
     expect(view.employeeName).toBe('山田');
   });
@@ -296,7 +296,7 @@ describe('バックアップ・復元・更新（F26/F35/F36/F37）', () => {
     expect(r.integrity.ok).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     expect(det.originals.map((x: any) => x.type)).toEqual(['clock_in', 'clock_out']);
-    expect(h.kiosk('auth.me', undefined, { session: sessionBefore }).ok).toBe(false);
+    expect(h.staff('auth.me', undefined, { session: sessionBefore }).ok).toBe(false);
   });
   it('復元には確認文字列が必要', () => {
     const h = new Harness();
@@ -339,11 +339,11 @@ describe('書き込み途中失敗からの復旧（ジャーナル）', () => {
     h.login(a, '482913');
     // flush 内の 2 回目の write（業務データ本体）で失敗させる
     h.env.adapter.failOnWrite = (h.env.adapter as any).writes + 2;
-    const r = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
+    const r = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
     expect(r.ok).toBe(false);
     h.env.adapter.failOnWrite = null;
     // 次の更新系処理の開始時にジャーナルから再適用され、同じ requestId の再送は保存済み結果を返す
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
     expect(r2.ok).toBe(true);
     if (r2.ok) expect((r2.data as any).replayed).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
