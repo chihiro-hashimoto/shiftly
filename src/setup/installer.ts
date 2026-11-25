@@ -80,6 +80,8 @@ export interface Registry {
     maintenanceBefore?: boolean;
     /** この更新でコードの更新・配備に着手したか（再開後も引き継ぐ。準備の段階の失敗でも、着手済みならロールバックする。Codex 監査10） */
     codeTouched?: boolean;
+    /** 更新の開始時の各プロジェクトの「直前の版」（配備で上書きされるため保持し、開始時の組へ戻した後に復元する。Codex 監査12） */
+    startPrevious?: { core?: number; admin?: number };
     /**
      * DB の移行が行われた可能性があるか（移行の要求を送る前に true として保存し、明確に拒否された場合だけ戻す）。
      * true の更新は、以後この更新の中で旧版へ自動で戻さない（配備の照会の結果に左右されない。Codex 監査7 #1）
@@ -526,7 +528,16 @@ export class Installer {
       } catch {
         info = null;
       }
-      reg.update = { target, stage: 'start', startedAt: this.d.now(), prevCore, prevAdmin, startSchema: info?.schemaVersion, maintenanceBefore: info ? info.maintenance : undefined };
+      reg.update = {
+        target,
+        stage: 'start',
+        startedAt: this.d.now(),
+        prevCore,
+        prevAdmin,
+        startSchema: info?.schemaVersion,
+        maintenanceBefore: info ? info.maintenance : undefined,
+        startPrevious: { core: reg.core.previousVersionNumber, admin: reg.admin.previousVersionNumber },
+      };
       this.persist();
     }
     const step = (stage: string) => {
@@ -730,22 +741,34 @@ export class Installer {
     const reg = this.reg!;
     const out: string[] = [];
     let rbFailed = false;
+    // 戻し先の版の組（Codex 監査11 #1・監査12 #1）
+    // - 呼び出し側の指定（更新の失敗時の自動ロールバック）: 更新の開始時の組
+    // - 手動で、この更新が配備に着手している（codeTouched）: 更新の開始時の組（一部だけ戻った状態から別々の世代へ戻さない）
+    // - 手動で、配備に着手していない（記録なし・配備の前に失敗）: 各プロジェクトの直前の版（従来どおり、現行より前の版へ戻す）
+    const u = reg.update;
+    const explicit = prevCore !== undefined && prevAdmin !== undefined;
+    const useStart = !explicit && !!(u && u.codeTouched);
+    const target = explicit
+      ? { core: prevCore, admin: prevAdmin }
+      : useStart
+        ? { core: u!.prevCore, admin: u!.prevAdmin }
+        : { core: reg.core.previousVersionNumber, admin: reg.admin.previousVersionNumber };
+    // 戻し先の組がそろわない（初回の構築直後など）場合は、メンテナンスを開始する前に中止する（Codex 監査12 #2）
+    if (target.core === undefined || target.admin === undefined || !reg.core.scriptId || !reg.core.deploymentId || !reg.admin.scriptId || !reg.admin.deploymentId) {
+      return '戻せる版の組（Staff・Admin の両方の直前の版）がないため、ロールバックを行いませんでした（メンテナンスの状態は変更していません）。初回の構築の直後など、直前の版がない場合は戻せません';
+    }
     // 配備を切り替える前に、現在の Core で書き込みを止める（旧版と DB の組み合わせを確認するまで営業を再開しない。Codex 監査4）
     const on = this.callCore('system.setMaintenance', { on: true });
     if (!on.ok) return `メンテナンスを開始できなかったため、ロールバックを中止しました（${on.error?.message ?? ''}）。現在のバージョンのまま稼働しています`;
     out.push('メンテナンスを開始しました');
-    // 戻し先: 更新の記録（進行中・失敗）があれば、更新の開始時の Staff・Admin の版の組へ戻す。各プロジェクトの直前の版へ
-    // 個別に戻すと、一部のロールバックが失敗した後の再実行で別々の世代に戻り得る（Codex 監査11 #1）
-    const u = reg.update;
-    const target = {
-      core: prevCore ?? u?.prevCore ?? reg.core.previousVersionNumber,
-      admin: prevAdmin ?? u?.prevAdmin ?? reg.admin.previousVersionNumber,
-    };
-    for (const [which, prev] of [['core', target.core], ['admin', target.admin]] as const) {
+    const pairs: Array<['core' | 'admin', number]> = [
+      ['core', target.core],
+      ['admin', target.admin],
+    ];
+    for (const [which, prev] of pairs) {
       const ref = reg[which];
-      if (!prev || !ref.scriptId || !ref.deploymentId) continue;
       try {
-        this.d.api.updateDeployment(ref.scriptId, ref.deploymentId, prev, `Shiftly rollback to v${prev}`);
+        this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, prev, `Shiftly rollback to v${prev}`);
         reg[which] = { ...ref, versionNumber: prev };
         out.push(`${which === 'core' ? 'Staff' : 'Admin'} をバージョン ${prev} に戻しました`);
       } catch (e) {
@@ -763,13 +786,27 @@ export class Installer {
         `DB の構造（v${d.schemaVersion}）が戻したプログラム（v${d.expectedSchemaVersion}）と一致しないため、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
           `管理画面「バックアップ」で更新前バックアップ${this.reg?.update?.backupId ? `（${this.reg.update.backupId}）` : ''}を復元してからメンテナンスを解除するか、原因を解消して更新を再実行してください`,
       );
-    } else if (rbFailed || this.deployedVersionsAre(target.core, target.admin) !== true) {
+    }
+    const verified = !rbFailed && this.deployedVersionsAre(target.core, target.admin) === true;
+    // 更新の開始時の組へ戻ったことを確認できたら、配備で上書きした「直前の版」を更新の開始前の値に戻し、配備への着手を取り消す
+    // （次の手動ロールバックでさらに前の組へ戻れるようにする。Codex 監査12 #1）
+    if (verified && u && target.core === u.prevCore && target.admin === u.prevAdmin) {
+      if (u.startPrevious) {
+        reg.core = { ...reg.core, previousVersionNumber: u.startPrevious.core };
+        reg.admin = { ...reg.admin, previousVersionNumber: u.startPrevious.admin };
+      }
+      reg.update = { ...u, codeTouched: false };
+    }
+    if (!d || d.schemaVersion !== d.expectedSchemaVersion) {
+      // 上で継続の理由を記録済み
+    } else if (!verified) {
       // Staff・Admin の版が混在している可能性があるため、営業を再開しない（Codex 監査10 回帰 1）
       out.push(
         `一部のロールバックに失敗した、または Staff・Admin の実際の配備が戻し先の版の組（Staff v${target.core ?? '?'}／Admin v${target.admin ?? '?'}）と一致することを確認できなかったため、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
           'Setup の「直前のバージョンに戻す」を再実行してください（更新の記録がある間は、更新の開始時の版の組へ戻します）',
       );
-    } else if (opts.keepMaintenance) {
+    } else if (opts.keepMaintenance ?? (u ? u.maintenanceBefore !== false : false)) {
+      // 自動ロールバックは呼び出し側の指定、手動は更新の記録の「開始前からメンテナンス中か」に従う（不明なら継続。Codex 監査12）
       out.push('更新の開始前からメンテナンス中だった（または開始前の状態を確認できない）ため、メンテナンスを継続しています。管理画面「システム・更新」で状態を確認してから解除してください');
     } else {
       const off = this.callCore('system.setMaintenance', { on: false });

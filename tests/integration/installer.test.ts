@@ -868,4 +868,104 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(msg).toContain('メンテナンスを解除しました');
     expect(maintenance(s)).toBe(false);
   });
+
+  // ---- Codex 監査12: 更新・ロールバックの状態の組み合わせ ----
+  /*
+   * 前提: 0.3.0 へ正常に更新済み（現行の組 = cur、各プロジェクトの直前の版の組 = prev）。0.4.0 への更新を、次の各時点で失敗させる
+   *   準備の失敗応答 / 準備の通信例外 / コードの更新の失敗 / Admin の版の作成の失敗 / 同（自動ロールバックの Admin の切替も失敗）/
+   *   移行の応答喪失 / 移行の通信例外
+   * × 更新の開始前のメンテナンス（解除中 / 中）
+   * 不変条件（失敗の直後）:
+   *   N1 メンテナンスが解除されているなら、Staff・Admin は同じ世代（両方 cur か、両方この更新の版）
+   *   N2 開始前からメンテナンス中なら、メンテナンスを継続
+   *   N3 移行の可能性がある失敗では、旧版へ自動で戻さず（この更新の版のまま）メンテナンスを継続
+   * 手動の「直前のバージョンに戻す」の後:
+   *   M1 配備に着手した更新が残っている（自動ロールバックが完了していない・移行後）なら更新の開始時の組（cur）へ、
+   *      そうでなければ各プロジェクトの直前の版の組（prev）へ戻る（どちらでも Staff・Admin は同じ世代）
+   *   M2 開始前からメンテナンス中なら継続、そうでなければ解除
+   * 注: モックの Core は常に現行のコードで動くため、「旧版の Core と新しい構造の DB」の組み合わせ自体は検証できない（N3 は配備の版で検証）
+   */
+  type Failure = 'prepareError' | 'prepareThrow' | 'uploadFail' | 'adminVersionFail' | 'adminVersionAndRollbackFail' | 'migrateDrop' | 'migrateThrow';
+  const FAILURES: Array<{ f: Failure; migrated: boolean; manualTo: 'cur' | 'prev' }> = [
+    { f: 'prepareError', migrated: false, manualTo: 'prev' },
+    { f: 'prepareThrow', migrated: false, manualTo: 'prev' },
+    { f: 'uploadFail', migrated: false, manualTo: 'prev' },
+    { f: 'adminVersionFail', migrated: false, manualTo: 'prev' },
+    { f: 'adminVersionAndRollbackFail', migrated: false, manualTo: 'cur' },
+    { f: 'migrateDrop', migrated: true, manualTo: 'cur' },
+    { f: 'migrateThrow', migrated: true, manualTo: 'cur' },
+  ];
+  for (const { f, migrated, manualTo } of FAILURES) {
+    for (const mBefore of [false, true]) {
+      it(`状態の組み合わせ: ${f} × 開始前のメンテナンス=${mBefore ? '中' : '解除中'}`, () => {
+        const s = installed();
+        const reg = () => s.store.reg!;
+        const deployedPair = () => [reg().core, reg().admin].map((r) => s.api.projects.get(r.scriptId!)!.deployments.get(r.deploymentId!)!);
+        s.deps.release = release('0.3.0');
+        expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+        const cur = deployedPair();
+        const prev = [reg().core.previousVersionNumber!, reg().admin.previousVersionNumber!];
+        expect(prev.every((v) => typeof v === 'number')).toBe(true);
+        expect(prev).not.toEqual(cur);
+        if (mBefore) expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: `req_mx_${f}`.slice(0, 40) }, 'owner').ok).toBe(true);
+        if (f === 'prepareError') failCopies(s);
+        if (f === 'prepareThrow') s.throwOps.add('system.prepareUpdate');
+        if (f === 'uploadFail') s.api.faults.putContent = 1;
+        if (f === 'adminVersionFail') s.api.faults.scriptFail.set(reg().admin.scriptId!, 1);
+        if (f === 'adminVersionAndRollbackFail') s.api.faults.scriptFail.set(reg().admin.scriptId!, 2);
+        if (f === 'migrateDrop') s.dropOps.add('system.migrate');
+        if (f === 'migrateThrow') s.throwOps.add('system.migrate');
+        s.deps.release = release('0.4.0');
+        expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+
+        // 失敗の直後
+        const after = deployedPair();
+        const sameGen = (after[0] === cur[0]) === (after[1] === cur[1]);
+        if (!maintenance(s)) expect(sameGen).toBe(true); // N1
+        if (mBefore) expect(maintenance(s)).toBe(true); // N2
+        if (migrated) {
+          // N3
+          expect(maintenance(s)).toBe(true);
+          expect(after[0]).not.toBe(cur[0]);
+          expect(after[1]).not.toBe(cur[1]);
+        }
+
+        // 手動の「直前のバージョンに戻す」
+        s.make().rollbackCode();
+        expect(deployedPair()).toEqual(manualTo === 'cur' ? cur : prev); // M1
+        expect(maintenance(s)).toBe(mBefore); // M2
+      });
+    }
+  }
+
+  it('状態の組み合わせ: 初回の構築直後（戻せる版がない）の「直前のバージョンに戻す」は、メンテナンスを開始せずに中止する（解除中・中のどちらも変えない）', () => {
+    for (const mBefore of [false, true]) {
+      const s = installed();
+      const coreRef = s.store.reg!.core;
+      const before = s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!);
+      if (mBefore) expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: 'req_mnt_fresh01' }, 'owner').ok).toBe(true);
+      const msg = s.make().rollbackCode();
+      expect(msg).toContain('戻せる版の組');
+      expect(maintenance(s)).toBe(mBefore);
+      expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(before);
+    }
+  });
+
+  it('状態の組み合わせ: 開始時の組へ戻した後にもう一度「直前のバージョンに戻す」を押すと、さらに前の組へ戻る（同じ世代のまま）', () => {
+    const s = installed();
+    const reg = () => s.store.reg!;
+    const deployedPair = () => [reg().core, reg().admin].map((r) => s.api.projects.get(r.scriptId!)!.deployments.get(r.deploymentId!)!);
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+    const cur = deployedPair();
+    const prev = [reg().core.previousVersionNumber!, reg().admin.previousVersionNumber!];
+    s.api.faults.scriptFail.set(reg().admin.scriptId!, 2);
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(cur);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(prev);
+    expect(maintenance(s)).toBe(false);
+  });
 });
