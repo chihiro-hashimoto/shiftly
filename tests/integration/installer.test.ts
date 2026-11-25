@@ -156,11 +156,17 @@ function setup(o: { apiDisabled?: boolean; failCreateOnce?: boolean; loseCreateR
         dropOps.delete(op);
         return { ok: false, error: { code: 'NETWORK', message: '応答なし' } } as never;
       }
+      // 処理は Core で完了したが、通信が例外になった状態を模擬（UrlFetchApp.fetch のタイムアウト等）
+      if (throwOps.has(op)) {
+        throwOps.delete(op);
+        throw new Error('Exception: Timeout');
+      }
       return res;
     },
   };
   const dropOps = new Set<string>();
-  return { api, store, core, deps, dropOps, make: () => new Installer(deps) };
+  const throwOps = new Set<string>();
+  return { api, store, core, deps, dropOps, throwOps, make: () => new Installer(deps) };
 }
 
 describe('Shiftly Setup（自動インストーラー）', () => {
@@ -451,8 +457,17 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     s.make().runUntilBlocked({}, 20);
     const prevCore = s.store.reg!.core.versionNumber;
     // 0.3.0 のコードは配備済みで、Core が移行を確定した直後に Setup が中断した状態（migrated を保存する前）
+    const prevAdmin = s.store.reg!.admin.versionNumber;
     s.deps.release = release('0.3.0');
-    s.store.reg!.update = { target: '0.3.0', stage: 'migrate', startedAt: new Date().toISOString(), prevCore, prevAdmin: s.store.reg!.admin.versionNumber, backupId: 'bak_first' };
+    // 前提: 0.3.0 のコードが Staff・Admin の既存デプロイに配備済み（Apps Script 上の実際のデプロイも新しい版を指す）
+    for (const which of ['core', 'admin'] as const) {
+      const ref = s.store.reg![which];
+      const proj = s.api.projects.get(ref.scriptId!)!;
+      const v = ++proj.versions;
+      proj.deployments.set(ref.deploymentId!, v);
+      s.store.reg![which] = { ...ref, versionNumber: v, previousVersionNumber: ref.versionNumber };
+    }
+    s.store.reg!.update = { target: '0.3.0', stage: 'migrate', startedAt: new Date().toISOString(), prevCore, prevAdmin, backupId: 'bak_first' };
     const backupsBefore = (handleRequest(s.core.be, { op: 'backup.list' }, 'owner') as { data: unknown[] }).data.length;
     const before = s.api.calls.length;
     const r = s.make().applyUpdate({ approveDestructive: false });
@@ -479,5 +494,60 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).not.toBe(prevVersion);
     // ロールバック先（直前の版）は更新開始前の版のまま
     expect(s.store.reg!.core.previousVersionNumber).toBe(prevVersion);
+  });
+
+  it('Codex 監査6 #1: 移行の要求で通信が例外になった場合も、移行済みとして旧版へ戻さない', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    // 更新開始時の DB を旧構造（v1）にし、移行（v1→v2）は Core で完了するが、Setup 側の通信が例外になる
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    const row = uow.list<{ id: string; key: string; value: string; version: number; createdAt: string; updatedAt: string }>('system_metadata').find((m) => m.key === 'schemaVersion')!;
+    uow.update('system_metadata', { ...row, value: '1' });
+    uow.flush();
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    s.throwOps.add('system.migrate');
+    s.deps.release = release('0.3.0');
+    const u = s.make().applyUpdate({ approveDestructive: false });
+    expect(u.ok).toBe(false);
+    expect(u.message).toContain('メンテナンスを継続');
+    // 旧版へ戻していない（旧 Core と v2 の DB の組み合わせにしない）
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).not.toBe(prevVersion);
+    expect(s.store.reg!.update?.migrated).toBe(true);
+    const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    expect(info.ok && (info.data as { schemaVersion: number }).schemaVersion).toBe(2);
+    expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
+  });
+
+  it('Codex 監査6 #3: 移行後の失敗から手動でロールバックした後の再実行は、配備を省略せず新しい版を配備してから完了する', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    // 移行後に完了処理の応答が失われて失敗（移行済み・メンテナンス継続）
+    s.dropOps.add('system.finishUpdate');
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    expect(s.store.reg!.update?.migrated).toBe(true);
+    // Google 所有者が手動で旧版へロールバック
+    s.make().rollbackCode();
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(prevVersion);
+    // 再実行: 旧版のまま「更新しました」としない。新しい版を配備してから完了する
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(true);
+    const deployed = s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!);
+    expect(deployed).not.toBe(prevVersion);
+    expect(deployed).toBe(s.store.reg!.core.versionNumber);
+    expect(s.store.reg!.appVersion).toBe('0.3.0');
   });
 });

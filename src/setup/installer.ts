@@ -492,7 +492,8 @@ export class Installer {
     // 更新開始前のバージョン番号を保持（承認待ちから再開した場合も、更新前の版へ戻せるように）
     // 移行後に失敗した更新の再開（コードは新しい版のまま。バックアップの再取得・再配備をせず完了処理から行う）
     // 移行の段階（migrate / finish）で中断した更新も、移行済みの可能性があるため同様に扱う（Codex 監査5）
-    const afterMigration = !!(reg.update && reg.update.target === target && (reg.update.migrated || ['migrate', 'finish'].includes(reg.update.stage)));
+    // ただし、配備されているコードがこの更新で配備した版である場合に限る（手動ロールバック等で旧版に戻っていれば、配備からやり直す。Codex 監査6 #3）
+    const afterMigration = !!(reg.update && reg.update.target === target && (reg.update.migrated || ['migrate', 'finish'].includes(reg.update.stage))) && this.deployedByThisUpdate();
     const resuming = afterMigration || (reg.update && reg.update.target === target && reg.update.prevCore !== undefined && reg.update.stage !== 'failed');
     const prevCore = resuming ? reg.update!.prevCore : reg.core.versionNumber;
     const prevAdmin = resuming ? reg.update!.prevAdmin : reg.admin.versionNumber;
@@ -522,7 +523,14 @@ export class Installer {
         this.deploy('admin');
       }
       step('migrate');
-      const mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
+      let mig: ReturnType<Installer['callCore']>;
+      try {
+        mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
+      } catch (e) {
+        // 通信が例外になった場合も結果は不明（Core で移行が進んでいる可能性）。移行済みとして扱い、旧版へ戻さない（Codex 監査6 #1）
+        migrated = true;
+        throw e;
+      }
       if (!mig.ok) {
         // 応答がない・内部エラー等で結果が不明な場合は、Core で移行が進んでいる可能性があるため移行済みとして扱い、旧版へ戻さない
         // （ロック外の読み取りで移行前と判断しない。再開時は Core のロック内で移行をやり直す＝冪等。Codex 監査5）
@@ -541,6 +549,8 @@ export class Installer {
         return { ok: false, message: '破壊的な DB 変更が含まれるため、内容を確認して承認してください（コードは更新済み・メンテナンス中）', requiresApproval: need };
       }
       step('finish');
+      // 完了処理の前に、配備されているコードがこの更新の版であることを確認する（旧版の Core で完了させない。Codex 監査6 #3）
+      if (!this.deployedByThisUpdate()) throw new Error('配備されているプログラムが更新先の版ではありません（ロールバック等で切り替わった可能性）');
       const fin = this.callCore('system.finishUpdate');
       if (!fin.ok) throw new Error(`更新の完了処理に失敗しました（${fin.error?.message ?? ''}）`);
       reg.appVersion = target;
@@ -563,6 +573,27 @@ export class Installer {
       const rb = this.rollbackCode(prevCore, prevAdmin);
       return this.failUpdate(`更新に失敗しました: ${msg}。${rb}`);
     }
+  }
+
+  /**
+   * Staff・Admin の既存デプロイが、この更新で配備した版（更新開始前の版ではない）を指しているか。
+   * Apps Script API で実際のデプロイの版を確認する
+   */
+  private deployedByThisUpdate(): boolean {
+    const reg = this.reg;
+    const u = reg?.update;
+    if (!reg || !u) return false;
+    for (const [which, prev] of [['core', u.prevCore], ['admin', u.prevAdmin]] as const) {
+      const ref = reg[which];
+      if (!ref.scriptId || !ref.deploymentId || !ref.versionNumber || ref.versionNumber === prev) return false;
+      try {
+        const dep = this.d.api.getDeployment(ref.scriptId, ref.deploymentId);
+        if (dep?.deploymentConfig?.versionNumber !== ref.versionNumber) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
 
   private failUpdate(message: string) {
@@ -607,6 +638,8 @@ export class Installer {
       out.push(off.ok ? 'メンテナンスを解除しました' : 'メンテナンス解除に失敗しました（管理画面「システム・更新」から解除してください）');
       out.push('DB は自動では戻していません。必要に応じて更新前バックアップから復元してください');
     }
+    // コードを戻した後は、進行中の更新を「失敗」として終了する（再開で配備を省略しない。次回の更新は最初から行う。Codex 監査6 #3）
+    if (reg.update) reg.update = { ...reg.update, stage: 'failed', message: `ロールバックしました: ${out.join('。')}` };
     this.persist();
     return out.join('。');
   }

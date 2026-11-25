@@ -540,6 +540,12 @@ defineOps([
           }
           setMeta(ctxC, 'schemaVersion', String(SCHEMA_VERSION));
         }
+        // 4b) 稼働状態（メンテナンス・進行中の更新・稼働中のアプリの版）は現行を引き継ぐ
+        //     （更新前バックアップの「メンテナンス解除」の値で、確認前に打刻が再開しないように。Codex 監査6 #2）
+        for (const key of ['maintenance', 'pendingUpdate', 'appVersion'] as const) {
+          const cur = metaValue(ctx, key);
+          if (cur !== null) setMeta(ctxC, key, cur);
+        }
         // 5) 全セッション（スタッフ・管理者）失効・バックアップ履歴は現行を引き継ぐ
         revokeSessionsWhere(ctxC, () => true);
         revokeAdminSessions(ctxC, () => true, 'restored');
@@ -563,7 +569,7 @@ defineOps([
       const ctx2: Ctx = { ...ctx, uow: uow2 };
       audit(ctx2, 'backup.restore', 'backup', b.id, `復元 新DB=${cand.candidateId} 旧DB=${sw.previousId} 再投入=${restored}`);
       uow2.flush();
-      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフ・管理者のセッションを失効しました。スタッフ・PIN・管理者パスワード・権限・端末・勤怠修正の確認状態・休憩の申告・早出残業申請は復元前の状態を引き継いでいます' };
+      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフ・管理者のセッションを失効しました。スタッフ・PIN・管理者パスワード・権限・端末・勤怠修正の確認状態・休憩の申告・早出残業申請・メンテナンスの状態は復元前の状態を引き継いでいます' };
     },
   },
 ]);

@@ -38,14 +38,14 @@
 5. v1.3 で追加した確認待ちの事項: 管理者パスワードの初期設定（Google 所有者が Shiftly-Admin で設定）、既存店舗の時間基準（既定はシフト基準。実績基準に戻す場合は店舗設定）
 
 ## テスト結果（直近の実行）
-- `npm run verify`（2026-11-25、Codex 監査5 の修正後に実行、exit 0）: lint・typecheck 合格／単体 97・統合 122・セキュリティ 38・E2E 84 件すべて合格
-  - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2〜5 の回帰（codex-audit-2.test.ts・codex-audit-3.test.ts・installer.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
+- `npm run verify`（2026-11-25、Codex 監査6 の修正後に実行、exit 0）: lint・typecheck 合格／単体 97・統合 126・セキュリティ 38・E2E 84 件すべて合格
+  - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2〜6 の回帰（codex-audit-2.test.ts・codex-audit-3.test.ts・codex-audit-6.test.ts・installer.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
   - E2E は店舗 iPad（スタッフ・管理者モード・PIN 未設定・休憩確認）・Google 所有者の管理画面の全ページ・Setup（iPad 横・縦／PC 1440／スマホ 390、Chromium）
 - GitHub CI: v1.3 の各コミット（`564a04a`・`d132bd6`・`12ea421`）で成功。最新コミットは PR のチェックを参照
 - いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
 
 ## 次に実行する作業
-1. Codex 監査 C-6（マージ可否: マージ不可）の指摘 4 件への対応（ユーザーの判断待ち）。C-2〜C-5 の指摘は修正済み
+1. Codex 監査 C-7（C-6 の修正後のマージ可否の判定）の結果への対応（docs/review-log.md C-7）。C-2〜C-6 の指摘は修正済み
 2. ユーザーから実環境検証の記録（docs/live-verification.md の表）を受け取り、technical-verification.md に反映・NG を修正
 3. PR の統合方法をユーザーが決定（上記）
 
@@ -61,4 +61,4 @@
   - 3 回目: 2026-11-25、対象 `d132bd6`（C-2 の修正後の再監査）。C-2 の 6 件解消・4 件未解消＋新規 2 件 → 6 件をすべて修正（docs/review-log.md C-3）
   - 4 回目: 2026-11-25、対象 `12ea421`（C-3 の修正後の再監査）。C-3 の 4 件解消・2 件未解消＋新規 3 件 → 5 件をすべて修正（docs/review-log.md C-4）
   - 5 回目: 2026-11-25、対象 `d43d321`（C-4 の修正後の再監査）。重大 0 件。C-4 の 3 件解消・2 件未解消＋新規 1 件 → 3 件をすべて修正（docs/review-log.md C-5）
-  - 6 回目: 2026-11-25、対象 `df70198`（マージ可否の判定）。**判定はマージ不可**。指摘 4 件（高 3 / 中 1）は未対応（docs/review-log.md C-6）
+  - 6 回目: 2026-11-25、対象 `df70198`（マージ可否の判定）。**判定はマージ不可**。指摘 4 件（高 3 / 中 1）は、ユーザーの指示によりすべて修正（docs/review-log.md C-6）

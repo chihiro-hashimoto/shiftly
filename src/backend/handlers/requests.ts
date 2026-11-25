@@ -16,7 +16,7 @@ import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { AttendanceCorrection, BreakDeclaration, Employee, OvertimeRequest, OvertimeRequestHistory, Shift, WorkSession } from '../../shared/types';
 import { buildSessions, DEFAULT_SESSION_OPTIONS, effectiveEvents, plannedBreakFor, sessionKeyOf, type EffectiveEvent } from '../../shared/attendance';
-import { addDays, localDateTime, parseIso, toIsoJst, toLocalDate, type LocalDate } from '../../shared/time';
+import { addDays, HOUR_MS, localDateTime, parseIso, toIsoJst, toLocalDate, type LocalDate } from '../../shared/time';
 import { applyTimeBasis, timeBasisView } from '../../shared/worktime';
 import { confirmedPeriodFor, correctionDate, employeesInPeriod, loadEffective, loadEvents, reviewStatusOf, sessionsFor } from '../services';
 import { sessionView } from './attendance';
@@ -175,13 +175,19 @@ function supersedeOlderDeclarations(ctx: Ctx, decl: BreakDeclaration) {
   }
 }
 
-/** 打刻列から、現在開いている勤務の出勤打刻 ID（退勤時の休憩申告の対象） */
-export function openSessionKey(evs: EffectiveEvent[]): string | null {
+/**
+ * 打刻列から、現在開いている勤務の出勤打刻 ID（退勤時の休憩申告の対象）
+ * 勤務の区切り方は buildSessions と同じにする: 勤務中の出勤でも、前の出勤から missingClockOutHours を超えていれば
+ * 前の勤務は退勤打刻漏れとして閉じ、新しい勤務を開始する（前日の退勤漏れに当日の申告を付けない。Codex 監査6 #4）
+ */
+export function openSessionKey(evs: EffectiveEvent[], missingClockOutHours = DEFAULT_SESSION_OPTIONS.missingClockOutHours): string | null {
   let key: string | null = null;
+  let start = 0;
   let working = false;
   for (const e of evs) {
-    if (e.type === 'clock_in' && !working) {
+    if (e.type === 'clock_in' && (!working || e.at - start > missingClockOutHours * HOUR_MS)) {
       key = e.id;
+      start = e.at;
       working = true;
     } else if (e.type === 'clock_out' && working) {
       working = false;
@@ -478,7 +484,9 @@ defineOps([
       const st = settings(ctx);
       const d = today(ctx);
       const sessions = sessionsFor(ctx, me.employeeId, addDays(d, -1), d, st);
-      const open = sessions.find((s) => s.end === null) ?? null;
+      // 退勤時に申告を保存する勤務（openSessionKey）と同じ勤務を選ぶ（前日の退勤打刻漏れの勤務を選ばない。Codex 監査6 #4）
+      const openKey = openSessionKey(loadEffective(ctx, me.employeeId, addDays(d, -3), d));
+      const open = (openKey && sessions.find((s) => s.end === null && sessionKeyOf(s) === openKey)) || null;
       if (!open) return { breakMode: st.breakMode, open: false, plannedBreak: null, hasPunchedBreaks: false };
       // 退勤時の保存と同じ勤務区間（出勤〜現在）で予定休憩を選ぶ（同じ日に複数のシフトがある場合の取り違え防止）
       const planned = plannedBreakFor(open, shiftsAround(ctx, me.employeeId, open.laborDate), Math.floor(ctx.now / 1000) * 1000);
