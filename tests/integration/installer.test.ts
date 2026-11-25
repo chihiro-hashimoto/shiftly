@@ -706,4 +706,46 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     const uowC = new UnitOfWork(cand.adapter, { now: () => Date.now(), newId: (p) => `${p}_x` });
     expect(uowC.list<{ key: string; value: string }>('system_metadata').find((m) => m.key === 'maintenance')?.value).toBe('on');
   });
+
+  // ---- Codex 監査8 ----
+  const failCopies = (s: ReturnType<typeof setup>) => {
+    const files = s.core.env.platform.files as { copyDatabase: (...a: unknown[]) => unknown };
+    files.copyDatabase = () => {
+      throw new Error('Drive の容量が不足しています');
+    };
+  };
+
+  it('Codex 監査8 #3: 更新前バックアップに失敗した場合は、今回開始したメンテナンスを解除し、コードを変更しない', () => {
+    const s = installed();
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    expect(maintenance(s)).toBe(false);
+    failCopies(s);
+    s.deps.release = release('0.3.0');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('更新前バックアップに失敗');
+    expect(r.message).toContain('メンテナンスを解除しました');
+    expect(maintenance(s)).toBe(false);
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).toBe(prevVersion);
+  });
+
+  it('Codex 監査8 #3: 更新の開始前からメンテナンス中だった場合は、更新前バックアップの失敗後もメンテナンスを継続する', () => {
+    const s = installed();
+    expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: 'req_mnt_000001' }, 'owner').ok).toBe(true);
+    failCopies(s);
+    s.deps.release = release('0.3.0');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('開始前からメンテナンス中');
+    expect(maintenance(s)).toBe(true);
+  });
+
+  it('Codex 監査8 #3: Core の更新準備だけでも、更新前バックアップの失敗時は、そのリクエストで開始したメンテナンスを解除する', () => {
+    const s = installed();
+    failCopies(s);
+    const r = handleRequest(s.core.be, { op: 'system.prepareUpdate', args: { targetVersion: '0.3.0' }, requestId: 'req_prep_000002' }, 'owner');
+    expect(r.ok).toBe(false);
+    expect(maintenance(s)).toBe(false);
+  });
 });

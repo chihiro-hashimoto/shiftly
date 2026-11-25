@@ -6,7 +6,7 @@ import { defineOps } from '../api';
 import { actorId, audit, has, isGoogleOwner, isOwner, metaValue, nowIso, setMeta, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
-import type { AdminCredential, AttendanceCorrection, BackupHistory, BreakDeclaration, Budget, Credential, Device, Employee, OvertimeRequest, PermissionRow, NotificationRow, PayrollPeriod, PayrollResult, Shift, WorkSession } from '../../shared/types';
+import type { AdminCredential, AttendanceCorrection, BackupHistory, BreakDeclaration, Budget, Credential, Device, Employee, OvertimeRequest, PermissionRow, NotificationRow, PayrollPeriod, PayrollResult, PaySlip, Shift, WorkSession } from '../../shared/types';
 import { toCsv, type Cell } from '../../shared/csv';
 import { buildXlsx, toBase64, type XSheet } from '../../shared/xlsx';
 import { utf8 } from '../../shared/crypto';
@@ -515,7 +515,7 @@ defineOps([
         // 4) スタッフ・認証情報・権限・端末は現行の状態を引き継ぐ（PIN・管理用パスコード・委任権限・退職・端末失効を巻き戻さない）
         //    v1.3: 管理者パスワード、勤怠修正（確認状態）・休憩の申告・早出残業申請（承認・実労働の確認）も現行を引き継ぐ
         //    （復元で承認済みの実労働や確認結果が失われ、賃金の計算が変わることを防ぐ）
-        const carry = <T extends { id: string; version: number }>(t: 'employees' | 'credentials' | 'permissions' | 'devices' | 'admin_credentials' | 'attendance_corrections' | 'break_declarations' | 'overtime_requests', key: (r: T) => string) => {
+        const carry = <T extends { id: string; version: number }>(t: 'employees' | 'credentials' | 'permissions' | 'devices' | 'admin_credentials' | 'attendance_corrections' | 'break_declarations' | 'overtime_requests' | 'payroll_periods' | 'payroll_results' | 'pay_slips', key: (r: T) => string) => {
           const candRows = new Map(uowC.list<T>(t).map((r) => [key(r), r]));
           for (const cur of ctx.uow.list<T>(t)) {
             const c = candRows.get(key(cur));
@@ -531,6 +531,11 @@ defineOps([
         carry<AttendanceCorrection>('attendance_corrections', (r) => r.id);
         carry<BreakDeclaration>('break_declarations', (r) => r.id);
         carry<OvertimeRequest>('overtime_requests', (r) => r.id);
+        // 給与の確定データ（期間・計算結果のリビジョン・明細）も現行を引き継ぐ。バックアップ後に確定・訂正・発行した給与を
+        // 復元で消さない（同じ期間の再確定・支払い済みの期間の再処理を防ぐ。Codex 監査8 #1）
+        carry<PayrollPeriod & { version: number }>('payroll_periods', (r) => r.id);
+        carry<PayrollResult & { version: number }>('payroll_results', (r) => r.id);
+        carry<PaySlip & { version: number }>('pay_slips', (r) => r.id);
         // 旧スキーマのバックアップは、候補を現在のスキーマに移行してから整合性を確認する（列・テーブルの追加のみ）
         const candSv = Number(metaValue(ctxC, 'schemaVersion') ?? '0');
         if (candSv < SCHEMA_VERSION) {
@@ -569,7 +574,7 @@ defineOps([
       const ctx2: Ctx = { ...ctx, uow: uow2 };
       audit(ctx2, 'backup.restore', 'backup', b.id, `復元 新DB=${cand.candidateId} 旧DB=${sw.previousId} 再投入=${restored}`);
       uow2.flush();
-      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフ・管理者のセッションを失効しました。スタッフ・PIN・管理者パスワード・権限・端末・勤怠修正の確認状態・休憩の申告・早出残業申請・メンテナンスの状態は復元前の状態を引き継いでいます' };
+      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフ・管理者のセッションを失効しました。スタッフ・PIN・管理者パスワード・権限・端末・勤怠修正の確認状態・休憩の申告・早出残業申請・給与の確定結果と明細・メンテナンスの状態は復元前の状態を引き継いでいます' };
     },
   },
 ]);

@@ -23,12 +23,17 @@ defineOps([
     handler: (ctx, raw) => {
       const target = v.str(v.obj(raw), 'targetVersion', { max: 20, pattern: /^\d+\.\d+\.\d+$/, label: '更新先バージョン' });
       // 1) メンテナンス状態（スタッフの書き込みを停止）2) 更新前バックアップ
+      const wasOn = metaValue(ctx, 'maintenance') === 'on';
       setMeta(ctx, 'maintenance', 'on');
       // 複製の前に確定する（更新前バックアップに「メンテナンス中」を含める。旧版へ戻してから復元しても確認前に打刻が再開しない。Codex 監査7 #2）
       ctx.uow.flush();
       const b = runBackup(ctx, 'pre_update', `更新前 ${metaValue(ctx, 'appVersion') ?? '?'} → ${target}`);
       if (b.status !== 'ok') {
-        setMeta(ctx, 'maintenance', 'off');
+        // このリクエストで開始したメンテナンスだけを解除し、例外の前に確定する（開始は確定済みのため。Codex 監査8 #3）
+        if (!wasOn) {
+          setMeta(ctx, 'maintenance', 'off');
+          ctx.uow.flush();
+        }
         throw E.conflict('更新前バックアップに失敗したため更新を中止しました');
       }
       setMeta(ctx, 'pendingUpdate', JSON.stringify({ target, backupId: b.id, at: ctx.uow.nowIso() }));

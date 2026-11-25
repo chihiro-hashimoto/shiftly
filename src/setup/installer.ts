@@ -528,6 +528,8 @@ export class Installer {
     try {
       if (!skipDeploy) {
         step('prepare');
+        // 更新の開始前の状態（準備に失敗した場合は、今回開始したメンテナンスだけを解除する。Codex 監査8 #3）
+        const before = protect ? null : this.coreInfo();
         // 準備の前に、メンテナンスの開始を独立した要求として確定する。更新前バックアップ（準備の中で DB を複製）に
         // 「メンテナンス中」を含めるため。旧版（v1.2）の Core は準備の中の変更を複製の前に確定しないため、Setup 側で行う
         // （旧版へ戻してからそのバックアップを旧版の Core で復元しても、確認前に打刻が再開しない。Codex 監査7 #2）
@@ -537,7 +539,19 @@ export class Installer {
           // DB は移行済みの可能性があるため、更新前バックアップを取り直さない（最初の更新前バックアップの参照を Core・Setup とも保持する）
         } else {
           const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
-          if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
+          if (!prep.ok) {
+            // コード・DB は変更していない。今回開始したメンテナンスは、プログラムと DB の構造の一致を確認できた場合だけ解除する
+            let note: string;
+            if (before && !before.maintenance && before.schemaVersion === before.expectedSchemaVersion) {
+              const off = this.callCore('system.setMaintenance', { on: false });
+              note = off.ok ? 'メンテナンスを解除しました' : 'メンテナンスの解除に失敗したため、メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態を確認してから解除してください';
+            } else if (before?.maintenance) {
+              note = '更新の開始前からメンテナンス中だったため、メンテナンスを継続しています';
+            } else {
+              note = '更新の開始前の状態を確認できなかったため、メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態を確認してから解除してください';
+            }
+            return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません。${note}`);
+          }
           // 中断からの再開でも、最初の更新前バックアップの参照を保持する
           reg.update!.backupId = reg.update!.backupId ?? (prep.data as { backupId: string }).backupId;
         }
