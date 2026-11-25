@@ -790,4 +790,52 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.message).toContain('メンテナンスを継続');
     expect(maintenance(s)).toBe(true);
   });
+
+  // ---- Codex 監査10 ----
+  /** Staff だけ新しい版を配備した状態（Admin は更新前の版のまま） */
+  const deployCoreOnly = (s: ReturnType<typeof setup>) => {
+    const ref = s.store.reg!.core;
+    const proj = s.api.projects.get(ref.scriptId!)!;
+    const v = ++proj.versions;
+    proj.deployments.set(ref.deploymentId!, v);
+    s.store.reg!.core = { ...ref, versionNumber: v, previousVersionNumber: ref.versionNumber };
+    return v;
+  };
+
+  it('Codex 監査10 回帰1: Staff だけ配備した時点で中断した更新の再開で、準備の通信が例外になった場合は、旧版の組に戻してから解除する（版の混在で営業を再開しない）', () => {
+    const s = installed();
+    const prevCore = s.store.reg!.core.versionNumber;
+    const prevAdmin = s.store.reg!.admin.versionNumber;
+    const coreRef = s.store.reg!.core;
+    const adminRef = s.store.reg!.admin;
+    s.deps.release = release('0.3.0');
+    expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: 'req_mnt_000004' }, 'owner').ok).toBe(true);
+    deployCoreOnly(s);
+    // 前回の実行: 開始前はメンテナンス解除中。コードの更新に着手し、Staff の配備の後に中断
+    s.store.reg!.update = { target: '0.3.0', stage: 'deploy', startedAt: new Date().toISOString(), prevCore, prevAdmin, backupId: 'bak_first', maintenanceBefore: false, codeTouched: true };
+    s.throwOps.add('system.prepareUpdate');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    const core = s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!);
+    const admin = s.api.projects.get(adminRef.scriptId!)!.deployments.get(adminRef.deploymentId!);
+    // 両方とも更新前の版にそろえてから解除する
+    expect([core, admin]).toEqual([prevCore, prevAdmin]);
+    expect(maintenance(s)).toBe(false);
+  });
+
+  it('Codex 監査10 回帰1: Staff・Admin の版が混在している状態では、準備の段階の失敗でもメンテナンスを解除しない', () => {
+    const s = installed();
+    const prevCore = s.store.reg!.core.versionNumber;
+    const prevAdmin = s.store.reg!.admin.versionNumber;
+    s.deps.release = release('0.3.0');
+    expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: true }, requestId: 'req_mnt_000005' }, 'owner').ok).toBe(true);
+    deployCoreOnly(s);
+    // 記録上は準備の段階（コードの更新に未着手）だが、実際の配備は混在している（記録と実際が食い違う場合の保護）
+    s.store.reg!.update = { target: '0.3.0', stage: 'prepare', startedAt: new Date().toISOString(), prevCore, prevAdmin, maintenanceBefore: false };
+    s.throwOps.add('system.prepareUpdate');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('版が一致しない');
+    expect(maintenance(s)).toBe(true);
+  });
 });

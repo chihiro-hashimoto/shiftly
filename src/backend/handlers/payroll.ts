@@ -237,14 +237,16 @@ defineOps([
     handler: (ctx, raw) => {
       const a = v.obj(raw);
       const p = period(ctx, v.id(a, 'periodId'));
+      // 確認項目は定型（自由記述は受け付けない。氏名・個別の時給などを監査ログに残さない。Codex 監査10 回帰 2）
+      const checks = { wageRules: v.bool(a, 'checkedWageRules'), allowances: v.bool(a, 'checkedAllowances'), deductions: v.bool(a, 'checkedDeductions') };
+      if (!checks.wageRules || !checks.allowances || !checks.deductions) throw E.invalid('時給ルール・手当（通勤手当を含む）・控除のすべてについて、確定時と一致することを確認してください');
       if (v.str(a, 'confirmText', { max: 20 }) !== '確認しました') throw E.invalid('確認のため「確認しました」と入力してください');
-      const note = v.str(a, 'note', { min: 2, max: 300, label: '確認した内容' });
       const locks = payrollRestoreLocks(ctx);
       const l = locks[p.id];
       if (!l) throw E.conflict('この期間には復元後の確認の対象がありません');
       delete locks[p.id];
       setPayrollRestoreLocks(ctx, locks);
-      audit(ctx, 'payroll.releaseRestoreLock', 'payroll_period', p.id, `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認内容=${note}`);
+      audit(ctx, 'payroll.releaseRestoreLock', 'payroll_period', p.id, `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認項目=時給ルール・手当・控除（すべて一致を確認）`);
       return { periodId: p.id, released: true };
     },
   },

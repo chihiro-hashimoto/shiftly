@@ -533,16 +533,13 @@ defineOps([
         carry<OvertimeRequest>('overtime_requests', (r) => r.id);
         // 給与の確定データ（期間・計算結果のリビジョン・明細）も現行を引き継ぐ。バックアップ後に確定・訂正・発行した給与を
         // 復元で消さない（同じ期間の再確定・支払い済みの期間の再処理を防ぐ。Codex 監査8 #1）
-        // 候補（バックアップ）と異なる確定済みの給与（バックアップ後の確定・訂正・発行）がある期間は、復元後の給与条件で
-        // 訂正・再発行すると確定時と異なる条件で計算されるため、管理者が給与条件を確認するまで止める（Codex 監査9 #1）
+        // 確定済みの給与（確定・発行・訂正の履歴）がある期間は、すべて停止する。復元後の給与条件（時給・手当・控除など）が
+        // 確定時と一致するかを機械的には照合できないため、管理者が条件を確認するまで確定・訂正・明細の発行をしない
+        // （確定結果がバックアップと同じで給与条件だけが異なる場合も含む。Codex 監査9 #1・監査10）
         const locks = payrollRestoreLocks(ctx);
-        const candVersion = (t: 'payroll_results' | 'pay_slips') => new Map(uowC.list<{ id: string; version: number }>(t).map((r) => [r.id, r.version]));
-        const cr = candVersion('payroll_results');
-        const cs = candVersion('pay_slips');
         const lock = { restoredAt: nowIso(ctx), backupId: b.id };
-        for (const r of ctx.uow.list<PayrollResult & { version: number }>('payroll_results'))
-          if ((r.status === 'confirmed' || r.status === 'issued' || r.status === 'superseded') && cr.get(r.id) !== r.version) locks[r.periodId] = lock;
-        for (const sl of ctx.uow.list<PaySlip & { version: number }>('pay_slips')) if (cs.get(sl.id) !== sl.version) locks[sl.periodId] = lock;
+        for (const r of ctx.uow.list<PayrollResult>('payroll_results')) if (r.status === 'confirmed' || r.status === 'issued' || r.status === 'superseded') locks[r.periodId] = lock;
+        for (const sl of ctx.uow.list<PaySlip>('pay_slips')) locks[sl.periodId] = lock;
         setPayrollRestoreLocks(ctxC, locks);
         carry<PayrollPeriod & { version: number }>('payroll_periods', (r) => r.id);
         carry<PayrollResult & { version: number }>('payroll_results', (r) => r.id);

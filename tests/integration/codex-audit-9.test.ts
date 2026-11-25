@@ -50,9 +50,11 @@ describe('Codex 監査9 #1: 復元で引き継いだ確定済みの給与は、�
 
   it('管理者が確認内容を記録して「復元後の確認を完了」すると、停止を解除する（確認の文言・内容がなければ解除しない）', () => {
     const { h, p } = scenario();
-    expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, note: '時給を確認', confirmText: 'はい' }))).toBe('INVALID_INPUT');
-    expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, note: '', confirmText: '確認しました' }))).toBe('INVALID_INPUT');
-    h.ownerOk('payroll.releaseRestoreLock', { periodId: p.id, note: '時給ルール（1,400 円）を再登録して確認', confirmText: '確認しました' });
+    // 入力は C-10 で自由記述（note）から定型の確認項目に変更（監査ログに個人情報を残さないため）。アサーションは変更していない
+    const checked = { checkedWageRules: true, checkedAllowances: true, checkedDeductions: true };
+    expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, ...checked, confirmText: 'はい' }))).toBe('INVALID_INPUT');
+    expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, ...checked, checkedDeductions: false, confirmText: '確認しました' }))).toBe('INVALID_INPUT');
+    h.ownerOk('payroll.releaseRestoreLock', { periodId: p.id, ...checked, confirmText: '確認しました' });
     expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeNull();
     expect(code(h.owner('payslips.issue', { periodId: p.id }))).toBe('OK');
   });

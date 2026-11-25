@@ -170,12 +170,22 @@ export function PayrollPage() {
 function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; lock: RestoreLock; onReleased: () => void }) {
   const client = useClient();
   const { busy, run } = useAction();
-  const [note, setNote] = useState('');
+  const [checks, setChecks] = useState({ wage: false, allowance: false, deduction: false });
   const [confirmText, setConfirmText] = useState('');
+  const allChecked = checks.wage && checks.allowance && checks.deduction;
   const release = async () => {
-    const r = await run(() => client.call('payroll.releaseRestoreLock', { periodId, note: note.trim(), confirmText }), '復元後の確認を完了しました');
+    const r = await run(
+      () => client.call('payroll.releaseRestoreLock', { periodId, checkedWageRules: checks.wage, checkedAllowances: checks.allowance, checkedDeductions: checks.deduction, confirmText }),
+      '復元後の確認を完了しました',
+    );
     if (r) onReleased();
   };
+  const check = (k: keyof typeof checks, label: string) => (
+    <label className="row small">
+      <input type="checkbox" checked={checks[k]} onChange={(e) => setChecks({ ...checks, [k]: e.target.checked })} />
+      <span>{label}</span>
+    </label>
+  );
   return (
     <div className="callout callout-warn" role="alert">
       <strong>復元後の給与条件の確認が必要です</strong>
@@ -183,14 +193,17 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
         この期間は、バックアップの復元（{lock.restoredAt.slice(0, 16).replace('T', ' ')}）で確定済みの給与を引き継ぎました。復元後の給与条件（時給・手当・控除など）は、確定したときと異なる可能性があります。条件を確認するまで、確定・訂正・明細の発行は停止しています。
       </p>
       <div className="stack" style={{ gap: 8 }}>
-        <Field label="確認した内容（監査ログに記録）">
-          <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} placeholder="例: 時給ルール・手当・控除が確定時と一致することを確認" />
-        </Field>
+        <fieldset className="stack" style={{ gap: 4, border: 0, padding: 0, margin: 0 }}>
+          <legend className="small muted">確定したときと一致することを確認した項目（監査ログには確認したことだけを記録します）</legend>
+          {check('wage', '時給ルール')}
+          {check('allowance', '手当（通勤手当を含む）')}
+          {check('deduction', '控除')}
+        </fieldset>
         <Field label="確認のため「確認しました」と入力">
           <input className="input" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} maxLength={20} style={{ maxWidth: 200 }} />
         </Field>
         <div>
-          <button className="btn btn-sm btn-primary" disabled={busy || note.trim().length < 2 || confirmText !== '確認しました'} onClick={() => void release()}>
+          <button className="btn btn-sm btn-primary" disabled={busy || !allChecked || confirmText !== '確認しました'} onClick={() => void release()}>
             復元後の確認を完了
           </button>
         </div>
