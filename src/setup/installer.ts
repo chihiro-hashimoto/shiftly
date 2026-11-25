@@ -626,6 +626,24 @@ export class Installer {
    * - old: 照会できたが、少なくとも一方がこの更新の版を指していない（未配備・手動ロールバック等）
    * - unknown: 照会できなかった（一時的な障害等）。呼び出し側は何も変更せずに中断する
    */
+  /** Staff・Admin の実際のデプロイが、指定した版の組を指しているか（照会できない・版が未指定なら null） */
+  private deployedVersionsAre(core?: number, admin?: number): boolean | null {
+    const reg = this.reg;
+    if (!reg || core === undefined || admin === undefined) return null;
+    for (const [which, want] of [['core', core], ['admin', admin]] as const) {
+      const ref = reg[which];
+      if (!ref.scriptId || !ref.deploymentId) return null;
+      try {
+        const v = this.d.api.getDeployment(ref.scriptId, ref.deploymentId)?.deploymentConfig?.versionNumber;
+        if (v === undefined) return null;
+        if (v !== want) return false;
+      } catch {
+        return null;
+      }
+    }
+    return true;
+  }
+
   /** Staff・Admin の実際の配備の組（両方とも更新前の版 / 両方ともこの更新の版 / 混在 / 照会できない） */
   private deploymentPair(): 'old' | 'new' | 'mixed' | 'unknown' {
     const reg = this.reg;
@@ -716,7 +734,14 @@ export class Installer {
     const on = this.callCore('system.setMaintenance', { on: true });
     if (!on.ok) return `メンテナンスを開始できなかったため、ロールバックを中止しました（${on.error?.message ?? ''}）。現在のバージョンのまま稼働しています`;
     out.push('メンテナンスを開始しました');
-    for (const [which, prev] of [['core', prevCore ?? reg.core.previousVersionNumber], ['admin', prevAdmin ?? reg.admin.previousVersionNumber]] as const) {
+    // 戻し先: 更新の記録（進行中・失敗）があれば、更新の開始時の Staff・Admin の版の組へ戻す。各プロジェクトの直前の版へ
+    // 個別に戻すと、一部のロールバックが失敗した後の再実行で別々の世代に戻り得る（Codex 監査11 #1）
+    const u = reg.update;
+    const target = {
+      core: prevCore ?? u?.prevCore ?? reg.core.previousVersionNumber,
+      admin: prevAdmin ?? u?.prevAdmin ?? reg.admin.previousVersionNumber,
+    };
+    for (const [which, prev] of [['core', target.core], ['admin', target.admin]] as const) {
       const ref = reg[which];
       if (!prev || !ref.scriptId || !ref.deploymentId) continue;
       try {
@@ -738,9 +763,12 @@ export class Installer {
         `DB の構造（v${d.schemaVersion}）が戻したプログラム（v${d.expectedSchemaVersion}）と一致しないため、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
           `管理画面「バックアップ」で更新前バックアップ${this.reg?.update?.backupId ? `（${this.reg.update.backupId}）` : ''}を復元してからメンテナンスを解除するか、原因を解消して更新を再実行してください`,
       );
-    } else if (rbFailed) {
+    } else if (rbFailed || this.deployedVersionsAre(target.core, target.admin) !== true) {
       // Staff・Admin の版が混在している可能性があるため、営業を再開しない（Codex 監査10 回帰 1）
-      out.push('一部のロールバックに失敗し、Staff・Admin の版が一致しない可能性があるため、メンテナンスを継続しています（スタッフの打刻は停止中）。Setup の「直前のバージョンに戻す」を再実行してください');
+      out.push(
+        `一部のロールバックに失敗した、または Staff・Admin の実際の配備が戻し先の版の組（Staff v${target.core ?? '?'}／Admin v${target.admin ?? '?'}）と一致することを確認できなかったため、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
+          'Setup の「直前のバージョンに戻す」を再実行してください（更新の記録がある間は、更新の開始時の版の組へ戻します）',
+      );
     } else if (opts.keepMaintenance) {
       out.push('更新の開始前からメンテナンス中だった（または開始前の状態を確認できない）ため、メンテナンスを継続しています。管理画面「システム・更新」で状態を確認してから解除してください');
     } else {

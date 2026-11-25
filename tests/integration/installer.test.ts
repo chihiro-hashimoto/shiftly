@@ -21,7 +21,8 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
   let failOnce = opts.failCreateOnce ?? false;
   const calls: string[] = [];
   // 一時的な障害の注入（残り回数）。getDeployment: デプロイの照会 / putContent: コードの更新
-  const faults = { getDeployment: 0, putContent: 0 };
+  // scriptFail: 指定したプロジェクトの版の作成・デプロイの切替を、指定回数だけ失敗させる
+  const faults = { getDeployment: 0, putContent: 0, scriptFail: new Map<string, number>() };
   const http: Http = (method, url, body) => {
     calls.push(`${method} ${url.replace('https://script.googleapis.com/v1', '')}`);
     if (opts.apiDisabled) return { status: 403, body: JSON.stringify({ error: { message: 'User has not enabled the Apps Script API. Enable it by visiting https://script.google.com/home/usersettings' } }) };
@@ -44,6 +45,10 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     const p = id ? projects.get(decodeURIComponent(id)) : undefined;
     if (!p) return { status: 404, body: '{"error":{"message":"not found"}}' };
     if (method === 'GET' && !sub) return { status: 200, body: JSON.stringify({ scriptId: id, title: p.title }) };
+    if (id && ((method === 'POST' && sub === 'versions') || (method === 'PUT' && sub === 'deployments')) && (faults.scriptFail.get(decodeURIComponent(id)) ?? 0) > 0) {
+      faults.scriptFail.set(decodeURIComponent(id), faults.scriptFail.get(decodeURIComponent(id))! - 1);
+      return { status: 503, body: '{"error":{"message":"backend error"}}' };
+    }
     if (method === 'PUT' && sub === 'content' && faults.putContent > 0) {
       faults.putContent--;
       return { status: 503, body: '{"error":{"message":"backend error"}}' };
@@ -837,5 +842,30 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.ok).toBe(false);
     expect(r.message).toContain('版が一致しない');
     expect(maintenance(s)).toBe(true);
+  });
+
+  // ---- Codex 監査11 ----
+  it('Codex 監査11 #1: 一部のロールバックに失敗した後の「直前のバージョンに戻す」は、更新の開始時の版の組へ戻し、実際の配備がそろったことを確認してから解除する', () => {
+    const s = installed();
+    const coreRef = s.store.reg!.core;
+    const adminRef = s.store.reg!.admin;
+    const dep = (ref: typeof coreRef) => s.api.projects.get(ref.scriptId!)!.deployments.get(ref.deploymentId!);
+    // 0.3.0 へ正常に更新（Staff・Admin とも新しい版。各プロジェクトの直前の版は更新前の版）
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+    const start = [dep(coreRef), dep(adminRef)];
+    expect(start[0]).not.toBe(s.store.reg!.core.previousVersionNumber);
+    // 0.4.0 への更新: Staff の配備の後、Admin の版の作成が失敗 → 自動ロールバックで Admin の切替も失敗（2 回目の障害）
+    s.api.faults.scriptFail.set(adminRef.scriptId!, 2);
+    s.deps.release = release('0.4.0');
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(false);
+    expect(maintenance(s)).toBe(true);
+    // 案内どおり「直前のバージョンに戻す」を再実行（手動。引数なし）
+    const msg = s.make().rollbackCode();
+    // 更新の開始時の組（0.3.0 の Staff／Admin）へ戻り、別々の世代にならない
+    expect([dep(coreRef), dep(adminRef)]).toEqual(start);
+    expect(msg).toContain('メンテナンスを解除しました');
+    expect(maintenance(s)).toBe(false);
   });
 });
