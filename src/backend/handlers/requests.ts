@@ -91,7 +91,7 @@ export function readBreakDeclaration(a: v.Args): BreakDeclarationInput {
  * 休憩の申告を保存する。本人未確認の「予定どおり以外」の申告・確定済み期間の申告は承認待ち（未反映）
  * 予定どおり（as_scheduled）は通常の退勤操作で記録されるため、本人未確認でも反映する（本人未確認として記録・給与確定時に確認）
  */
-export function saveBreakDeclaration(ctx: Ctx, employeeId: string, s: WorkSession, d: BreakDeclarationInput, shifts: Shift[]): BreakDeclaration {
+export function saveBreakDeclaration(ctx: Ctx, employeeId: string, s: WorkSession, d: BreakDeclarationInput, shifts: Shift[], opts: { atClockOut?: boolean } = {}): BreakDeclaration {
   if (s.end !== null) {
     for (const iv of d.intervals) if (iv.start < s.start || iv.end > s.end) throw E.invalid('休憩は出勤から退勤までの時間内で入力してください');
     const total = d.intervals.reduce((x, iv) => x + (iv.end - iv.start), 0);
@@ -100,8 +100,16 @@ export function saveBreakDeclaration(ctx: Ctx, employeeId: string, s: WorkSessio
   const verified = identityVerified(ctx);
   const confirmed = confirmedPeriodFor(ctx, s.laborDate);
   const byStaff = ctx.principal.kind === 'staff';
-  const pending = !!confirmed || (byStaff && !verified && d.kind !== 'as_scheduled');
+  // 本人未確認の申告で即時に反映するのは、退勤打刻と同じ処理で受け付けた「予定どおり」だけ（事後の申告はすべて承認待ち。Codex 監査2 #8）
+  const pending = !!confirmed || (byStaff && !verified && !(d.kind === 'as_scheduled' && opts.atClockOut === true));
   const planned = plannedBreakFor(s, shifts);
+  // 「予定どおり」は、申告の時点の予定休憩の区間を保存する（後からシフトを編集しても、確認した区間で控除する。Codex 監査2 #7）
+  const intervals =
+    d.kind === 'as_scheduled'
+      ? planned && planned.start !== null && planned.end !== null
+        ? [{ start: toIsoJst(planned.start), end: toIsoJst(planned.end) }]
+        : []
+      : d.intervals.map((iv) => ({ start: toIsoJst(iv.start), end: toIsoJst(iv.end) }));
   const decl = ctx.uow.insert<BreakDeclaration>(
     'break_declarations',
     {
@@ -110,7 +118,7 @@ export function saveBreakDeclaration(ctx: Ctx, employeeId: string, s: WorkSessio
       laborDate: s.laborDate,
       shiftId: planned?.shiftId ?? null,
       kind: d.kind,
-      intervals: d.intervals.map((iv) => ({ start: toIsoJst(iv.start), end: toIsoJst(iv.end) })),
+      intervals,
       reason: d.reason,
       identityVerified: verified,
       actorId: actorId(ctx),
@@ -605,6 +613,8 @@ defineOps([
       if (!r) throw E.notFound('申請');
       forbidSelf(ctx, r.employeeId, '早出・残業申請の確認');
       const action = v.oneOf(a, 'action', ['approve', 'partial', 'return', 'reject', 'cancel'] as const, '処理');
+      // 一部承認の残りの扱い（明示的に選ぶ。既定で「実労働なし」にしない。Codex 監査2 #6）
+      const remainder = action === 'partial' ? v.oneOf(a, 'remainder', ['no_work', 'unconfirmed'] as const, '残りの時間の扱い') : null;
       const comment = action === 'approve' ? v.optStr(a, 'comment', 300) : v.str(a, 'comment', { min: 2, max: 300, label: 'コメント・理由' });
       if (r.status === 'cancelled') throw E.conflict('取り消された申請です');
       const base = { ...r, reviewedBy: actorId(ctx), reviewedAt: nowIso(ctx), reviewComment: comment };
@@ -635,7 +645,41 @@ defineOps([
       }
       ctx.uow.update('overtime_requests', next);
       history(ctx, next, act, r, comment);
-      audit(ctx, `overtime.${act}`, 'overtime_request', r.id, `対象スタッフ=${r.employeeId}`);
+      if (remainder === 'no_work' && next.approvedStart && next.approvedEnd) {
+        // 残りの時間を「実労働なし」と確認した記録を別に残す（承認した区間と明示的に区別する）
+        const rest: Array<[number, number]> = [
+          [parseIso(r.requestedStart), parseIso(next.approvedStart)],
+          [parseIso(next.approvedEnd), parseIso(r.requestedEnd)],
+        ];
+        for (const [rs, re] of rest.filter(([x, y]) => y > x)) {
+          const c = ctx.uow.insert<OvertimeRequest>(
+            'overtime_requests',
+            {
+              employeeId: r.employeeId,
+              sessionKey: r.sessionKey,
+              workDate: r.workDate,
+              shiftId: r.shiftId,
+              category: r.category,
+              requestedStart: toIsoJst(rs),
+              requestedEnd: toIsoJst(re),
+              reason: `一部承認の残り（申請 ${r.id}）: ${comment}`,
+              identityVerified: true,
+              requestedBy: actorId(ctx),
+              requestedByKind: actorKindForRecord(ctx),
+              status: 'confirmed',
+              workConfirmation: 'no_work',
+              approvedStart: null,
+              approvedEnd: null,
+              reviewedBy: actorId(ctx),
+              reviewedAt: nowIso(ctx),
+              reviewComment: comment,
+            },
+            'otr',
+          );
+          history(ctx, c, 'confirm_no_work', null, comment);
+        }
+      }
+      audit(ctx, `overtime.${act}`, 'overtime_request', r.id, `対象スタッフ=${r.employeeId}${remainder ? ` 残り=${remainder}` : ''}`);
       const cp = confirmedPeriodFor(ctx, r.workDate);
       return { request: requestView(next), warning: cp ? `給与確定済みの期間（${cp.periodKey}）の勤務です。給与計算画面で訂正を行ってください` : null };
     },
@@ -658,7 +702,7 @@ defineOps([
         for (const s of det.sessions) {
           const tb = s.timeBasis;
           if (!tb || !tb.candidates.length) continue;
-          if (unresolvedOnly && tb.unresolvedMinutes === 0) continue;
+          if (unresolvedOnly && tb.unresolvedMs === 0) continue;
           rows.push({ employeeId: e.id, displayName: e.displayName, laborDate: s.laborDate, sessionKey: s.sessionKey, start: s.start, end: s.end, original: s.original, timeBasis: tb, requests: s.requests });
         }
       }
@@ -840,8 +884,8 @@ defineOps([
       let unresolvedSessions = 0;
       for (const e of activeEmployees(ctx)) {
         const det = sessionDetails(ctx, e.id, addDays(d, -31), d);
-        for (const s of det.sessions) if (s.timeBasis && s.timeBasis.unresolvedMinutes > 0) {
-          unresolvedMinutes += s.timeBasis.unresolvedMinutes;
+        for (const s of det.sessions) if (s.timeBasis && s.timeBasis.unresolvedMs > 0) {
+          unresolvedMinutes += Math.max(1, s.timeBasis.unresolvedMinutes);
           unresolvedSessions++;
         }
       }

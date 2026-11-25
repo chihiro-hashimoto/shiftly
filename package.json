@@ -1,6 +1,6 @@
 {
   "name": "shiftly",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Shiftly（シフトリー）: 店舗勤怠・給与・シフト・人件費管理Webアプリ（GAS + Google Sheets + Google Drive）",
   "type": "module",

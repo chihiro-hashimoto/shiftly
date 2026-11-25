@@ -38,18 +38,24 @@
 5. v1.3 で追加した確認待ちの事項: 管理者パスワードの初期設定（Google 所有者が Shiftly-Admin で設定）、既存店舗の時間基準（既定はシフト基準。実績基準に戻す場合は店舗設定）
 
 ## テスト結果（直近の実行）
-- 下の「v1.3 検証結果」を参照（docs/test-plan.md に観点）
+- `npm run verify`（2026-11-25、Codex 監査2 の修正後に実行、exit 0）: lint・typecheck 合格／単体 96・統合 108・セキュリティ 38・E2E 80 件すべて合格
+  - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2 の回帰（codex-audit-2.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
+  - E2E は店舗 iPad（スタッフ・管理者モード・PIN 未設定・休憩確認）・Google 所有者の管理画面の全ページ・Setup（iPad 横・縦／PC 1440／スマホ 390、Chromium）
+- GitHub CI: `564a04a`（Codex 監査2 の対象）で成功。最新コミットは PR のチェックを参照
+- いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
 
 ## 次に実行する作業
-1. Codex 監査 C-2 の指摘を確認・修正し、再検証（docs/review-log.md）
+1. （完了）Codex 監査 C-2 の指摘 10 件を修正・再検証。修正後の再監査（3 回目）は docs/review-log.md を参照
 2. ユーザーから実環境検証の記録（docs/live-verification.md の表）を受け取り、technical-verification.md に反映・NG を修正
 3. PR の統合方法をユーザーが決定（上記）
 
 ## レビュー
 - 独立レビュー R-1（Claude エージェント、Codex ではない）: 指摘 12 件をすべて修正（docs/review-log.md）
 - Codex 監査 C-1: 指摘 15 件。14 件修正、#8 は v1.3 で対応（docs/review-log.md、原文 docs/reviews/codex-audit-1.md）
-- Codex 監査 C-2（v1.3 実装後）: docs/review-log.md
+- Codex 監査 C-2（v1.3 実装後）: 指摘 10 件をすべて修正（docs/review-log.md、原文 docs/reviews/codex-audit-2.md）
 
 ## 累計 Codex 監査回数
-- **累計 1 回**（上限 5 回。6 回目以降はユーザー承認が必要）。v1.3 実装後の監査を実施したら 2 回目として更新する
+- **累計 2 回**（上限 5 回。6 回目以降はユーザー承認が必要）
   - 1 回目: 2026-11-24、対象 `50156ae`。開発コンテナに Codex CLI 0.167.0 を一時導入し、ユーザー本人がブラウザでデバイス認証。`codex exec --sandbox read-only`
+  - 2 回目: 2026-11-25、対象 `564a04a`（v1.3 実装後）。Codex CLI 0.167.1、ユーザー本人のデバイス認証。指摘 10 件をすべて修正（docs/review-log.md C-2）
+  - 修正後のコードの再監査を行う場合は 3 回目として数える

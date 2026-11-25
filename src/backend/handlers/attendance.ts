@@ -74,7 +74,7 @@ defineOps([
         const target = ss.find((x) => sessionKeyOf(x) === openKey);
         if (target) {
           const shifts = ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === me.employeeId && x.status === 'published' && x.date >= addDays(target.laborDate, -1) && x.date <= addDays(target.laborDate, 1));
-          breakStatus = saveBreakDeclaration(ctx, me.employeeId, target, breakDecl, shifts).status;
+          breakStatus = saveBreakDeclaration(ctx, me.employeeId, target, breakDecl, shifts, { atClockOut: true }).status;
         }
       }
       const after = effectiveState([...evs, ...(check.autoBreakEnd ? [{ id: 'x', employeeId: me.employeeId, type: 'break_end' as const, at, origin: 'original' as const }] : []), { id: ev.id, employeeId: me.employeeId, type, at, origin: 'original' as const }], at);

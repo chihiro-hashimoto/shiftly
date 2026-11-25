@@ -25,7 +25,7 @@ export interface OffShiftCandidate {
   end: Instant;
   minutes: number;
   /** work=実労働として確認 / no_work=実労働なしと確認 / unresolved=未確認 */
-  segments: Array<{ start: Instant; end: Instant; minutes: number; resolution: 'work' | 'no_work' | 'unresolved' }>;
+  segments: Array<{ start: Instant; end: Instant; minutes: number; seconds: number; resolution: 'work' | 'no_work' | 'unresolved' }>;
 }
 
 export interface SessionTimeBasis {
@@ -47,8 +47,10 @@ export interface SessionTimeBasis {
   candidates: OffShiftCandidate[];
   /** F: 実労働と確認されたシフト外の分 */
   confirmedExtraMinutes: number;
-  /** 未確認のシフト外の分 */
+  /** 未確認のシフト外の分（表示用。四捨五入） */
   unresolvedMinutes: number;
+  /** 未確認のシフト外の時間（ミリ秒）。給与確定の判定は秒単位のこの値で行う（1 分未満も見逃さない。Codex 監査2 #4） */
+  unresolvedMs: number;
   /** G: 給与計算対象の分 */
   payableMinutes: number;
 }
@@ -91,31 +93,34 @@ export function subtract(xs: Interval[], ys: Interval[]): Interval[] {
   return cur;
 }
 
+export function totalMs(xs: Interval[]): number {
+  return normalize(xs).reduce((s, [a, b]) => s + (b - a), 0);
+}
+
 export function totalMinutes(xs: Interval[]): number {
-  return Math.round(normalize(xs).reduce((s, [a, b]) => s + (b - a), 0) / MINUTE_MS);
+  return Math.round(totalMs(xs) / MINUTE_MS);
 }
 
 // ------------------------------------------------------------------ 確認の解決
-/** 実労働として確認された区間と、実労働なしと確認された区間（申請・管理者確認から） */
+/**
+ * 実労働として確認された区間と、実労働なしと確認された区間（申請・管理者確認から）
+ * - workConfirmation=work: 承認（一部承認を含む）・確認された区間のみを実労働とする
+ * - workConfirmation=no_work: その申請・確認の区間を実労働なしとする（明示的な確認のみ）
+ * - 一部承認の残りは、別途「実労働なし」と確認しない限り未確認のまま（Codex 監査2 #6）
+ * - 申請中・差戻し・取消、却下（実労働は未確認）は未確認のまま
+ */
 export function resolutionIntervals(employeeId: string, requests: OvertimeRequest[]): { work: Interval[]; noWork: Interval[] } {
   const work: Interval[] = [];
-  const decided: Interval[] = [];
+  const noWork: Interval[] = [];
   for (const r of requests) {
     if (r.employeeId !== employeeId) continue;
-    if (r.workConfirmation === 'unconfirmed') continue;
-    // 取消・差戻し・申請中は判断されていない（未確認のまま）
     if (r.status === 'cancelled' || r.status === 'returned' || r.status === 'pending') continue;
-    const req: Interval = [parseIso(r.requestedStart), parseIso(r.requestedEnd)];
-    decided.push(req);
-    if (r.workConfirmation === 'work' && r.approvedStart && r.approvedEnd) {
-      work.push([parseIso(r.approvedStart), parseIso(r.approvedEnd)]);
-      // 承認区間が申請区間の外にある場合も、承認区間は判断済みとして扱う
-      decided.push([parseIso(r.approvedStart), parseIso(r.approvedEnd)]);
-    }
+    if (r.workConfirmation === 'work' && r.approvedStart && r.approvedEnd) work.push([parseIso(r.approvedStart), parseIso(r.approvedEnd)]);
+    else if (r.workConfirmation === 'no_work') noWork.push([parseIso(r.requestedStart), parseIso(r.requestedEnd)]);
   }
   const w = normalize(work);
-  // 判断済みの区間のうち実労働でない部分 = 実労働なし（一部承認の残りを含む）
-  return { work: w, noWork: subtract(decided, w) };
+  // 実労働と実労働なしの両方の確認がある時間は実労働を優先（賃金の不払いを防ぐ）
+  return { work: w, noWork: subtract(noWork, w) };
 }
 
 function shiftIntervalsFor(s: WorkSession, shifts: Shift[]): Array<{ id: string; start: Instant; end: Instant; breakMinutes: number }> {
@@ -145,11 +150,8 @@ export function timeBasisOf(s: WorkSession, shifts: Shift[], resolution: { work:
     const w = intersect([[a, b]], resolution.work);
     const nw = subtract(intersect([[a, b]], resolution.noWork), w);
     const un = subtract([[a, b]], [...w, ...nw]);
-    const segs = [
-      ...w.map(([x, y]) => ({ start: x, end: y, minutes: totalMinutes([[x, y]]), resolution: 'work' as const })),
-      ...nw.map(([x, y]) => ({ start: x, end: y, minutes: totalMinutes([[x, y]]), resolution: 'no_work' as const })),
-      ...un.map(([x, y]) => ({ start: x, end: y, minutes: totalMinutes([[x, y]]), resolution: 'unresolved' as const })),
-    ].sort((p, q) => p.start - q.start);
+    const seg = (x: number, y: number, resolution: 'work' | 'no_work' | 'unresolved') => ({ start: x, end: y, minutes: totalMinutes([[x, y]]), seconds: Math.round((y - x) / 1000), resolution });
+    const segs = [...w.map(([x, y]) => seg(x, y, 'work')), ...nw.map(([x, y]) => seg(x, y, 'no_work')), ...un.map(([x, y]) => seg(x, y, 'unresolved'))].sort((p, q) => p.start - q.start);
     return { category, start: a, end: b, minutes: totalMinutes([[a, b]]), segments: segs };
   });
   const confirmed = intersect(off, resolution.work); // F
@@ -188,6 +190,7 @@ export function timeBasisOf(s: WorkSession, shifts: Shift[], resolution: { work:
       candidates,
       confirmedExtraMinutes: totalMinutes(confirmed),
       unresolvedMinutes: totalMinutes(unresolved),
+      unresolvedMs: totalMs(unresolved),
       payableMinutes: totalMinutes(payableIntervals),
     },
   };

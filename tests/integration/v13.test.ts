@@ -108,12 +108,12 @@ describe('シフト基準の給与計算（§9.2: シフト 18:00〜23:00・打�
     expect(issueCodes(r)).not.toContain('OFF_SHIFT_UNCONFIRMED');
     expect(issueCodes(r)).not.toContain('OVERTIME_REQUEST_PENDING');
   });
-  it('一部承認: 残業 23:00〜23:10 のうち 23:00〜23:05 を承認 → 残りは実労働なしとして確定可（5時間05分）', () => {
+  it('一部承認: 残業 23:00〜23:10 のうち 23:00〜23:05 を承認し、残りを実労働なしと確認 → 確定可（5時間05分）', () => {
     const { h, a } = scenario();
     confirm(h, a, [['2026-11-03T17:55', '2026-11-03T18:00', 'no_work', 'early']]);
     h.login(a, '482913');
     const l = h.staffOk('overtime.request', { category: 'late', start: '2026-11-03T23:00', end: '2026-11-03T23:10', reason: '閉店作業' });
-    h.ownerOk('overtime.review', { requestId: l.id, action: 'partial', approvedStart: '2026-11-03T23:00', approvedEnd: '2026-11-03T23:05', comment: '5分は私的滞在' });
+    h.ownerOk('overtime.review', { requestId: l.id, action: 'partial', approvedStart: '2026-11-03T23:00', approvedEnd: '2026-11-03T23:05', comment: '5分は私的滞在', remainder: 'no_work' });
     const r = compute(h, a);
     expect(r.totals.workMinutes).toBe(305);
     expect(issueCodes(r)).not.toContain('OFF_SHIFT_UNCONFIRMED');

@@ -231,6 +231,8 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
       add('confirm', 'PLANNED_BREAK_UNCONFIRMED', '予定休憩の取得が確認されていないため、休憩を控除していません（取得していた場合は休憩の申告・修正を登録してください）', s.laborDate);
     if (s.anomalies.includes('planned_break_time_unset'))
       add('confirm', 'PLANNED_BREAK_TIME_UNSET', '予定休憩の開始時刻がシフトに登録されていないため、休憩を控除していません', s.laborDate);
+    if (s.anomalies.includes('planned_break_changed_after_declaration'))
+      add('confirm', 'PLANNED_BREAK_CHANGED', '休憩の取得を確認した後にシフトの予定休憩が変更されています（確認した時点の休憩で計算しています）', s.laborDate);
     if (s.anomalies.includes('planned_break_not_added_due_to_punch'))
       add('info', 'PLANNED_BREAK_NOT_ADDED', '休憩打刻があるため、予定休憩は重ねて控除していません', s.laborDate);
     if (s.anomalies.includes('break_declaration_overrides_punch'))

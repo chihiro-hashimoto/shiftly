@@ -5,6 +5,7 @@
  * - GAS コードのロールバックと DB 構造のロールバックは別。DB は「更新前バックアップからの復元」で戻す。
  */
 import type { Ctx } from './context';
+import { TABLES } from './schema';
 
 export interface Migration {
   from: number;
@@ -22,9 +23,18 @@ export const MIGRATIONS: Migration[] = [
     description:
       'v1.3: 列の追加（店舗設定 breakMode/payrollTimeBasis、PIN の連続ロック回数、セッションの本人確認、勤怠修正の確認状態）とテーブルの追加（admin_credentials, admin_sessions, break_declarations, overtime_requests, overtime_request_history）。既存の行・列は変更しない',
     destructive: false,
-    // 列は末尾に追加され、読み取り時に不足分は既定値で補う。テーブルは最初の書き込み時に作成される。
-    // 既存の行の値は変更しない（旧版のセッションは「本人確認なし」として扱われ、次回ログインで解消）
-    up: () => {},
+    // 既存シートの列幅（グリッド）とヘッダーを v2 に合わせる（Sheets では列幅を超える範囲を読み書きできないため）。
+    // 既存の行の値は変更しない。読み取り時に不足列は既定値で補い、新しいテーブルは最初の書き込み時に作成される
+    // （旧版のセッションは「本人確認なし」として扱われ、次回ログインで解消）
+    up: (ctx) => {
+      const a = ctx.uow.adapter;
+      if (!a.ensureSchema) return;
+      // v2 で列を追加したテーブルのみ（API 呼び出し回数を抑える）
+      for (const def of TABLES.filter((t) => ['store_settings', 'credentials', 'sessions', 'attendance_corrections'].includes(t.name))) {
+        if (def.partitionBy) for (const p of a.partitions(def)) a.ensureSchema(def, p);
+        else a.ensureSchema(def, null);
+      }
+    },
   },
 ];
 

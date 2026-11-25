@@ -315,12 +315,12 @@ function applyDeclarations(employeeId: Id, sessions: WorkSession[], shifts: Shif
       continue;
     }
     if (d.kind === 'as_scheduled') {
-      if (!planned) {
-        s.anomalies.push('planned_break_missing');
-        continue;
-      }
-      if (planned.start === null || planned.end === null) {
-        s.anomalies.push('planned_break_time_unset');
+      // 申告の時点で確認した予定休憩の区間（v1.3 以降の申告は保存済み）を使う。後からシフトの休憩が変わっても控除は増えない
+      const declared = d.intervals[0] ? { start: parseIso(d.intervals[0].start), end: parseIso(d.intervals[0].end) } : null;
+      if (declared && planned && planned.start !== null && (planned.start !== declared.start || planned.end !== declared.end)) s.anomalies.push('planned_break_changed_after_declaration');
+      const use = declared ?? (planned && planned.start !== null && planned.end !== null ? { start: planned.start, end: planned.end } : null);
+      if (!use) {
+        s.anomalies.push(planned ? 'planned_break_time_unset' : 'planned_break_missing');
         continue;
       }
       if (s.breaks.length > 0) {
@@ -328,11 +328,11 @@ function applyDeclarations(employeeId: Id, sessions: WorkSession[], shifts: Shif
         s.anomalies.push('planned_break_not_added_due_to_punch');
         continue;
       }
-      if (s.end === null || planned.start < s.start || planned.end > s.end) {
+      if (s.end === null || use.start < s.start || use.end > s.end) {
         s.anomalies.push('fixed_break_outside_work');
         continue;
       }
-      s.breaks.push({ start: planned.start, end: planned.end, source: 'fixed' });
+      s.breaks.push({ start: use.start, end: use.end, source: 'fixed' });
       s.anomalies.push('planned_break_confirmed');
     } else if (d.kind === 'not_taken') {
       if (hasPunch) s.anomalies.push('break_declaration_overrides_punch');

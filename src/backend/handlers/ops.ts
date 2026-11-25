@@ -10,7 +10,7 @@ import type { AdminCredential, AttendanceCorrection, BackupHistory, BreakDeclara
 import { toCsv, type Cell } from '../../shared/csv';
 import { buildXlsx, toBase64, type XSheet } from '../../shared/xlsx';
 import { utf8 } from '../../shared/crypto';
-import { activeEmployees, correctionDate, employeesInPeriod, latestResult, reviewStatusOf, sessionsFor, payrollInput } from '../services';
+import { activeEmployees, correctionDate, durationLabel, employeesInPeriod, latestResult, reviewStatusOf, sessionsFor, payrollInput } from '../services';
 import { applyTimeBasis } from '../../shared/worktime';
 import { plan as migrationPlan } from '../migrations';
 import { sessionView } from './attendance';
@@ -164,11 +164,12 @@ defineOps([
 ]);
 
 // ------------------------------------------------------------------ 人件費分析・予算
-const IGNORE_FOR_COST = new Set(['DEDUCTION_UNENTERED', 'PENDING_CORRECTIONS', 'NEGATIVE_NET_PAY', 'PAYROLL_RULES_UNCONFIRMED', 'AGREEMENT36_NOT_CONCLUDED']);
+const IGNORE_FOR_COST = new Set(['DEDUCTION_UNENTERED', 'PENDING_CORRECTIONS', 'NEGATIVE_NET_PAY', 'PAYROLL_RULES_UNCONFIRMED', 'AGREEMENT36_NOT_CONCLUDED', 'OVERTIME_REQUEST_PENDING', 'BREAK_DECLARATION_PENDING']);
 
 function costFor(ctx: Ctx, e: Employee, from: LocalDate, to: LocalDate, sessionsOverride?: WorkSession[]) {
   const pseudo: PayrollPeriod = { id: `analytics-${from}`, periodKey: from.slice(0, 7), from, to, payDate: to, status: 'uncomputed', createdAt: '', updatedAt: '', version: 0 };
-  const input = payrollInput(ctx, e, pseudo);
+  // 人件費の実績・予測は勤怠の実績（修正後）で概算する。シフト外の確認待ちの勤務も含める（給与確定前の過少計上を防ぐ。Codex 監査2 #10）
+  const input = payrollInput(ctx, e, pseudo, 'actual');
   if (sessionsOverride) input.sessions = sessionsOverride;
   input.deduction = null;
   const out = computePayroll(input);
@@ -340,8 +341,8 @@ export function scanNotifications(ctx: Ctx): number {
     for (const e of emps) {
       const tb = applyTimeBasis(sessionsByEmployee[e.id] ?? [], ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === e.id), reqs, 'shift');
       for (const det of tb.details)
-        if (det.unresolvedMinutes > 0)
-          drafts.push({ kind: 'off_shift_unconfirmed', dedupeKey: `off_shift_unconfirmed:${det.sessionKey}`, audience: 'managers', employeeId: e.id, title: 'シフト外の勤務時間が未確認です', body: `${e.displayName}さん ${det.laborDate}: シフト外 ${det.unresolvedMinutes}分（実労働かどうかを確認してください）`, severity: 'warning', relatedDate: det.laborDate });
+        if (det.unresolvedMs > 0)
+          drafts.push({ kind: 'off_shift_unconfirmed', dedupeKey: `off_shift_unconfirmed:${det.sessionKey}`, audience: 'managers', employeeId: e.id, title: 'シフト外の勤務時間が未確認です', body: `${e.displayName}さん ${det.laborDate}: シフト外 ${durationLabel(det.unresolvedMs)}（実労働かどうかを確認してください）`, severity: 'warning', relatedDate: det.laborDate });
     }
   }
   for (const c of ctx.uow.list<Credential>('credentials'))

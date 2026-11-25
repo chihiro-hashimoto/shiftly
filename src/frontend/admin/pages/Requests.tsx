@@ -14,6 +14,15 @@ const WORK: Record<string, string> = { work: '実労働', no_work: '実労働な
 const hm = (iso: string | null) => (iso ? iso.slice(11, 16) : '—');
 const md = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '');
 const local = (iso: string) => iso.slice(0, 16);
+/** 終了時刻は分単位に切り上げる（確認は分単位。秒単位のシフト外の勤務を取りこぼさない。Codex 監査2 #4） */
+function localCeil(iso: string): string {
+  if (iso.length < 19 || iso.slice(17, 19) === '00') return iso.slice(0, 16);
+  const d = new Date(Date.parse(iso) + 60_000 + 9 * 3600_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+/** 長さの表示（1 分未満は秒） */
+const dur = (g: { minutes: number; seconds?: number }) => (g.minutes === 0 && g.seconds ? `${g.seconds}秒` : `${g.minutes}分`);
 
 interface Req {
   id: string;
@@ -154,10 +163,11 @@ function ReviewModal({ req, onClose, onDone }: { req: Req; onClose: () => void; 
   const [end, setEnd] = useState(local(req.requestedEnd));
   const [comment, setComment] = useState('');
   const [wc, setWc] = useState<'no_work' | 'unconfirmed'>('unconfirmed');
+  const [remainder, setRemainder] = useState<'no_work' | 'unconfirmed'>('unconfirmed');
   const needComment = action !== 'approve';
   const submit = async () => {
     const args: Record<string, unknown> = { requestId: req.id, action, comment };
-    if (action === 'partial') Object.assign(args, { approvedStart: start, approvedEnd: end });
+    if (action === 'partial') Object.assign(args, { approvedStart: start, approvedEnd: end, remainder });
     if (action === 'reject') args.workConfirmation = wc;
     const r = await run(() => client.call<{ warning: string | null }>('overtime.review', args), '処理しました');
     if (r) {
@@ -209,7 +219,14 @@ function ReviewModal({ req, onClose, onDone }: { req: Req; onClose: () => void; 
             <Field label="実労働として認める終了">
               <input className="input" type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
             </Field>
-            <p className="small muted" style={{ gridColumn: '1/-1' }}>申請された時間のうち、ここで指定しなかった時間は「実労働なし」として扱います。</p>
+            <div style={{ gridColumn: '1/-1' }}>
+              <Field label="申請された時間のうち、承認しなかった残りの時間">
+                <select className="input" value={remainder} onChange={(e) => setRemainder(e.target.value as 'no_work' | 'unconfirmed')}>
+                  <option value="unconfirmed">未確認のまま（後で確認する。給与は確定できません）</option>
+                  <option value="no_work">実労働はなかった（本人への確認などで確かめた）</option>
+                </select>
+              </Field>
+            </div>
           </div>
         )}
         {action === 'reject' && (
@@ -241,7 +258,7 @@ interface OffRow {
     shifts: Array<{ start: string; end: string }>;
     payableMinutes: number;
     unresolvedMinutes: number;
-    candidates: Array<{ category: string; start: string; end: string; minutes: number; segments: Array<{ start: string; end: string; minutes: number; resolution: string }> }>;
+    candidates: Array<{ category: string; start: string; end: string; minutes: number; segments: Array<{ start: string; end: string; minutes: number; seconds?: number; resolution: string }> }>;
   };
 }
 
@@ -257,7 +274,7 @@ function OffShiftTab({ onChanged }: { onChanged: () => void }) {
     r.timeBasis.candidates.flatMap((c) =>
       c.segments
         .filter((g) => g.resolution === 'unresolved')
-        .map((g) => ({ key: `${r.sessionKey}|${g.start}`, employeeId: r.employeeId, displayName: r.displayName, laborDate: r.laborDate, category: c.category, start: g.start, end: g.end, minutes: g.minutes })),
+        .map((g) => ({ key: `${r.sessionKey}|${g.start}`, employeeId: r.employeeId, displayName: r.displayName, laborDate: r.laborDate, category: c.category, start: g.start, end: g.end, minutes: g.minutes, seconds: g.seconds })),
     ),
   );
   const picked = items.filter((i) => sel[i.key]);
@@ -293,7 +310,7 @@ function OffShiftTab({ onChanged }: { onChanged: () => void }) {
                   <label key={key} className="check" style={{ minHeight: 44, alignItems: 'center' }}>
                     {g.resolution === 'unresolved' ? <input type="checkbox" checked={!!sel[key]} onChange={(e) => setSel((x) => ({ ...x, [key]: e.target.checked }))} style={{ marginTop: 0 }} /> : <span style={{ width: 18 }} />}
                     <span>
-                      {CAT[c.category]} {md(g.start)} {hm(g.start)}〜{hm(g.end)}（{g.minutes}分）{' '}
+                      {CAT[c.category]} {md(g.start)} {hm(g.start)}〜{hm(localCeil(g.end) + ':00')}（{dur(g)}）{' '}
                       <span className={`badge ${g.resolution === 'unresolved' ? 'badge-warn' : g.resolution === 'work' ? 'badge-board' : ''}`}>{g.resolution === 'unresolved' ? '未確認' : g.resolution === 'work' ? '実労働' : '実労働なし'}</span>
                     </span>
                   </label>
@@ -334,7 +351,7 @@ function OffShiftTab({ onChanged }: { onChanged: () => void }) {
   );
 }
 
-function ConfirmOffShift({ result, items, onClose, onDone }: { result: 'work' | 'no_work'; items: Array<{ employeeId: string; displayName: string; category: string; start: string; end: string; minutes: number }>; onClose: () => void; onDone: () => void }) {
+function ConfirmOffShift({ result, items, onClose, onDone }: { result: 'work' | 'no_work'; items: Array<{ employeeId: string; displayName: string; category: string; start: string; end: string; minutes: number; seconds?: number }>; onClose: () => void; onDone: () => void }) {
   const client = useClient();
   const toast = useToast();
   const { busy, run } = useAction();
@@ -353,7 +370,7 @@ function ConfirmOffShift({ result, items, onClose, onDone }: { result: 'work' | 
             disabled={busy || comment.trim().length < 2}
             onClick={async () => {
               const r = await run(
-                () => client.call<{ warning: string | null }>('offshift.confirm', { comment, items: items.map((i) => ({ employeeId: i.employeeId, category: i.category, start: local(i.start), end: local(i.end), result })) }),
+                () => client.call<{ warning: string | null }>('offshift.confirm', { comment, items: items.map((i) => ({ employeeId: i.employeeId, category: i.category, start: local(i.start), end: localCeil(i.end), result })) }),
                 '確認を登録しました',
               );
               if (r) {
@@ -371,7 +388,7 @@ function ConfirmOffShift({ result, items, onClose, onDone }: { result: 'work' | 
         <ul className="small" style={{ margin: 0, paddingLeft: '1.2em' }}>
           {items.map((i) => (
             <li key={`${i.employeeId}${i.start}`}>
-              {i.displayName} {CAT[i.category]} {md(i.start)} {hm(i.start)}〜{hm(i.end)}（{i.minutes}分）
+              {i.displayName} {CAT[i.category]} {md(i.start)} {hm(i.start)}〜{hm(localCeil(i.end) + ':00')}（{dur(i)}）
             </li>
           ))}
         </ul>

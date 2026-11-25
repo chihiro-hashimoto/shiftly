@@ -535,10 +535,22 @@ export class Installer {
         out.push(`${which} のロールバックに失敗（${e instanceof Error ? e.message : ''}）`);
       }
     }
-    // メンテナンス解除（DB は自動では戻さない。必要なら管理画面のバックアップから復元）
-    const off = this.callCore('system.setMaintenance', { on: false });
-    out.push(off.ok ? 'メンテナンスを解除しました' : 'メンテナンス解除に失敗しました（管理画面「システム・更新」から解除してください）');
-    out.push('DB は自動では戻していません。必要に応じて更新前バックアップから復元してください');
+    // 戻したプログラムと DB の構造が一致するか確認してからメンテナンスを解除する（Codex 監査2 #3）。
+    // DB の移行後に失敗した場合、旧プログラムと新しい構造の DB の組み合わせで営業を再開しない
+    const info = this.callCore('system.info');
+    const d = info.ok ? (info.data as { schemaVersion?: number; expectedSchemaVersion?: number }) : null;
+    if (!d || typeof d.schemaVersion !== 'number' || typeof d.expectedSchemaVersion !== 'number') {
+      out.push('戻したプログラムと DB の組み合わせを確認できないため、メンテナンスを継続しています（スタッフの打刻は停止中）。管理画面「システム・更新」で状態を確認してください');
+    } else if (d.schemaVersion !== d.expectedSchemaVersion) {
+      out.push(
+        `DB の構造（v${d.schemaVersion}）が戻したプログラム（v${d.expectedSchemaVersion}）と一致しないため、メンテナンスを継続しています（スタッフの打刻は停止中）。` +
+          `管理画面「バックアップ」で更新前バックアップ${this.reg?.update?.backupId ? `（${this.reg.update.backupId}）` : ''}を復元してからメンテナンスを解除するか、原因を解消して更新を再実行してください`,
+      );
+    } else {
+      const off = this.callCore('system.setMaintenance', { on: false });
+      out.push(off.ok ? 'メンテナンスを解除しました' : 'メンテナンス解除に失敗しました（管理画面「システム・更新」から解除してください）');
+      out.push('DB は自動では戻していません。必要に応じて更新前バックアップから復元してください');
+    }
     this.persist();
     return out.join('。');
   }

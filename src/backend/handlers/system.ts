@@ -176,6 +176,10 @@ defineOps([
     allowInMaintenance: true,
     handler: (ctx, raw) => {
       const on = v.bool(v.obj(raw), 'on');
+      // プログラムと DB の構造が一致しない状態では、メンテナンスを解除しない（Codex 監査2 #3）
+      const sv = Number(metaValue(ctx, 'schemaVersion') ?? '0');
+      if (!on && sv !== SCHEMA_VERSION)
+        throw E.conflict(`DB の構造（v${sv}）がこのプログラム（v${SCHEMA_VERSION}）と一致しないため、メンテナンスを解除できません。更新を完了するか、プログラムに合うバックアップを復元してください`);
       setMeta(ctx, 'maintenance', on ? 'on' : 'off');
       audit(ctx, 'system.maintenance', 'system', null, on ? 'メンテナンス開始' : 'メンテナンス終了');
       return { maintenance: on };

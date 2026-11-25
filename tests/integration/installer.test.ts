@@ -7,6 +7,7 @@ import { AppsScriptApi, type Http, type ScriptFile } from '../../src/setup/apps-
 import { Installer, type InstallerDeps, type Registry, type SecretRegistry, type ReleaseBundle } from '../../src/setup/installer';
 import { createMockEnv } from '../../src/backend/mock';
 import { handleRequest, signOwnerEnvelope, verifyEnvelope, SECRET_KEYS } from '../../src/backend/index';
+import { UnitOfWork } from '../../src/backend/store';
 import { fromHex, toHex, utf8 } from '../../src/shared/crypto';
 import { sha256 } from '../../src/shared/sha256';
 import { createHash, randomBytes } from 'node:crypto';
@@ -304,5 +305,28 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(proj.deployments.get(coreRef.deploymentId!)).toBe(prevVersion);
     const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
     expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(false);
+  });
+
+  it('Codex 監査2 #3: DB の構造が戻したプログラムと一致しない場合は、ロールバック後もメンテナンスを継続する', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    // DB がプログラムより新しい構造になっている状態（移行後の失敗で旧プログラムに戻した場合と同じ不一致）を作る
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    const row = uow.list<{ id: string; key: string; value: string; version: number; createdAt: string; updatedAt: string }>('system_metadata').find((m) => m.key === 'schemaVersion')!;
+    uow.update('system_metadata', { ...row, value: '99' });
+    uow.flush();
+    s.deps.release = release('0.3.0');
+    const u = s.make().applyUpdate({ approveDestructive: false });
+    expect(u.ok).toBe(false);
+    expect(u.message).toContain('メンテナンスを継続');
+    const info = handleRequest(s.core.be, { op: 'system.info' }, 'owner');
+    expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
+    // Core 側でも、構造が一致しない間はメンテナンスを解除できない
+    expect(handleRequest(s.core.be, { op: 'system.setMaintenance', args: { on: false }, requestId: 'req_maint_off_01' }, 'owner').ok).toBe(false);
   });
 });

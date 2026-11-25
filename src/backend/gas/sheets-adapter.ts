@@ -29,6 +29,8 @@ function q(name: string) {
 
 export class SheetsAdapter implements TableAdapter {
   private titles: Set<string> | null = null;
+  /** シート名 → 列数（グリッドの幅）。旧スキーマのシートは列が少ないため、読み取り範囲をこの幅に制限する */
+  private colCounts = new Map<string, number>();
   /** シート名 → (id → 行番号 1始まり) */
   private index = new Map<string, Map<string, number>>();
   private lastRow = new Map<string, number>();
@@ -37,16 +39,27 @@ export class SheetsAdapter implements TableAdapter {
 
   private sheetTitles(): Set<string> {
     if (!this.titles) {
-      const ss = Sheets.Spreadsheets.get(this.spreadsheetId(), { fields: 'sheets.properties.title' });
+      const ss = Sheets.Spreadsheets.get(this.spreadsheetId(), { fields: 'sheets.properties(title,gridProperties.columnCount)' });
       this.titles = new Set<string>((ss.sheets ?? []).map((s: any) => s.properties.title as string));
+      this.colCounts.clear();
+      for (const s of ss.sheets ?? []) {
+        const n = Number(s.properties?.gridProperties?.columnCount);
+        if (Number.isFinite(n) && n > 0) this.colCounts.set(s.properties.title as string, n);
+      }
     }
     return this.titles;
+  }
+
+  /** 読み取る列数: スキーマの列数とシートの列数（グリッドの幅）の小さい方（不足列は既定値で補う） */
+  private readWidth(def: TableDef, name: string): number {
+    const g = this.colCounts.get(name);
+    return g ? Math.min(def.columns.length, g) : def.columns.length;
   }
 
   read(def: TableDef, partition: string | null): RawRow[] {
     const name = sheetNameFor(def, partition);
     if (!this.sheetTitles().has(name)) return [];
-    const res = Sheets.Spreadsheets.Values.get(this.spreadsheetId(), `${q(name)}!A2:${colLetter(def.columns.length)}`, {
+    const res = Sheets.Spreadsheets.Values.get(this.spreadsheetId(), `${q(name)}!A2:${colLetter(this.readWidth(def, name))}`, {
       valueRenderOption: 'UNFORMATTED_VALUE',
       dateTimeRenderOption: 'FORMATTED_STRING',
     });
@@ -66,7 +79,7 @@ export class SheetsAdapter implements TableAdapter {
     const out = new Map<string, RawRow[]>();
     if (present.length) {
       const res = Sheets.Spreadsheets.Values.batchGet(this.spreadsheetId(), {
-        ranges: present.map((r) => `${q(r.name)}!A2:${colLetter(r.def.columns.length)}`),
+        ranges: present.map((r) => `${q(r.name)}!A2:${colLetter(this.readWidth(r.def, r.name))}`),
         valueRenderOption: 'UNFORMATTED_VALUE',
         dateTimeRenderOption: 'FORMATTED_STRING',
       });
@@ -86,6 +99,7 @@ export class SheetsAdapter implements TableAdapter {
 
   reset() {
     this.titles = null;
+    this.colCounts.clear();
     this.index.clear();
     this.lastRow.clear();
     this.gridRows.clear();
@@ -104,8 +118,31 @@ export class SheetsAdapter implements TableAdapter {
     );
     Sheets.Spreadsheets.Values.update({ values: [def.columns.map(([c]) => c)] }, this.spreadsheetId(), `${q(name)}!A1`, { valueInputOption: 'RAW' });
     this.sheetTitles().add(name);
+    this.colCounts.set(name, Math.max(26, def.columns.length));
     this.index.set(name, new Map());
     this.lastRow.set(name, 1);
+  }
+
+  /**
+   * 旧スキーマのシート（列が少ない）に書き込む前に、グリッドの列を追加し、ヘッダーに新しい列名を追記する
+   * （スキーマの列追加は末尾のみのため、既存の列・値は変更しない）
+   */
+  private ensureColumns(def: TableDef, name: string) {
+    const have = this.colCounts.get(name);
+    if (have !== undefined && have < def.columns.length) {
+      const ss = Sheets.Spreadsheets.get(this.spreadsheetId(), { fields: 'sheets.properties(sheetId,title)' });
+      const sheet = (ss.sheets ?? []).find((s: any) => s.properties.title === name);
+      Sheets.Spreadsheets.batchUpdate({ requests: [{ appendDimension: { sheetId: sheet.properties.sheetId, dimension: 'COLUMNS', length: def.columns.length - have } }] }, this.spreadsheetId());
+      this.colCounts.set(name, def.columns.length);
+    }
+    this.ensureHeader(def, name);
+  }
+
+  /** DB 移行（system.migrate）から: 既存シートの列幅とヘッダーを現在のスキーマに合わせる。シートがなければ何もしない */
+  ensureSchema(def: TableDef, partition: string | null) {
+    const name = sheetNameFor(def, partition);
+    if (!this.sheetTitles().has(name)) return;
+    this.ensureColumns(def, name);
   }
 
   /** ヘッダーが古い（列が少ない）場合は末尾に列名を追加（後方互換のマイグレーション） */
@@ -127,6 +164,7 @@ export class SheetsAdapter implements TableAdapter {
     for (const c of changes) {
       const name = sheetNameFor(c.def, c.partition);
       this.ensureSheet(c.def, name);
+      if ((this.colCounts.get(name) ?? c.def.columns.length) < c.def.columns.length) this.ensureColumns(c.def, name);
       if (!this.index.has(name)) this.read(c.def, c.partition);
       const row = this.index.get(name)!.get(c.id);
       if (row) {

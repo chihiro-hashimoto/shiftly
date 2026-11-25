@@ -79,12 +79,12 @@ export function sessionsFor(ctx: Ctx, employeeId: string, from: LocalDate, to: L
 }
 
 /** 給与計算用の勤務（店舗設定の時間基準に従い、シフト基準ではシフト外の未確認時間を除外） */
-export function payableSessionsFor(ctx: Ctx, employeeId: string, from: LocalDate, to: LocalDate, s?: StoreSettings): { sessions: WorkSession[]; details: SessionTimeBasis[]; basis: 'shift' | 'actual' } {
+export function payableSessionsFor(ctx: Ctx, employeeId: string, from: LocalDate, to: LocalDate, s?: StoreSettings, basisOverride?: 'shift' | 'actual'): { sessions: WorkSession[]; details: SessionTimeBasis[]; basis: 'shift' | 'actual' } {
   const st = s ?? settings(ctx);
   const actual = sessionsFor(ctx, employeeId, from, to, st);
   const shifts = ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === employeeId && x.date >= addDays(from, -1) && x.date <= addDays(to, 1));
   const reqs = ctx.uow.list<OvertimeRequest>('overtime_requests').filter((r) => r.employeeId === employeeId);
-  const basis = st.payrollTimeBasis === 'actual' ? 'actual' : 'shift';
+  const basis = basisOverride ?? (st.payrollTimeBasis === 'actual' ? 'actual' : 'shift');
   const r = applyTimeBasis(actual, shifts, reqs, basis);
   return { ...r, basis };
 }
@@ -107,17 +107,31 @@ export function reviewStatusOf(c: { reviewStatus?: string | null }): AttendanceC
   return r === 'unreviewed' || r === 'pending' || r === 'approved' || r === 'rejected' ? r : 'not_required';
 }
 
-/** 給与計算に影響する勤怠の確認状況（期間内） */
+/** 未確認時間の表示（1 分未満は秒） */
+export function durationLabel(ms: number): string {
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}秒`;
+  return `${Math.round(ms / 60_000)}分`;
+}
+
+/**
+ * 給与計算に影響する勤怠の確認状況
+ * details には当期の勤務に加え、週・月60時間の判定のために読む期間前（前の給与期間）の勤務も含む。
+ * 期間前の未確認時間も当期の割増に影響するため確定を止める（Codex 監査2 #5）
+ */
 export function attendanceReviewIssues(ctx: Ctx, employeeId: string, from: LocalDate, to: LocalDate, details: SessionTimeBasis[]): PayrollIssue[] {
   const out: PayrollIssue[] = [];
   for (const d of details) {
-    if (d.laborDate < from || d.laborDate > to) continue;
-    if (d.unresolvedMinutes > 0) {
+    if (d.laborDate > to) continue;
+    // 秒単位で判定（1 分未満の未確認時間も見逃さない。Codex 監査2 #4）
+    if (d.unresolvedMs > 0) {
       const cats = [...new Set(d.candidates.filter((c) => c.segments.some((g) => g.resolution === 'unresolved')).map((c) => ({ early: '早出', late: '残業', between: 'シフト間', no_shift: 'シフト未登録' })[c.category]))];
+      const before = d.laborDate < from;
       out.push({
         severity: 'blocking',
-        code: 'OFF_SHIFT_UNCONFIRMED',
-        message: `シフト外の勤務候補（${cats.join('・')}）${d.unresolvedMinutes}分が未確認です。早出・残業申請の承認、または実労働の有無の確認を行ってください（未申請でも実労働であれば給与に含めます）`,
+        code: before ? 'OFF_SHIFT_UNCONFIRMED_PRIOR' : 'OFF_SHIFT_UNCONFIRMED',
+        message: before
+          ? `前の給与期間の勤務にシフト外の未確認時間（${cats.join('・')}）${durationLabel(d.unresolvedMs)}があります。週・月60時間の時間外の判定に影響するため、先に確認してください`
+          : `シフト外の勤務候補（${cats.join('・')}）${durationLabel(d.unresolvedMs)}が未確認です。早出・残業申請の承認、または実労働の有無の確認を行ってください（未申請でも実労働であれば給与に含めます）`,
         date: d.laborDate,
       });
     }
@@ -207,14 +221,18 @@ export function averageDailyWage(ctx: Ctx, employee: Employee, beforeDate: Local
 }
 
 /** 給与計算の入力組み立て */
-export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod): PayrollInput {
+/**
+ * 給与計算の入力
+ * basisOverride: 人件費分析では、確認待ちのシフト外の勤務も実績として概算するため 'actual' を指定する（Codex 監査2 #10）
+ */
+export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod, basisOverride?: 'shift' | 'actual'): PayrollInput {
   const s = settings(ctx);
   // 週の時間外判定と月60時間の累計に必要な過去の勤務を読む。
   // 60時間の起算日が週の途中にある場合、その週の初日まで遡る（起算週の週次時間外を取りこぼさない）
   const windowStart = s.overtime60StartDay === null ? period.from : overtime60WindowStart(period.from, { overtime60StartDay: s.overtime60StartDay } as never);
   const earliest = windowStart < period.from ? windowStart : period.from;
   const lookbackFrom = weekStartOf(earliest, s.weekStartDay ?? 0);
-  const tb = payableSessionsFor(ctx, employee.id, lookbackFrom, period.to, s);
+  const tb = payableSessionsFor(ctx, employee.id, lookbackFrom, period.to, s, basisOverride);
   const sessions = tb.sessions;
   const by = <T extends { employeeId: string }>(xs: T[]) => xs.filter((x) => x.employeeId === employee.id);
   // 承認待ち（未反映）の勤怠修正: 期間内（日付不明のものを含む）

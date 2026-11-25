@@ -37,6 +37,8 @@ interface Sheet {
   title: string;
   sheetId: number;
   rowCount: number;
+  /** 列数（グリッドの幅）。Sheets と同じく、範囲がこれを超える読み書きはエラー */
+  colCount?: number;
   rows: Cell[][];
 }
 interface Spreadsheet {
@@ -102,6 +104,8 @@ export class GasEmulator {
   private writeValues(ssId: string, range: string, values: Cell[][]) {
     const r = this.parseRange(range);
     const sh = this.sheetOf(ssId, r.sheet);
+    const width = Math.max(0, ...values.map((v) => v.length));
+    if (r.c1 + width > (sh.colCount ?? 26)) throw new Error(`Range (${range}) exceeds grid limits. Max columns: ${sh.colCount ?? 26}`);
     values.forEach((row, i) => {
       const ri = r.r1 + i;
       if (ri >= sh.rowCount) throw new Error(`Range exceeds grid limits (${ri + 1} > ${sh.rowCount})`);
@@ -131,7 +135,7 @@ export class GasEmulator {
         get(id: string) {
           self.apiCalls++;
           const ss = self.spreadsheets.get(id)!;
-          return { sheets: ss.sheets.map((s) => ({ properties: { title: s.title, sheetId: s.sheetId, gridProperties: { rowCount: s.rowCount } } })) };
+          return { sheets: ss.sheets.map((s) => ({ properties: { title: s.title, sheetId: s.sheetId, gridProperties: { rowCount: s.rowCount, columnCount: s.colCount ?? 26 } } })) };
         },
         batchUpdate(body: { requests: Array<Record<string, any>> }, id: string) {
           self.apiCalls++;
@@ -141,10 +145,11 @@ export class GasEmulator {
             if (r.addSheet) {
               const t = r.addSheet.properties.title;
               if (ss.sheets.some((s) => s.title === t)) throw new Error(`A sheet with the name "${t}" already exists.`);
-              ss.sheets.push({ title: t, sheetId: self.seq++, rowCount: self.defaultRows, rows: [] });
+              ss.sheets.push({ title: t, sheetId: self.seq++, rowCount: self.defaultRows, colCount: r.addSheet.properties.gridProperties?.columnCount ?? 26, rows: [] });
             } else if (r.appendDimension) {
               const sh = ss.sheets.find((s) => s.sheetId === r.appendDimension.sheetId)!;
-              sh.rowCount += r.appendDimension.length;
+              if (r.appendDimension.dimension === 'COLUMNS') sh.colCount = (sh.colCount ?? 26) + r.appendDimension.length;
+              else sh.rowCount += r.appendDimension.length;
             } else if (r.updateSpreadsheetProperties) {
               Object.assign(ss.props, r.updateSpreadsheetProperties.properties);
             }
@@ -156,6 +161,7 @@ export class GasEmulator {
             self.apiCalls++;
             const r = self.parseRange(range);
             const sh = self.sheetOf(id, r.sheet);
+            if (r.c2 !== null && r.c2 >= (sh.colCount ?? 26)) throw new Error(`Range (${range}) exceeds grid limits. Max rows: ${sh.rowCount}, max columns: ${sh.colCount ?? 26}`);
             const end = r.r2 === null ? sh.rows.length - 1 : Math.min(r.r2, sh.rows.length - 1);
             const out: Cell[][] = [];
             for (let i = r.r1; i <= end; i++) {

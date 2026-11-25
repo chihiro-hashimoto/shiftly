@@ -207,6 +207,17 @@ test('管理者ページ: 誤ったパスワードは拒否、正しいパスワ
   expect(keys.filter((k) => k !== 'shiftly.device.v1')).toEqual([]);
 });
 
+test('Codex 監査2 #9: 管理者パスワードの送信直後にキャンセルすると、遅れて届いた応答でも管理者モードにならない', async ({ page }) => {
+  await open(page);
+  await page.getByRole('button', { name: '管理者ページ' }).click();
+  await page.getByLabel('管理者パスワード').fill(ADMIN_PW);
+  await page.getByRole('button', { name: '管理者モードに入る' }).click();
+  await page.getByRole('button', { name: 'キャンセル' }).click();
+  await page.waitForTimeout(800);
+  await expect(page.getByRole('region', { name: '管理者モード' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'スタッフを選択' })).toBeVisible();
+});
+
 test('管理者モード: タブ非表示（バックグラウンド）で管理者モードを終了', async ({ page }) => {
   await open(page);
   await enterAdmin(page);

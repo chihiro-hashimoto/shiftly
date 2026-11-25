@@ -52,10 +52,13 @@ describe('シフト基準の給与対象（§9.2）', () => {
     expect(r.details[0]!.unresolvedMinutes).toBe(15);
     expect(mins(r)).toBe(300);
   });
-  it('一部承認の残りは実労働なしとして解決', () => {
+  it('一部承認の残りは、明示的に実労働なしと確認するまで未確認（Codex 監査2 #6）', () => {
     const r = payable([req('23:00', '23:10', 'work', 'approved', ['23:00', '23:05']), req('17:55', '18:00', 'no_work')]);
     expect(mins(r)).toBe(305);
-    expect(r.details[0]!.unresolvedMinutes).toBe(0);
+    expect(r.details[0]!.unresolvedMinutes).toBe(5);
+    const r2 = payable([req('23:00', '23:10', 'work', 'approved', ['23:00', '23:05']), req('23:05', '23:10', 'no_work'), req('17:55', '18:00', 'no_work')]);
+    expect(mins(r2)).toBe(305);
+    expect(r2.details[0]!.unresolvedMs).toBe(0);
   });
   it("basis='actual' は打刻どおり（315分）", () => {
     const r = applyTimeBasis(sessions(), sh, [], 'actual');

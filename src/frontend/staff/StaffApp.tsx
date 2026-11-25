@@ -437,16 +437,36 @@ function AdminLoginDialog({ client, onCancel, onSuccess }: { client: Client; onC
   const [pw, setPw] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // キャンセル・タブ非表示・画面の破棄の後に届いた応答では管理者モードにしない（Codex 監査2 #9）
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const cancel = () => {
+    alive.current = false;
+    onCancel();
+  };
   const submit = async () => {
     setBusy(true);
     setErr('');
     const v = pw;
     setPw('');
     // スタッフのセッションは送らない（管理者の認証はスタッフの認証と無関係）
-    const saved = client.session;
-    client.session = '';
-    const r = await client.raw<{ adminSessionToken: string }>('adminAuth.login', { password: v });
-    client.session = saved;
+    const probe = new Client(client.transport);
+    probe.device = client.device;
+    const r = await probe.raw<{ adminSessionToken: string }>('adminAuth.login', { password: v });
+    if (!alive.current || document.visibilityState === 'hidden') {
+      // 間に合わなかった応答で発行されたセッションは、使わずにサーバー側で失効させる
+      if (r.ok) {
+        probe.adminSession = r.data.adminSessionToken;
+        void probe.raw('adminAuth.logout');
+        probe.adminSession = '';
+      }
+      return;
+    }
     setBusy(false);
     if (r.ok) onSuccess(r.data.adminSessionToken);
     else setErr(r.error.message);
@@ -454,10 +474,10 @@ function AdminLoginDialog({ client, onCancel, onSuccess }: { client: Client; onC
   return (
     <Modal
       title="管理者ページ"
-      onClose={onCancel}
+      onClose={cancel}
       footer={
         <>
-          <button className="btn" onClick={onCancel}>
+          <button className="btn" onClick={cancel}>
             キャンセル
           </button>
           <button className="btn btn-primary" disabled={busy || pw.length === 0} onClick={() => void submit()}>
@@ -892,6 +912,14 @@ function todayAt(hhmm: string): string {
   return `${todayJst()}T${hhmm}`;
 }
 const hm = (iso: string | null | undefined) => (iso ? iso.slice(11, 16) : '—');
+/** 'YYYY-MM-DDTHH:MM:SS+09:00' の終了時刻を分単位に切り上げ（申請は分単位。秒の勤務を取りこぼさない） */
+function ceilMinute(iso: string): string {
+  if (iso.slice(17, 19) === '00' || iso.length < 19) return iso.slice(0, 16);
+  const t = Date.parse(iso) + 60_000;
+  const d = new Date(t + 9 * 3600_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
 
 function BreakRows({ rows, setRows }: { rows: Array<{ start: string; end: string }>; setRows: (r: Array<{ start: string; end: string }>) => void }) {
   return (
@@ -1146,8 +1174,8 @@ function MyAttendance() {
                   unresolved
                     .filter((g) => !s.requests.some((r) => r.status === 'pending' && r.requestedStart <= g.start && r.requestedEnd >= g.end))
                     .map((g) => (
-                      <button key={g.start} className="btn btn-sm btn-primary" onClick={() => setEditing({ kind: 'overtime', category: g.category === 'no_shift' ? 'no_shift' : g.category, start: g.start.slice(0, 16), end: g.end.slice(0, 16) })}>
-                        {CAT[g.category]} {hm(g.start)}〜{hm(g.end)} を申請
+                      <button key={g.start} className="btn btn-sm btn-primary" onClick={() => setEditing({ kind: 'overtime', category: g.category, start: g.start.slice(0, 16), end: ceilMinute(g.end) })}>
+                        {CAT[g.category]} {hm(g.start)}〜{hm(ceilMinute(g.end))} を申請
                       </button>
                     ))}
               </div>

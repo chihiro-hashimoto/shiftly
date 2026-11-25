@@ -30,6 +30,8 @@ export interface TableAdapter {
   readMany?(reqs: Array<{ def: TableDef; partition: string | null }>): RawRow[][];
   /** 接続先 DB の切替後にキャッシュ（シート一覧・行番号）を破棄する */
   reset?(): void;
+  /** DB 移行: 既存のテーブル（シート）の列幅・ヘッダーを現在のスキーマに合わせる（任意。メモリ環境では不要） */
+  ensureSchema?(def: TableDef, partition: string | null): void;
   /** 変更をまとめて書き込む（id 一致行は上書き、なければ追加） */
   write(changes: Array<{ def: TableDef; partition: string | null; id: string; raw: RawRow }>): void;
 }

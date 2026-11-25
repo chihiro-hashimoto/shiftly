@@ -20,6 +20,37 @@ function ownerEnvelope(keyHex: string, body: unknown, role: 'admin' | 'setup' = 
 }
 
 describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () => {
+  it('Codex 監査2 #1: v1.2 の DB（store_settings が 32 列のシート）を v1.3 の Core で読み込み、移行で列とヘッダーを拡張する', () => {
+    const emu = new GasEmulator();
+    const adminCode = randomBytes(32).toString('hex');
+    const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_emu2', storeName: 'エミュ店', adminPairingHash: sha(adminCode), setupPairingHash: sha(randomBytes(32).toString('hex')) } });
+    const post = (body: unknown) => JSON.parse(core.doPost({ postData: { contents: JSON.stringify(body) } }).content);
+    emu.activeUser = 'owner@example.invalid';
+    core.shiftlyAuthorize();
+    const key = post({ kind: 'pair', role: 'admin', pairingCode: adminCode }).data.key as string;
+    const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}` }));
+    expect(owner('settings.update', { storeName: '旧店舗' }).ok).toBe(true);
+    // v1.2 の状態を再現: store_settings のグリッド・ヘッダー・行を 32 列に、スキーマ版を 1 に
+    const ss = emu.spreadsheets.get(emu.scriptProps.getProperty('SHIFTLY_DB_ID')!)!;
+    const st = ss.sheets.find((x) => x.title === 'store_settings')!;
+    st.colCount = 32;
+    st.rows = st.rows.map((r) => r.slice(0, 32));
+    const meta = ss.sheets.find((x) => x.title === 'system_metadata')!;
+    for (const r of meta.rows) if (r[4] === 'schemaVersion') r[5] = '1';
+    // 列が少ないシートでも読み込める（範囲外を読まない）。v1 の行は既定値（シフト基準・予定休憩）で補う
+    const g = owner('settings.get');
+    expect(g.ok).toBe(true);
+    expect(g.data.storeName).toBe('旧店舗');
+    expect(g.data.payrollTimeBasis).toBe('shift');
+    // 移行で列幅とヘッダーを拡張
+    expect(owner('system.migrate', {}).ok).toBe(true);
+    expect(st.colCount).toBeGreaterThanOrEqual(34);
+    expect(st.rows[0]!.slice(32, 34)).toEqual(['breakMode', 'payrollTimeBasis']);
+    expect(owner('settings.update', { breakMode: 'punch' }).ok).toBe(true);
+    expect(owner('settings.get').data.breakMode).toBe('punch');
+    expect(owner('system.info').data.schemaVersion).toBe(2);
+  });
+
   it('初期化 → Admin ペアリング → 管理者操作 → 端末登録 → PIN ログイン → 打刻 → 日次ジョブ', () => {
     const emu = new GasEmulator();
     const adminCode = randomBytes(32).toString('hex');
