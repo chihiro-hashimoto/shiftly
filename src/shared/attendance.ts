@@ -280,13 +280,17 @@ export function sessionKeyOf(s: WorkSession): string {
   return s.eventIds[0] ?? `${s.employeeId}:${s.start}`;
 }
 
-/** 勤務に対応する予定休憩（公開済みシフトの休憩。開始時刻が未設定なら start=null） */
-export function plannedBreakFor(s: WorkSession, shifts: Shift[]): { shiftId: string; start: Instant | null; end: Instant | null; minutes: number } | null {
-  const end = s.end ?? s.start;
+/**
+ * 勤務に対応する予定休憩（公開済みシフトの休憩。開始時刻が未設定なら start=null）
+ * until: 退勤前の勤務（end=null）の仮の終了時刻（退勤確認の表示用。退勤時の保存と同じ勤務区間で選ぶ）
+ * 同じ日に複数のシフトがある場合は、勤務と時間が重なるシフト、なければ開始時刻が最も近いシフト（Codex 監査5）
+ */
+export function plannedBreakFor(s: WorkSession, shifts: Shift[], until?: Instant): { shiftId: string; start: Instant | null; end: Instant | null; minutes: number } | null {
+  const end = s.end ?? until ?? s.start + 1;
   const cands = shifts.filter((sh) => sh.employeeId === s.employeeId && sh.status === 'published' && sh.breakMinutes > 0);
-  // 勤務と時間が重なるシフトを優先し、なければ労働日が同じシフト
-  const overlap = cands.find((sh) => localDateTime(sh.date, sh.start) < end && localDateTime(sh.date, sh.end) > s.start);
-  const sh = overlap ?? cands.find((x) => x.date === s.laborDate);
+  const overlap = cands.filter((sh) => localDateTime(sh.date, sh.start) < end && localDateTime(sh.date, sh.end) > s.start).sort((a, b) => localDateTime(a.date, a.start) - localDateTime(b.date, b.start));
+  const sameDay = cands.filter((x) => x.date === s.laborDate).sort((a, b) => Math.abs(localDateTime(a.date, a.start) - s.start) - Math.abs(localDateTime(b.date, b.start) - s.start));
+  const sh = overlap[0] ?? sameDay[0];
   if (!sh) return null;
   if (!sh.fixedBreakStart) return { shiftId: sh.id, start: null, end: null, minutes: sh.breakMinutes };
   const bs = localDateTime(sh.date, sh.fixedBreakStart);

@@ -74,7 +74,7 @@ export interface Registry {
     message?: string;
     prevCore?: number;
     prevAdmin?: number;
-    /** 更新開始時の DB のスキーマ版（移行の結果が不明な場合に、DB の実状態から移行済みかを判断する） */
+    /** 更新開始時の DB のスキーマ版（記録のみ。移行の結果が不明な場合は移行済みとして扱い、この値では判断しない） */
     startSchema?: number;
     /** DB の移行が完了しているか（移行後の失敗は旧版へ戻さず、再開時は完了処理から行う） */
     migrated?: boolean;
@@ -432,7 +432,10 @@ export class Installer {
     else dep = this.d.api.createDeployment(ref.scriptId!, v.versionNumber, `Shiftly ${this.d.release.version}`);
     const url = webAppUrl(dep);
     if (!url) throw new InstallerError(`${which}.deploy` as StepId, 'Web アプリの URL を取得できませんでした', 'マニフェストの webapp 設定を確認してください（導入手順書）');
-    this.reg![which] = { ...ref, deploymentId: dep.deploymentId, url, previousVersionNumber: ref.versionNumber, versionNumber: v.versionNumber };
+    // 更新中の再配備（中断からの再開）では、ロールバック先を更新開始前の版のまま保持する（Codex 監査5）
+    const upd = this.reg!.update;
+    const before = upd ? (which === 'core' ? upd.prevCore : upd.prevAdmin) : undefined;
+    this.reg![which] = { ...ref, deploymentId: dep.deploymentId, url, previousVersionNumber: before ?? ref.versionNumber, versionNumber: v.versionNumber };
     this.persist();
   }
 
@@ -488,7 +491,8 @@ export class Installer {
     const reg = this.reg!;
     // 更新開始前のバージョン番号を保持（承認待ちから再開した場合も、更新前の版へ戻せるように）
     // 移行後に失敗した更新の再開（コードは新しい版のまま。バックアップの再取得・再配備をせず完了処理から行う）
-    const afterMigration = !!(reg.update && reg.update.target === target && reg.update.migrated);
+    // 移行の段階（migrate / finish）で中断した更新も、移行済みの可能性があるため同様に扱う（Codex 監査5）
+    const afterMigration = !!(reg.update && reg.update.target === target && (reg.update.migrated || ['migrate', 'finish'].includes(reg.update.stage)));
     const resuming = afterMigration || (reg.update && reg.update.target === target && reg.update.prevCore !== undefined && reg.update.stage !== 'failed');
     const prevCore = resuming ? reg.update!.prevCore : reg.core.versionNumber;
     const prevAdmin = resuming ? reg.update!.prevAdmin : reg.admin.versionNumber;
@@ -508,7 +512,8 @@ export class Installer {
         step('prepare');
         const prep = this.callCore('system.prepareUpdate', { targetVersion: target });
         if (!prep.ok) return this.failUpdate(`更新前バックアップに失敗しました（${prep.error?.message ?? ''}）。更新は行っていません`);
-        reg.update!.backupId = (prep.data as { backupId: string }).backupId;
+        // 中断からの再開でも、最初の更新前バックアップの参照を保持する
+        reg.update!.backupId = reg.update!.backupId ?? (prep.data as { backupId: string }).backupId;
         step('code');
         this.upload('core');
         this.upload('admin');
@@ -518,7 +523,13 @@ export class Installer {
       }
       step('migrate');
       const mig = this.callCore('system.migrate', { approveDestructive: opts.approveDestructive });
-      if (!mig.ok) throw new Error(`DB 更新に失敗しました（${mig.error?.message ?? ''}）`);
+      if (!mig.ok) {
+        // 応答がない・内部エラー等で結果が不明な場合は、Core で移行が進んでいる可能性があるため移行済みとして扱い、旧版へ戻さない
+        // （ロック外の読み取りで移行前と判断しない。再開時は Core のロック内で移行をやり直す＝冪等。Codex 監査5）
+        const definitive = ['CONFLICT', 'INVALID_INPUT', 'FORBIDDEN', 'UNAUTHENTICATED', 'NOT_PAIRED', 'NOT_INITIALIZED'];
+        if (!definitive.includes(mig.error?.code ?? '')) migrated = true;
+        throw new Error(`DB 更新に失敗しました（${mig.error?.message ?? ''}）`);
+      }
       const need = (mig.data as { requiresApproval: string[] }).requiresApproval;
       if (need.length === 0) {
         migrated = true;
@@ -538,11 +549,8 @@ export class Installer {
       return { ok: true, message: `バージョン ${target} に更新しました` };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // 移行の応答が失われた等で結果が不明な場合は、DB の実状態（スキーマ版）で判断する。確認できなければ移行済みとして扱う（Codex 監査4）
-      if (!migrated && reg.update && ['migrate', 'finish', 'awaiting_approval'].includes(reg.update.stage)) {
-        const info = this.coreInfo();
-        if (!info || reg.update.startSchema === undefined || info.schemaVersion !== reg.update.startSchema) migrated = true;
-      }
+      // finish の段階の失敗は移行の後（移行済み）
+      if (!migrated && reg.update && reg.update.stage === 'finish') migrated = true;
       if (migrated) {
         reg.update = { ...reg.update!, migrated: true };
         // DB は新しい構造に移行済み。旧プログラムは新しい構造の DB を正しく扱えず、メンテナンス解除の検査も持たないため、

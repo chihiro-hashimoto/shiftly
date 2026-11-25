@@ -161,3 +161,22 @@ describe('Codex 監査4: 旧形式（元の申請へのひも付けの列がな�
     expect(compute(h, a).issues.find((i: any) => i.code === 'OFF_SHIFT_UNCONFIRMED')?.severity).toBe('blocking');
   });
 });
+
+describe('Codex 監査5: 同じ日に複数のシフトがある場合、退勤確認の予定休憩と保存時の予定休憩が一致する', () => {
+  it('09:00–12:00（休憩 10:00–10:15）と 15:00–18:00（休憩 16:00–16:30）。15:00 出勤 → 18:00 の退勤確認は午後の 30 分 → 予定どおりで退勤（150 分）', () => {
+    const { h, a } = store();
+    h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-03', start: '09:00', end: '12:00', breakMinutes: 15, fixedBreakStart: '10:00' });
+    h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-03', start: '15:00', end: '18:00', breakMinutes: 30, fixedBreakStart: '16:00' });
+    h.ownerOk('shifts.publish', { from: '2026-11-03', to: '2026-11-03' });
+    h.punchAt(a, '482913', '2026-11-03', '15:00', 'clock_in');
+    h.setNow('2026-11-03', '18:00');
+    h.login(a, '482913');
+    const c = h.staffOk('attendance.clockOutContext');
+    expect(c.plannedBreak).toMatchObject({ minutes: 30 });
+    expect(c.plannedBreak.start.slice(11, 16)).toBe('16:00');
+    const r = h.punch('clock_out', { breakDeclaration: { kind: 'as_scheduled', expectedPlanned: { start: c.plannedBreak.start.slice(0, 16), end: c.plannedBreak.end.slice(0, 16), minutes: 30 } } });
+    expect(r.ok).toBe(true);
+    h.setNow('2026-11-04', '10:00');
+    expect(compute(h, a).totals.workMinutes).toBe(150);
+  });
+});

@@ -480,7 +480,8 @@ defineOps([
       const sessions = sessionsFor(ctx, me.employeeId, addDays(d, -1), d, st);
       const open = sessions.find((s) => s.end === null) ?? null;
       if (!open) return { breakMode: st.breakMode, open: false, plannedBreak: null, hasPunchedBreaks: false };
-      const planned = plannedBreakFor(open, shiftsAround(ctx, me.employeeId, open.laborDate));
+      // 退勤時の保存と同じ勤務区間（出勤〜現在）で予定休憩を選ぶ（同じ日に複数のシフトがある場合の取り違え防止）
+      const planned = plannedBreakFor(open, shiftsAround(ctx, me.employeeId, open.laborDate), Math.floor(ctx.now / 1000) * 1000);
       return {
         breakMode: st.breakMode,
         open: true,

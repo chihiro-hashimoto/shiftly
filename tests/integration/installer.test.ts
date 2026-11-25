@@ -440,4 +440,44 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(info.ok && (info.data as { schemaVersion: number; maintenance: boolean }).schemaVersion).toBe(2);
     expect(info.ok && (info.data as { maintenance: boolean }).maintenance).toBe(true);
   });
+
+  it('Codex 監査5: 移行の段階で中断した更新の再開は、バックアップ・配備をやり直さず、ロールバック先と最初のバックアップを保持する', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    const prevCore = s.store.reg!.core.versionNumber;
+    // 0.3.0 のコードは配備済みで、Core が移行を確定した直後に Setup が中断した状態（migrated を保存する前）
+    s.deps.release = release('0.3.0');
+    s.store.reg!.update = { target: '0.3.0', stage: 'migrate', startedAt: new Date().toISOString(), prevCore, prevAdmin: s.store.reg!.admin.versionNumber, backupId: 'bak_first' };
+    const backupsBefore = (handleRequest(s.core.be, { op: 'backup.list' }, 'owner') as { data: unknown[] }).data.length;
+    const before = s.api.calls.length;
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(true);
+    expect(s.api.calls.slice(before).some((c) => c.includes('/versions') || c.includes('/content'))).toBe(false);
+    expect((handleRequest(s.core.be, { op: 'backup.list' }, 'owner') as { data: unknown[] }).data.length).toBe(backupsBefore);
+  });
+
+  it('Codex 監査5: 移行の結果が不明（応答なし）な場合は、ロック外の読み取りで移行前に見えても旧版へ戻さない', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const code = JSON.parse([...s.api.projects.values()][1]!.files.find((f) => f.name === 'bootstrap')!.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: code });
+    s.make().runUntilBlocked({}, 20);
+    const coreRef = s.store.reg!.core;
+    const prevVersion = coreRef.versionNumber;
+    s.dropOps.add('system.migrate');
+    s.deps.release = release('0.3.0');
+    const u = s.make().applyUpdate({ approveDestructive: false });
+    expect(u.ok).toBe(false);
+    expect(u.message).toContain('メンテナンスを継続');
+    expect(s.api.projects.get(coreRef.scriptId!)!.deployments.get(coreRef.deploymentId!)).not.toBe(prevVersion);
+    // ロールバック先（直前の版）は更新開始前の版のまま
+    expect(s.store.reg!.core.previousVersionNumber).toBe(prevVersion);
+  });
 });
