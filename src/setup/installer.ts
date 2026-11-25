@@ -77,6 +77,8 @@ export interface Registry {
    * 旧形式の登録（この項目がない）では、確定できる組だけを使う（knownPairs）
    */
   pairs?: VersionPair[];
+  /** 履歴の前の組へ戻す手動ロールバックの戻し先（切替の前に保存し、両方の切替と照合を終えたら消す。再試行はこの組へ戻す。Codex 監査14 #2） */
+  pendingRollback?: { core: number; admin: number } | null;
   /** ペアリングコードのハッシュ（非秘密）。平文コードは SecretRegistry に保持 */
   adminPairingHash: string;
   setupPairingHash: string;
@@ -512,6 +514,8 @@ export class Installer {
     const guard = this.guardAccount();
     if (guard) return { ok: false, message: guard.message };
     if (!this.state().complete) return { ok: false, message: '初期セットアップが完了していません' };
+    if (this.reg?.pendingRollback)
+      return { ok: false, message: '前回の「直前のバージョンに戻す」が完了していません（Staff・Admin の版が一致していない可能性があります）。先に「直前のバージョンに戻す」を再実行してください' };
     const target = this.d.release.version;
     const reg = this.reg!;
     // 同じ版への更新の続き（承認待ち・中断・失敗からの再実行）
@@ -538,6 +542,9 @@ export class Installer {
     const prevCore = continuing ? u0!.prevCore : reg.core.versionNumber;
     const prevAdmin = continuing ? u0!.prevAdmin : reg.admin.versionNumber;
     if (!continuing) {
+      // 旧形式の登録（履歴がない）では、更新の記録を作る前に、確定できる版の組（直前の組・現在の組）を履歴に保存する
+      // （更新の記録を作ると、旧形式で確定できる組が開始時の組だけになるため。Codex 監査14 #3）
+      if (!reg.pairs || !reg.pairs.length) reg.pairs = this.knownPairs();
       let info: ReturnType<Installer['coreInfo']>;
       try {
         info = this.coreInfo();
@@ -552,6 +559,7 @@ export class Installer {
         prevAdmin,
         startSchema: info?.schemaVersion,
         maintenanceBefore: info ? info.maintenance : undefined,
+        deployed: {},
       };
       this.persist();
     }
@@ -702,8 +710,11 @@ export class Installer {
       if (u.deployed.core !== undefined && u.deployed.admin !== undefined) deployed = { core: u.deployed.core, admin: u.deployed.admin };
     } else if (u && (u.migrated || ['migrate', 'finish', 'awaiting_approval'].includes(u.stage)) && this.reg!.core.versionNumber !== undefined && this.reg!.admin.versionNumber !== undefined) {
       // 旧形式の記録（deployed がない）で、両方の配備を終えた後の段階（移行・完了・承認待ち）の場合だけ、
-      // Setup が最後に配備・切替した版の組で代用する（ロールバックでも更新される）。配備の途中かもしれない段階では代用しない
-      deployed = { core: this.reg!.core.versionNumber, admin: this.reg!.admin.versionNumber };
+      // Setup が最後に配備・切替した版の組で代用する（ロールバックでも更新される）。配備の途中かもしれない段階では代用しない。
+      // さらに、Staff・Admin の両方が開始時の版と異なる場合だけ代用する（片方でも開始時の版なら、両方を配備し直す。Codex 監査14 #1）
+      const c = this.reg!.core.versionNumber;
+      const a = this.reg!.admin.versionNumber;
+      if (!start || (c !== start.core && a !== start.admin)) deployed = { core: c, admin: a };
     }
     return { start, deployed };
   }
@@ -807,7 +818,11 @@ export class Installer {
       if (!actual || !reg.core.scriptId || !reg.core.deploymentId || !reg.admin.scriptId || !reg.admin.deploymentId)
         return 'Staff・Admin の配備の状態を確認できないため、ロールバックを行いませんでした（メンテナンスの状態は変更していません）。時間をおいて再実行してください';
       const { start } = this.updatePairs();
-      if (start && (u?.codeTouched || !samePair(actual, start))) {
+      if (reg.pendingRollback) {
+        // 前回の「前の組へ戻す」が途中で止まっている（片方だけ切り替わった等）: 保存した戻し先の組への切替と照合をやり直す（Codex 監査14 #2）
+        target = { ...reg.pendingRollback };
+        kind = 'older';
+      } else if (start && (u?.codeTouched || !samePair(actual, start))) {
         target = start;
         kind = 'undo';
       } else {
@@ -825,6 +840,11 @@ export class Installer {
         target = { core: hist[idx - 1]!.core, admin: hist[idx - 1]!.admin };
         kind = 'older';
       }
+    }
+    if (kind === 'older') {
+      // 切替の前に戻し先の組を保存する（片方だけ切り替わった後の再試行で、同じ組へ戻すため）
+      reg.pendingRollback = { ...target };
+      this.persist();
     }
     // 配備を切り替える前に、現在の Core で書き込みを止める（旧版と DB の組み合わせを確認するまで営業を再開しない。Codex 監査4）
     const on = this.callCore('system.setMaintenance', { on: true });
@@ -862,10 +882,11 @@ export class Installer {
         reg.pairs = hist.slice(0, i + 1);
         const back = reg.pairs[reg.pairs.length - 1];
         if (back?.appVersion) reg.appVersion = back.appVersion;
-        if (u) reg.update = { ...u, prevCore: target.core, prevAdmin: target.admin, deployed: undefined, codeTouched: false };
+        if (u) reg.update = { ...u, prevCore: target.core, prevAdmin: target.admin, deployed: {}, codeTouched: false };
+        reg.pendingRollback = null;
       } else if (reg.update) {
-        // 更新を取り消し終えた（実際の配備が開始時の組にそろった）
-        reg.update = { ...reg.update, deployed: undefined, codeTouched: false };
+        // 更新を取り消し終えた（実際の配備が開始時の組にそろった）。今回配備した組の記録は空にする（旧形式の代用を使わない）
+        reg.update = { ...reg.update, deployed: {}, codeTouched: false };
       }
     }
     if (!d || d.schemaVersion !== d.expectedSchemaVersion) {

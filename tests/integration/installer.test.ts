@@ -1048,4 +1048,60 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(msg).toContain('一致しない');
     expect(maintenance(s)).toBe(true);
   });
+
+  // ---- Codex 監査14 ----
+  it('Codex 監査14 #1: 旧形式の記録（今回配備した組の記録がない）で、Admin の再配備だけが失敗した場合、片方だけ新しい組を配備済みとみなさず、再開で両方を配備し直す', () => {
+    const { s, reg, deployedPair, cur } = afterGoodUpdate();
+    s.dropOps.add('system.migrate');
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(cur);
+    // 再配備で Admin の版の作成だけが失敗（移行の可能性があるため旧版へは戻さない）
+    s.api.faults.scriptFail.set(reg().admin.scriptId!, 1);
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    // 以前の Setup が保存した形式を模す（今回配備した組の記録がない）
+    delete (reg().update as { deployed?: unknown }).deployed;
+    const mixed = deployedPair();
+    expect(mixed[0]).not.toBe(cur[0]);
+    expect(mixed[1]).toBe(cur[1]);
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(true);
+    const latest = [reg().core, reg().admin].map((x) => s.api.projects.get(x.scriptId!)!.versions);
+    expect(deployedPair()).toEqual(latest);
+    expect(deployedPair()[1]).not.toBe(cur[1]);
+  });
+
+  it('Codex 監査14 #2: 履歴の前の組へ戻す手動ロールバックで Admin の切替だけが失敗した場合、再試行で保存した戻し先の組にそろえて解除する（その間の更新は止める）', () => {
+    const { s, reg, deployedPair, prev } = afterGoodUpdate();
+    s.api.faults.scriptFail.set(reg().admin.scriptId!, 1);
+    s.make().rollbackCode();
+    expect(deployedPair()[0]).toBe(prev[0]);
+    expect(deployedPair()[1]).not.toBe(prev[1]);
+    expect(maintenance(s)).toBe(true);
+    // 途中の間は更新を始めない
+    s.deps.release = release('0.4.0');
+    const u = s.make().applyUpdate({ approveDestructive: false });
+    expect(u.ok).toBe(false);
+    expect(u.message).toContain('完了していません');
+    // 再試行（障害は解消）
+    const msg = s.make().rollbackCode();
+    expect(deployedPair()).toEqual(prev);
+    expect(msg).toContain('メンテナンスを解除しました');
+    expect(maintenance(s)).toBe(false);
+    expect(reg().pendingRollback ?? null).toBeNull();
+  });
+
+  it('Codex 監査14 #3: 旧形式の Registry（版の組の履歴がない）から新しい Setup で更新を始め、配備の前に失敗しても、手動ロールバックで直前の組へ戻せる', () => {
+    const { s, reg, deployedPair, prev } = afterGoodUpdate();
+    // 以前の Setup（v1.2 など）が保存した形式を模す（履歴がない。両方の「直前の版」は前回の更新でそろって記録済み）
+    delete (reg() as { pairs?: unknown }).pairs;
+    expect([reg().core.previousVersionNumber, reg().admin.previousVersionNumber]).toEqual(prev);
+    s.throwOps.add('system.prepareUpdate');
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(prev);
+    expect(maintenance(s)).toBe(false);
+  });
 });
