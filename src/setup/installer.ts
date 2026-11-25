@@ -52,6 +52,14 @@ export interface ProjectRef {
   creatingAt?: string;
 }
 
+/** Staff・Admin の版の組 */
+export interface VersionPair {
+  core: number;
+  admin: number;
+  appVersion?: string | null;
+  at?: string;
+}
+
 export interface Registry {
   schema: 1;
   envId: string;
@@ -63,6 +71,12 @@ export interface Registry {
   steps: Partial<Record<StepId, { status: 'done' | 'error'; at: string; message?: string }>>;
   core: ProjectRef;
   admin: ProjectRef;
+  /**
+   * 正常に稼働した Staff・Admin の版の組の履歴（古い順。最後が現在の正常な組）。更新の成功時に追加し、
+   * 手動ロールバックで前の組へ戻したときはその組まで切り詰める。戻し先はこの履歴から選ぶ（Codex 監査13）。
+   * 旧形式の登録（この項目がない）では、確定できる組だけを使う（knownPairs）
+   */
+  pairs?: VersionPair[];
   /** ペアリングコードのハッシュ（非秘密）。平文コードは SecretRegistry に保持 */
   adminPairingHash: string;
   setupPairingHash: string;
@@ -80,8 +94,8 @@ export interface Registry {
     maintenanceBefore?: boolean;
     /** この更新でコードの更新・配備に着手したか（再開後も引き継ぐ。準備の段階の失敗でも、着手済みならロールバックする。Codex 監査10） */
     codeTouched?: boolean;
-    /** 更新の開始時の各プロジェクトの「直前の版」（配備で上書きされるため保持し、開始時の組へ戻した後に復元する。Codex 監査12） */
-    startPrevious?: { core?: number; admin?: number };
+    /** この更新で配備した版（配備のたびに記録。再開で配備を省略・完了してよいのは、実際の配備がこの組と一致する場合だけ。Codex 監査13） */
+    deployed?: { core?: number; admin?: number };
     /**
      * DB の移行が行われた可能性があるか（移行の要求を送る前に true として保存し、明確に拒否された場合だけ戻す）。
      * true の更新は、以後この更新の中で旧版へ自動で戻さない（配備の照会の結果に左右されない。Codex 監査7 #1）
@@ -445,6 +459,8 @@ export class Installer {
     const upd = this.reg!.update;
     const before = upd ? (which === 'core' ? upd.prevCore : upd.prevAdmin) : undefined;
     this.reg![which] = { ...ref, deploymentId: dep.deploymentId, url, previousVersionNumber: before ?? ref.versionNumber, versionNumber: v.versionNumber };
+    // 更新中は、今回配備した版を記録する（再開・完了の判定、ロールバックの判定に使う。Codex 監査13）
+    if (upd) this.reg!.update = { ...upd, deployed: { ...(upd.deployed ?? {}), [which]: v.versionNumber } };
     this.persist();
   }
 
@@ -536,7 +552,6 @@ export class Installer {
         prevAdmin,
         startSchema: info?.schemaVersion,
         maintenanceBefore: info ? info.maintenance : undefined,
-        startPrevious: { core: reg.core.previousVersionNumber, admin: reg.admin.previousVersionNumber },
       };
       this.persist();
     }
@@ -604,6 +619,9 @@ export class Installer {
       const fin = this.callCore('system.finishUpdate');
       if (!fin.ok) throw new Error(`更新の完了処理に失敗しました（${fin.error?.message ?? ''}）`);
       reg.appVersion = target;
+      // 正常に稼働する組として履歴に追加する（更新の記録を消す前に、開始時の組を含む履歴を確定する）
+      const dp = this.updatePairs().deployed!; // 直前の deploymentState() === 'new' で組がそろっていることを確認済み
+      reg.pairs = this.withPair(this.knownPairs(), { core: dp.core, admin: dp.admin, appVersion: target, at: this.d.now() });
       reg.update = null;
       this.persist();
       return { ok: true, message: `バージョン ${target} に更新しました` };
@@ -655,47 +673,80 @@ export class Installer {
     return true;
   }
 
-  /** Staff・Admin の実際の配備の組（両方とも更新前の版 / 両方ともこの更新の版 / 混在 / 照会できない） */
-  private deploymentPair(): 'old' | 'new' | 'mixed' | 'unknown' {
+  /** Staff・Admin の実際のデプロイの版の組（照会できなければ null） */
+  private actualPair(): { core: number; admin: number } | null {
     const reg = this.reg;
-    const u = reg?.update;
-    if (!reg || !u) return 'unknown';
-    const states: Array<'old' | 'new' | 'other'> = [];
-    for (const [which, prev] of [['core', u.prevCore], ['admin', u.prevAdmin]] as const) {
+    if (!reg) return null;
+    const v: Partial<Record<'core' | 'admin', number>> = {};
+    for (const which of ['core', 'admin'] as const) {
       const ref = reg[which];
-      if (!ref.scriptId || !ref.deploymentId) return 'unknown';
-      let v: number | undefined;
+      if (!ref.scriptId || !ref.deploymentId) return null;
       try {
-        v = this.d.api.getDeployment(ref.scriptId, ref.deploymentId)?.deploymentConfig?.versionNumber;
+        const n = this.d.api.getDeployment(ref.scriptId, ref.deploymentId)?.deploymentConfig?.versionNumber;
+        if (n === undefined) return null;
+        v[which] = n;
       } catch {
-        return 'unknown';
+        return null;
       }
-      if (v === undefined) return 'unknown';
-      states.push(prev !== undefined && v === prev ? 'old' : ref.versionNumber && v === ref.versionNumber && v !== prev ? 'new' : 'other');
     }
-    if (states.every((x) => x === 'old')) return 'old';
-    if (states.every((x) => x === 'new')) return 'new';
+    return { core: v.core!, admin: v.admin! };
+  }
+
+  /** 進行中の更新の開始時の組・今回配備した組（両方の版がそろう場合だけ） */
+  private updatePairs(): { start: { core: number; admin: number } | null; deployed: { core: number; admin: number } | null } {
+    const u = this.reg?.update;
+    const start = u && u.prevCore !== undefined && u.prevAdmin !== undefined ? { core: u.prevCore, admin: u.prevAdmin } : null;
+    let deployed: { core: number; admin: number } | null = null;
+    if (u?.deployed) {
+      // 一部だけ記録されている（片方の配備の途中で中断）場合は、組として扱わない（再開では配備し直す）
+      if (u.deployed.core !== undefined && u.deployed.admin !== undefined) deployed = { core: u.deployed.core, admin: u.deployed.admin };
+    } else if (u && (u.migrated || ['migrate', 'finish', 'awaiting_approval'].includes(u.stage)) && this.reg!.core.versionNumber !== undefined && this.reg!.admin.versionNumber !== undefined) {
+      // 旧形式の記録（deployed がない）で、両方の配備を終えた後の段階（移行・完了・承認待ち）の場合だけ、
+      // Setup が最後に配備・切替した版の組で代用する（ロールバックでも更新される）。配備の途中かもしれない段階では代用しない
+      deployed = { core: this.reg!.core.versionNumber, admin: this.reg!.admin.versionNumber };
+    }
+    return { start, deployed };
+  }
+
+  /** Staff・Admin の実際の配備の組（両方とも更新の開始時の組 / 両方とも今回配備した組 / 混在 / 照会できない）。版の組の完全一致で判定する */
+  private deploymentPair(): 'old' | 'new' | 'mixed' | 'unknown' {
+    const actual = this.actualPair();
+    if (!actual) return 'unknown';
+    const { start, deployed } = this.updatePairs();
+    if (deployed && samePair(actual, deployed) && !(start && samePair(deployed, start))) return 'new';
+    if (start && samePair(actual, start)) return 'old';
     return 'mixed';
   }
 
+  /** 再開・完了の判定: 実際の配備が今回配備した組と完全に一致するか（Codex 監査6 #3・監査13 #1） */
   private deploymentState(): 'new' | 'old' | 'unknown' {
-    const reg = this.reg;
-    const u = reg?.update;
-    if (!reg || !u) return 'unknown';
-    let allNew = true;
-    for (const [which, prev] of [['core', u.prevCore], ['admin', u.prevAdmin]] as const) {
-      const ref = reg[which];
-      if (!ref.scriptId || !ref.deploymentId) return 'unknown';
-      let v: number | undefined;
-      try {
-        v = this.d.api.getDeployment(ref.scriptId, ref.deploymentId)?.deploymentConfig?.versionNumber;
-      } catch {
-        return 'unknown';
-      }
-      if (v === undefined) return 'unknown';
-      if (!ref.versionNumber || v !== ref.versionNumber || v === prev) allNew = false;
-    }
-    return allNew ? 'new' : 'old';
+    const st = this.deploymentPair();
+    return st === 'unknown' ? 'unknown' : st === 'new' ? 'new' : 'old';
+  }
+
+  /**
+   * 正常に稼働した版の組の履歴。旧形式の登録（pairs がない）では、確定できる組だけを返す:
+   * 進行中・失敗の更新の記録があればその開始時の組だけ（各プロジェクトの「直前の版」は配備で上書きされ得るため使わない）、
+   * なければ両方の「直前の版」の組（あれば）と現在の組（Codex 監査13 #2）
+   */
+  private knownPairs(): VersionPair[] {
+    const reg = this.reg!;
+    if (reg.pairs && reg.pairs.length) return reg.pairs;
+    const { start } = this.updatePairs();
+    if (reg.update) return start ? [start] : [];
+    const out: VersionPair[] = [];
+    const c = reg.core;
+    const a = reg.admin;
+    if (c.previousVersionNumber !== undefined && a.previousVersionNumber !== undefined && !(c.previousVersionNumber === c.versionNumber && a.previousVersionNumber === a.versionNumber))
+      out.push({ core: c.previousVersionNumber, admin: a.previousVersionNumber });
+    if (c.versionNumber !== undefined && a.versionNumber !== undefined) out.push({ core: c.versionNumber, admin: a.versionNumber, appVersion: reg.appVersion });
+    return out;
+  }
+
+  private withPair(hist: VersionPair[], p: VersionPair): VersionPair[] {
+    const last = hist[hist.length - 1];
+    const next = last && samePair(last, p) ? [...hist.slice(0, -1), { ...last, ...p }] : [...hist, p];
+    return next.slice(-10);
   }
 
   /**
@@ -741,31 +792,45 @@ export class Installer {
     const reg = this.reg!;
     const out: string[] = [];
     let rbFailed = false;
-    // 戻し先の版の組（Codex 監査11 #1・監査12 #1）
-    // - 呼び出し側の指定（更新の失敗時の自動ロールバック）: 更新の開始時の組
-    // - 手動で、この更新が配備に着手している（codeTouched）: 更新の開始時の組（一部だけ戻った状態から別々の世代へ戻さない）
-    // - 手動で、配備に着手していない（記録なし・配備の前に失敗）: 各プロジェクトの直前の版（従来どおり、現行より前の版へ戻す）
     const u = reg.update;
-    const explicit = prevCore !== undefined && prevAdmin !== undefined;
-    const useStart = !explicit && !!(u && u.codeTouched);
-    const target = explicit
-      ? { core: prevCore, admin: prevAdmin }
-      : useStart
-        ? { core: u!.prevCore, admin: u!.prevAdmin }
-        : { core: reg.core.previousVersionNumber, admin: reg.admin.previousVersionNumber };
-    // 戻し先の組がそろわない（初回の構築直後など）場合は、メンテナンスを開始する前に中止する（Codex 監査12 #2）
-    if (target.core === undefined || target.admin === undefined || !reg.core.scriptId || !reg.core.deploymentId || !reg.admin.scriptId || !reg.admin.deploymentId) {
-      return '戻せる版の組（Staff・Admin の両方の直前の版）がないため、ロールバックを行いませんでした（メンテナンスの状態は変更していません）。初回の構築の直後など、直前の版がない場合は戻せません';
+    // 戻し先の版の組（Codex 監査11 #1・監査12・監査13）。版の組は履歴（pairs）と更新の記録から選び、各プロジェクトの「直前の版」からは推測しない
+    // - undo: 更新を取り消す（更新の開始時の組へ）。自動ロールバック（呼び出し側の指定）と、手動で、配備に着手した更新が
+    //         取り消し終わっていない（codeTouched）か、実際の配備が開始時の組と異なる場合
+    // - older: 正常に稼働した組の履歴で、現在の組の一つ前の組へ
+    let target: { core: number; admin: number };
+    let kind: 'undo' | 'older';
+    if (prevCore !== undefined && prevAdmin !== undefined) {
+      target = { core: prevCore, admin: prevAdmin };
+      kind = 'undo';
+    } else {
+      const actual = this.actualPair();
+      if (!actual || !reg.core.scriptId || !reg.core.deploymentId || !reg.admin.scriptId || !reg.admin.deploymentId)
+        return 'Staff・Admin の配備の状態を確認できないため、ロールバックを行いませんでした（メンテナンスの状態は変更していません）。時間をおいて再実行してください';
+      const { start } = this.updatePairs();
+      if (start && (u?.codeTouched || !samePair(actual, start))) {
+        target = start;
+        kind = 'undo';
+      } else {
+        const hist = this.knownPairs();
+        let idx = -1;
+        for (let i = hist.length - 1; i >= 0; i--) if (samePair(hist[i]!, actual)) {
+          idx = i;
+          break;
+        }
+        if (idx <= 0)
+          return (
+            '戻せる版の組（Staff・Admin の両方の、以前に正常に稼働した版）がないため、ロールバックを行いませんでした（メンテナンスの状態は変更していません）。' +
+            '初回の構築の直後や、以前の Setup で記録した更新の途中など、さらに前の版の組を確定できない場合は戻せません'
+          );
+        target = { core: hist[idx - 1]!.core, admin: hist[idx - 1]!.admin };
+        kind = 'older';
+      }
     }
     // 配備を切り替える前に、現在の Core で書き込みを止める（旧版と DB の組み合わせを確認するまで営業を再開しない。Codex 監査4）
     const on = this.callCore('system.setMaintenance', { on: true });
     if (!on.ok) return `メンテナンスを開始できなかったため、ロールバックを中止しました（${on.error?.message ?? ''}）。現在のバージョンのまま稼働しています`;
     out.push('メンテナンスを開始しました');
-    const pairs: Array<['core' | 'admin', number]> = [
-      ['core', target.core],
-      ['admin', target.admin],
-    ];
-    for (const [which, prev] of pairs) {
+    for (const [which, prev] of [['core', target.core], ['admin', target.admin]] as const) {
       const ref = reg[which];
       try {
         this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, prev, `Shiftly rollback to v${prev}`);
@@ -788,14 +853,20 @@ export class Installer {
       );
     }
     const verified = !rbFailed && this.deployedVersionsAre(target.core, target.admin) === true;
-    // 更新の開始時の組へ戻ったことを確認できたら、配備で上書きした「直前の版」を更新の開始前の値に戻し、配備への着手を取り消す
-    // （次の手動ロールバックでさらに前の組へ戻れるようにする。Codex 監査12 #1）
-    if (verified && u && target.core === u.prevCore && target.admin === u.prevAdmin) {
-      if (u.startPrevious) {
-        reg.core = { ...reg.core, previousVersionNumber: u.startPrevious.core };
-        reg.admin = { ...reg.admin, previousVersionNumber: u.startPrevious.admin };
+    if (verified) {
+      if (kind === 'older') {
+        // 履歴を戻し先の組まで切り詰める（次の手動ロールバックはさらに前の組へ）。進行中の更新の記録は、この組を開始時の組として引き継ぐ
+        const hist = this.knownPairs();
+        let i = hist.length - 1;
+        while (i >= 0 && !samePair(hist[i]!, target)) i--;
+        reg.pairs = hist.slice(0, i + 1);
+        const back = reg.pairs[reg.pairs.length - 1];
+        if (back?.appVersion) reg.appVersion = back.appVersion;
+        if (u) reg.update = { ...u, prevCore: target.core, prevAdmin: target.admin, deployed: undefined, codeTouched: false };
+      } else if (reg.update) {
+        // 更新を取り消し終えた（実際の配備が開始時の組にそろった）
+        reg.update = { ...reg.update, deployed: undefined, codeTouched: false };
       }
-      reg.update = { ...u, codeTouched: false };
     }
     if (!d || d.schemaVersion !== d.expectedSchemaVersion) {
       // 上で継続の理由を記録済み
@@ -818,6 +889,10 @@ export class Installer {
     this.persist();
     return out.join('。');
   }
+}
+
+function samePair(x: { core: number; admin: number }, y: { core: number; admin: number }): boolean {
+  return x.core === y.core && x.admin === y.admin;
 }
 
 export function compareVersion(a: string, b: string): number {

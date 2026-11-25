@@ -875,10 +875,10 @@ describe('Shiftly Setup（自動インストーラー）', () => {
    *   準備の失敗応答 / 準備の通信例外 / コードの更新の失敗 / Admin の版の作成の失敗 / 同（自動ロールバックの Admin の切替も失敗）/
    *   移行の応答喪失 / 移行の通信例外
    * × 更新の開始前のメンテナンス（解除中 / 中）
-   * 不変条件（失敗の直後）:
-   *   N1 メンテナンスが解除されているなら、Staff・Admin は同じ世代（両方 cur か、両方この更新の版）
+   * 不変条件（失敗の直後。版の組は完全一致で検証する。Codex 監査13）:
+   *   N1 メンテナンスが解除されているなら、実際の配備は cur か、この更新で作成した版の組（latest）のどちらかと完全に一致
    *   N2 開始前からメンテナンス中なら、メンテナンスを継続
-   *   N3 移行の可能性がある失敗では、旧版へ自動で戻さず（この更新の版のまま）メンテナンスを継続
+   *   N3 移行の可能性がある失敗では、旧版へ自動で戻さず、実際の配備は latest と完全に一致し、メンテナンスを継続
    * 手動の「直前のバージョンに戻す」の後:
    *   M1 配備に着手した更新が残っている（自動ロールバックが完了していない・移行後）なら更新の開始時の組（cur）へ、
    *      そうでなければ各プロジェクトの直前の版の組（prev）へ戻る（どちらでも Staff・Admin は同じ世代）
@@ -920,14 +920,17 @@ describe('Shiftly Setup（自動インストーラー）', () => {
 
         // 失敗の直後
         const after = deployedPair();
-        const sameGen = (after[0] === cur[0]) === (after[1] === cur[1]);
-        if (!maintenance(s)) expect(sameGen).toBe(true); // N1
+        // この更新で作成した版の組（各プロジェクトの最新の版。両方とも cur より新しい場合だけ組として扱う）
+        const latestRaw = [reg().core, reg().admin].map((r) => s.api.projects.get(r.scriptId!)!.versions);
+        const latest = latestRaw[0]! > cur[0]! && latestRaw[1]! > cur[1]! ? latestRaw : null;
+        const eq = (x: number[], y: number[] | null) => !!y && x[0] === y[0] && x[1] === y[1];
+        if (!maintenance(s)) expect(eq(after, cur) || eq(after, latest)).toBe(true); // N1
         if (mBefore) expect(maintenance(s)).toBe(true); // N2
         if (migrated) {
           // N3
           expect(maintenance(s)).toBe(true);
-          expect(after[0]).not.toBe(cur[0]);
-          expect(after[1]).not.toBe(cur[1]);
+          expect(latest).not.toBeNull();
+          expect(after).toEqual(latest);
         }
 
         // 手動の「直前のバージョンに戻す」
@@ -967,5 +970,82 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     s.make().rollbackCode();
     expect(deployedPair()).toEqual(prev);
     expect(maintenance(s)).toBe(false);
+  });
+
+  // ---- Codex 監査13: 版の組の履歴 ----
+  /** 0.3.0 へ正常に更新した状態（cur = 0.3.0 の組、prev = 構築時の組） */
+  const afterGoodUpdate = () => {
+    const s = installed();
+    const reg = () => s.store.reg!;
+    const deployedPair = () => [reg().core, reg().admin].map((r) => s.api.projects.get(r.scriptId!)!.deployments.get(r.deploymentId!)!);
+    const prev = deployedPair();
+    s.deps.release = release('0.3.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+    const cur = deployedPair();
+    expect(cur).not.toEqual(prev);
+    return { s, reg, deployedPair, prev, cur };
+  };
+
+  it('Codex 監査13 #1: 移行後に手動ロールバックを 2 回（cur → prev）行ってから「更新を再開」すると、新しい版を配備し直して完了する（旧版のまま成功にしない）', () => {
+    const { s, reg, deployedPair, prev, cur } = afterGoodUpdate();
+    s.dropOps.add('system.migrate');
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(cur);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(prev);
+    const r = s.make().applyUpdate({ approveDestructive: false });
+    expect(r.ok).toBe(true);
+    const latest = [reg().core, reg().admin].map((x) => s.api.projects.get(x.scriptId!)!.versions);
+    expect(deployedPair()).toEqual(latest);
+    expect(deployedPair()).not.toEqual(prev);
+    expect(deployedPair()).not.toEqual(cur);
+  });
+
+  it('Codex 監査13 #2: 旧形式の記録（版の組の履歴・今回配備した組の記録がない）では、開始時の組へ戻した後のさらに前への手動ロールバックを中止する（世代の混在で解除しない）', () => {
+    const { s, reg, deployedPair, cur } = afterGoodUpdate();
+    s.api.faults.scriptFail.set(reg().admin.scriptId!, 2);
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    // 以前の Setup が保存した形式を模す（pairs・deployed・startPrevious がない）
+    delete (reg() as { pairs?: unknown }).pairs;
+    delete (reg().update as { deployed?: unknown }).deployed;
+    delete (reg().update as { startPrevious?: unknown }).startPrevious;
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(cur);
+    expect(maintenance(s)).toBe(false);
+    const msg = s.make().rollbackCode();
+    expect(msg).toContain('戻せる版の組');
+    expect(deployedPair()).toEqual(cur);
+    expect(maintenance(s)).toBe(false);
+  });
+
+  it('状態の組み合わせ: 更新の開始前のメンテナンスの状態を確認できなかった場合は、自動・手動のロールバックの後もメンテナンスを継続する', () => {
+    const { s, deployedPair, prev } = afterGoodUpdate();
+    s.throwOps.add('system.info'); // 更新の開始時の状態の確認だけが失敗する
+    s.api.faults.putContent = 1;
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    expect(s.store.reg!.update?.maintenanceBefore).toBeUndefined();
+    expect(maintenance(s)).toBe(true);
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(prev);
+    expect(maintenance(s)).toBe(true);
+  });
+
+  it('状態の組み合わせ: DB の構造がプログラムと一致しない場合は、手動ロールバックで版の組がそろってもメンテナンスを解除しない', () => {
+    const { s, reg, deployedPair, cur } = afterGoodUpdate();
+    s.api.faults.scriptFail.set(reg().admin.scriptId!, 2);
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(false);
+    const uow = new UnitOfWork(s.core.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
+    const row = uow.list<{ id: string; key: string; value: string; version: number; createdAt: string; updatedAt: string }>('system_metadata').find((m) => m.key === 'schemaVersion')!;
+    uow.update('system_metadata', { ...row, value: '99' });
+    uow.flush();
+    const msg = s.make().rollbackCode();
+    expect(deployedPair()).toEqual(cur);
+    expect(msg).toContain('一致しない');
+    expect(maintenance(s)).toBe(true);
   });
 });
