@@ -153,8 +153,17 @@ export function shiftlyAuthorize() {
  */
 export function shiftlyConfirmStorageNotCreated() {
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
-  const cleared = clearStorageCreatingMarkers();
-  return { ok: true, cleared, message: cleared.length ? '作成中の目印を外しました。shiftlyAuthorize を再実行してください' : '作成中の目印はありません' };
+  // shiftlyAuthorize と同じロックの中で、目印のある構成物ごとに検索し直す。見つかったものは関連付け、見つからないものの目印だけを外す
+  const r = be().p.withLock(30000, () => clearStorageCreatingMarkers());
+  return {
+    ok: true,
+    cleared: r.cleared,
+    adopted: r.adopted,
+    message:
+      r.cleared.length || r.adopted.length
+        ? `作成中の目印を処理しました（作成し直す: ${r.cleared.length} 件、見つかったものを使う: ${r.adopted.length} 件）。shiftlyAuthorize を再実行してください`
+        : '作成中の目印はありません',
+  };
 }
 
 /**

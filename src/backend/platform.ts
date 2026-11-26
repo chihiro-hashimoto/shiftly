@@ -65,5 +65,10 @@ export interface Platform {
   files: FileStore;
   /** 実行者（オーナー）のメールアドレス。取得できない場合は null（取得できる前提にしない） */
   effectiveUserEmail(): string | null;
+  /**
+   * 構築の完了前の保管先の点検（D-026 S1。Google ドライブの構成物が 1 つずつで、保存済みの ID と一致し、作成中の目印がないこと）。
+   * 点検できない環境では undefined（点検済みとして扱わない）
+   */
+  storageReport?(): { ok: boolean; issues: string[]; items: Array<{ key: string; saved: boolean; found: number }> };
   log(level: 'info' | 'warn' | 'error', message: string, meta?: Record<string, string | number | boolean | null>): void;
 }

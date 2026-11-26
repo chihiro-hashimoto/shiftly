@@ -63,6 +63,9 @@ export interface ProjectRef {
   /** 記録しているデプロイが照会で見つからないことを案内済みか／ないことの確認を明示したか（Codex 監査22 #4） */
   deploymentMissingPrompted?: boolean;
   deploymentMissingConfirmed?: boolean;
+  /** 記録しているプロジェクトが照会で見つからないことを案内済みか／ないことの確認を明示したか（Codex 監査23 #4） */
+  projectMissingPrompted?: boolean;
+  projectMissingConfirmed?: boolean;
 }
 
 /** Staff・Admin の版の組 */
@@ -92,6 +95,11 @@ export interface Registry {
   pairs?: VersionPair[];
   /** 履歴の前の組へ戻す手動ロールバックの戻し先（切替の前に保存し、両方の切替と照合を終えたら消す。再試行はこの組へ戻す。Codex 監査14 #2） */
   pendingRollback?: { core: number; admin: number } | null;
+  /**
+   * 構築の完了前の検証の記録（D-026 S1）。checked: 自動で確かめた項目／unverified: 自動では確かめられない項目
+   * （Apps Script のプロジェクトの重複。Setup の権限 drive.file では一覧できないため、検証済みとして扱わず、完了画面で確認を案内する）
+   */
+  verification?: { at: string; checked: string[]; unverified: string[] };
   /** ペアリングコードのハッシュ（非秘密）。平文コードは SecretRegistry に保持 */
   adminPairingHash: string;
   setupPairingHash: string;
@@ -173,6 +181,8 @@ export interface PublicState {
   ownerEmail: string | null;
   storeName: string | null;
   steps: Array<{ id: StepId; label: string; status: 'done' | 'error' | 'pending'; message?: string; manual?: boolean }>;
+  /** 構築の完了前の検証の記録（自動で確かめた項目／自動では確かめられない項目。D-026 S1） */
+  verification: { at: string; checked: string[]; unverified: string[] } | null;
   complete: boolean;
   /** 店舗 iPad（Shiftly-Staff）の URL */
   staffUrl: string | null;
@@ -239,6 +249,7 @@ export class Installer {
       storeName: r?.storeName || null,
       steps: STEPS.map((s) => ({ id: s.id, label: s.label, manual: s.manual, status: r?.steps[s.id]?.status ?? 'pending', message: r?.steps[s.id]?.message })),
       complete: !!r && STEPS.every((s) => r.steps[s.id]?.status === 'done'),
+      verification: r?.verification ?? null,
       staffUrl: r?.core.url ?? null,
       adminUrl: r?.admin.url ?? null,
       coreEditorUrl: editorUrl(r?.core.scriptId),
@@ -427,6 +438,14 @@ export class Installer {
         const res = chk.data as { ok: boolean; issues: string[] } | undefined;
         if (!chk.ok || !res) throw new InstallerError(step, `確認に失敗しました（${chk.error?.message ?? ''}）`, '時間をおいて再実行してください');
         if (!res.ok) throw new InstallerError(step, `DB の整合性に問題があります: ${res.issues.join(' / ')}`, '管理画面「システム・更新」で内容を確認してください');
+        const v = this.verifyCreations(ping);
+        if (v.issues.length)
+          throw new InstallerError(
+            step,
+            `作成物の確認で問題が見つかりました: ${v.issues.join(' / ')}`,
+            '案内の内容を Apps Script の画面・Google ドライブで確認し、重複がある場合は使わないほうを整理（アーカイブ・ゴミ箱に移動）してから「再実行」を押してください（自動では削除しません）',
+          );
+        this.reg!.verification = { at: this.d.now(), checked: v.checked, unverified: v.unverified };
         this.reg!.appVersion = ping.version;
         this.persist();
         return null;
@@ -434,14 +453,98 @@ export class Installer {
     }
   }
 
+  /**
+   * 構築の完了前の作成物の検証（D-026 S1）。予防（作成の前の目印・確認）を補う事後の確認で、二重作成の防止の代わりではない。
+   * 自動で確かめられる項目だけを checked に入れ、確かめられない項目は unverified に入れる（検証済みとして扱わない）
+   */
+  private verifyCreations(ping: CorePing): { issues: string[]; checked: string[]; unverified: string[] } {
+    const r = this.reg!;
+    const issues: string[] = [];
+    const checked: string[] = [];
+    for (const which of ['core', 'admin'] as const) {
+      const ref = r[which];
+      const name = which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin';
+      const title = ref.title ?? `${name} (${r.envId})`;
+      // 1) 未解決の作成中・要確認の状態がない
+      if (ref.creatingAt || ref.creatingPrompted || ref.deployingAt || ref.deployingPrompted || ref.deploymentMissingPrompted || ref.projectMissingPrompted)
+        issues.push(`${name}: 作成の結果が確認されていない状態が残っています`);
+      // 2) 記録しているプロジェクトが存在し、この環境の名前である
+      const p = ref.scriptId ? this.d.api.getProject(ref.scriptId) : null;
+      if (!p) issues.push(`${name}: 記録しているプロジェクトを確認できません`);
+      else if (p.title !== title) issues.push(`${name}: プロジェクトの名前が一致しません（${p.title}）`);
+      // 3) Shiftly のセットアップが作ったデプロイが 1 つだけで、記録している ID と一致する（Web アプリの URL も一致）
+      if (ref.scriptId) {
+        const deps = this.d.api.listDeployments(ref.scriptId).filter((d) => (d.deploymentConfig?.description ?? '').startsWith('Shiftly '));
+        if (deps.length !== 1) issues.push(`${name}: Shiftly のデプロイが ${deps.length} つあります（1 つのはず。「デプロイを管理」で確認）`);
+        else if (deps[0]!.deploymentId !== ref.deploymentId) issues.push(`${name}: デプロイが記録と一致しません`);
+        else {
+          const got = this.d.api.getDeployment(ref.scriptId, ref.deploymentId!);
+          if (!got || webAppUrl(got) !== ref.url) issues.push(`${name}: Web アプリの URL が記録と一致しません`);
+        }
+      }
+    }
+    if (!issues.length) checked.push('Staff・Admin のプロジェクトの存在と名前', 'Staff・Admin の Web アプリのデプロイが 1 つずつで記録と一致');
+    // 4) Staff と Admin の関連付け: Admin に配置したコードの接続先が Staff の URL で、Core で Admin・Setup との接続が完了している
+    const adminFiles = r.admin.scriptId ? this.d.api.getContent(r.admin.scriptId).files : [];
+    const bs = adminFiles.find((f) => f.name === 'bootstrap')?.source ?? '';
+    const m = /SHIFTLY_ADMIN_BOOTSTRAP = (\{.*\});/.exec(bs);
+    let coreUrl: unknown;
+    try {
+      coreUrl = m ? (JSON.parse(m[1]!) as { coreUrl?: unknown }).coreUrl : null;
+    } catch {
+      coreUrl = null;
+    }
+    if (coreUrl !== r.core.url) issues.push('Shiftly-Admin の接続先が Shiftly-Staff の URL と一致しません');
+    else if (!ping.adminPaired || !ping.setupPaired) issues.push('Shiftly-Staff で Admin・Setup との接続が完了していません');
+    else checked.push('Admin の接続先と Staff・Admin・Setup の接続');
+    // 5) Core の Google ドライブの構成物（フォルダ・DB・環境情報ファイル）が 1 つずつで、保存済みの ID と一致し、作成中の目印がない
+    const sc = this.callCore('system.storageCheck');
+    const sr = sc.data as { ok: boolean; issues: string[]; unavailable?: boolean } | undefined;
+    if (!sc.ok || !sr) issues.push(`Google ドライブの構成物を点検できませんでした（${sc.error?.message ?? ''}）`);
+    else if (sr.unavailable) issues.push('Google ドライブの構成物を点検できない環境です');
+    else if (!sr.ok) issues.push(...sr.issues);
+    else checked.push('Google ドライブのフォルダ・DB・環境情報ファイルが 1 つずつで記録と一致');
+    checked.push('DB の構造（整合性の確認）');
+    // 自動では確かめられない: Setup の権限（drive.file）ではプロジェクトの一覧を取得できない
+    const unverified = [`Apps Script のプロジェクト一覧で「${r.core.title ?? 'Shiftly-Staff'}」「${r.admin.title ?? 'Shiftly-Admin'}」が 1 つずつであること（Setup の権限では一覧できないため、自動では確認していません）`];
+    return { issues, checked, unverified };
+  }
+
   private createProject(which: 'core' | 'admin', title: string): null {
     const ref = this.reg![which];
-    if (ref.scriptId) {
-      // 既存 ID がまだ存在するか確認（削除済みなら作り直す）
-      if (this.d.api.getProject(ref.scriptId)) return null;
-      this.reg![which] = {};
-    }
     const step: StepId = which === 'core' ? 'core.create' : 'admin.create';
+    if (ref.scriptId) {
+      // 記録しているプロジェクトがあるか照会する。照会で見つからない（一時的な 404 を含む）ことだけを、作り直してよい根拠にしない
+      // （Codex 監査23 #4、D-026 S1）。所有者が一覧で確認して、ないことを明示した場合（または別の ID を関連付けた場合）だけ進む
+      if (this.d.api.getProject(ref.scriptId)) {
+        if (ref.projectMissingPrompted) {
+          this.reg![which] = { ...ref, projectMissingPrompted: undefined, projectMissingConfirmed: undefined };
+          this.persist();
+        }
+        return null;
+      }
+      const t = ref.title ?? title;
+      if (!ref.projectMissingConfirmed) {
+        this.reg![which] = { ...ref, projectMissingPrompted: true };
+        this.persist();
+        throw new InstallerError(
+          step,
+          `記録している「${t}」（ID: ${ref.scriptId}）を確認できませんでした`,
+          `Apps Script のプロジェクト一覧（https://script.google.com/home）で「${t}」を確認してください。ある場合は、チェックを付けずに数分おいてから「再実行」を押すか、そのプロジェクトの ID を「既存の ID を関連付ける」に入力してください。ない（削除した）ことを確認した場合は、確認のチェックを付けて「再実行」を押すと、新しく作ります`,
+          `プロジェクト一覧で「${t}」（ID: ${ref.scriptId}）がないことを確認しました`,
+        );
+      }
+      // 所有者が、ないことを確認した: 記録を外して作成の手順へ進む（作成の前に目印を保存する。完了前の検証で重複も確かめる）。
+      // 新しいプロジェクトには、コードの配置・デプロイ・権限承認からやり直す。Staff を作り直す場合は、接続先が変わるため
+      // Admin の配置・デプロイ・接続と Setup の接続もやり直す
+      this.reg![which] = { title: t };
+      const redo: StepId[] =
+        which === 'core'
+          ? ['core.upload', 'core.deploy', 'core.authorize', 'admin.upload', 'admin.deploy', 'admin.authorize', 'setup.pair', 'verify']
+          : ['admin.upload', 'admin.deploy', 'admin.authorize', 'verify'];
+      for (const s of redo) delete this.reg!.steps[s];
+      this.persist();
+    }
     const unknownResult = (t: string) => {
       // 作成されたかどうか分からない。自動では作り直さず、一覧での確認を案内する（案内したことを記録し、その後の「再実行」でだけ目印を外す）
       this.reg![which] = { ...this.reg![which], creatingPrompted: true };
@@ -660,6 +763,7 @@ export class Installer {
           delete ref.creatingAt;
           delete ref.creatingPrompted;
         }
+        if (step === s && ref.scriptId && ref.projectMissingPrompted && confirmedNoDuplicate) ref.projectMissingConfirmed = true;
       }
       // デプロイの作成も同じ（独立した点検 S1-1）。目印と説明は残し、一覧で見つからない場合に同じ説明で作成してよいことだけを記録する
       for (const [s, which] of [['core.deploy', 'core'], ['admin.deploy', 'admin']] as const) {
@@ -669,6 +773,40 @@ export class Installer {
       }
       this.persist();
     }
+  }
+
+  /**
+   * 既存のプロジェクト・デプロイを関連付ける（D-026 S1）。作成の結果が分からない・記録したものが見つからない場合に、所有者が
+   * Apps Script の画面で見つけた ID を入力する。照会で存在し、この環境のもの（名前・説明）であることを確かめてから記録する
+   */
+  attach(step: StepId, id: string): { ok: boolean; message: string } {
+    if (!this.reg) return { ok: false, message: 'セットアップが開始されていません' };
+    if (!/^[A-Za-z0-9_-]{3,200}$/.test(id)) return { ok: false, message: 'ID の形式が正しくありません' };
+    const which = step.startsWith('core.') ? 'core' : step.startsWith('admin.') ? 'admin' : null;
+    if (!which) return { ok: false, message: 'この工程では関連付けできません' };
+    const ref = this.reg[which];
+    const expectedTitle = ref.title ?? `${which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin'} (${this.reg.envId})`;
+    if (step === 'core.create' || step === 'admin.create') {
+      const p = this.d.api.getProject(id);
+      if (!p) return { ok: false, message: 'その ID のプロジェクトを確認できませんでした' };
+      if (p.title !== expectedTitle) return { ok: false, message: `プロジェクトの名前が「${expectedTitle}」と一致しません（${p.title}）` };
+      this.reg[which] = { title: expectedTitle, scriptId: id };
+      delete this.reg.steps[step];
+      this.persist();
+      return { ok: true, message: `「${expectedTitle}」を関連付けました` };
+    }
+    if (step === 'core.deploy' || step === 'admin.deploy') {
+      if (!ref.scriptId) return { ok: false, message: 'プロジェクトが記録されていません' };
+      const dep = this.d.api.getDeployment(ref.scriptId, id);
+      if (!dep) return { ok: false, message: 'その ID のデプロイを確認できませんでした' };
+      const desc = dep.deploymentConfig?.description ?? '';
+      if (!desc.startsWith(`Shiftly `) || !desc.includes(`${this.reg.envId} ${which}`)) return { ok: false, message: 'Shiftly のセットアップで作成したデプロイではありません（説明が一致しません）' };
+      this.reg[which] = { ...ref, deploymentId: id, deployingAt: undefined, deployingDescription: undefined, deployingPrompted: undefined, deployingConfirmed: undefined, deploymentMissingPrompted: undefined, deploymentMissingConfirmed: undefined };
+      delete this.reg.steps[step];
+      this.persist();
+      return { ok: true, message: 'デプロイを関連付けました' };
+    }
+    return { ok: false, message: 'この工程では関連付けできません' };
   }
 
   // ------------------------------------------------------------------ アップデート（F36）

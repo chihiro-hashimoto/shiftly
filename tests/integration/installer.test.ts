@@ -37,6 +37,8 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     listLag: 0,
     // getDeployment404: デプロイの個別照会が、存在するのに 404 を返す回数（一時的な照会の失敗）
     getDeployment404: 0,
+    // getProject404: プロジェクトの照会が、存在するのに 404 を返す回数（一時的な照会の失敗。Codex 監査23 #4）
+    getProject404: 0,
   };
   const descriptions = new Map<string, string>(); // deploymentId → 説明
   const http: Http = (method, url, body) => {
@@ -70,6 +72,10 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     }
     const p = id ? projects.get(decodeURIComponent(id)) : undefined;
     if (!p) return { status: 404, body: '{"error":{"message":"not found"}}' };
+    if (method === 'GET' && !sub && faults.getProject404 > 0) {
+      faults.getProject404--;
+      return { status: 404, body: '{"error":{"message":"not found"}}' };
+    }
     if (method === 'GET' && !sub) return { status: 200, body: JSON.stringify({ scriptId: id, title: p.title }) };
     if (id && ((method === 'POST' && sub === 'versions') || (method === 'PUT' && sub === 'deployments')) && (faults.scriptFail.get(decodeURIComponent(id)) ?? 0) > 0) {
       faults.scriptFail.set(decodeURIComponent(id), faults.scriptFail.get(decodeURIComponent(id))! - 1);
@@ -87,6 +93,7 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
       faults.getDeployment--;
       return { status: 503, body: '{"error":{"message":"backend error"}}' };
     }
+    if (method === 'GET' && sub === 'content') return { status: 200, body: JSON.stringify({ files: p.files }) };
     if (method === 'PUT' && sub === 'content') {
       p.files = (body as { files: ScriptFile[] }).files;
       return { status: 200, body: '{}' };
@@ -1526,5 +1533,228 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.error?.step).toBe('core.deploy');
     expect(r.error?.message).toContain('版を確認できません');
     expect(s.store.reg!.core.versionNumber).toBeUndefined();
+  });
+});
+
+/**
+ * D-026 S1: 初回の構築の外部の作成物（Staff・Admin のプロジェクト・Web アプリのデプロイ）の共通の状態管理を、
+ * 作成物 × 失敗の地点 × 再実行 の組み合わせで確かめる。判定は偽 API が持つ作成物の件数（実体）で行い、エラーの応答だけでは判定しない
+ *   不変条件: どの組み合わせでも、作成物は最終的にちょうど 1 つ（二重に作らない）。結果が分からない間は、確認の明示・関連付けがあるまで作らない
+ */
+describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-026）', () => {
+  type S = ReturnType<typeof setup>;
+  const projectsOf = (s: S, which: 'core' | 'admin') => [...s.api.projects.entries()].filter(([, p]) => p.title.startsWith(which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin'));
+  const depsOf = (s: S, which: 'core' | 'admin') => {
+    const p = projectsOf(s, which);
+    return p.length === 1 ? p[0]![1].deployments : new Map();
+  };
+  const ref = (s: S, which: 'core' | 'admin') => s.store.reg![which];
+  /** 対象の工程の直前まで進める（admin は Staff の権限承認の後） */
+  const advanceTo = (s: S, which: 'core' | 'admin') => {
+    const r = s.make().runUntilBlocked({ storeName: '店' }, 20);
+    if (which === 'admin') {
+      s.core.authorize();
+      return s.make().runUntilBlocked({}, 20);
+    }
+    return r;
+  };
+  /** 構築を最後まで進める（Admin の接続を含む） */
+  const finish = (s: S) => {
+    let r = s.make().runUntilBlocked({}, 20);
+    if (r.waitingFor?.step === 'core.authorize') {
+      s.core.authorize();
+      r = s.make().runUntilBlocked({}, 20);
+    }
+    if (r.waitingFor?.step === 'admin.authorize') {
+      const bs = projectsOf(s, 'admin')[0]![1].files.find((f) => f.name === 'bootstrap')!;
+      s.core.post({ kind: 'pair', role: 'admin', pairingCode: JSON.parse(bs.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode });
+      r = s.make().runUntilBlocked({}, 20);
+    }
+    return r;
+  };
+  /** Setup の入口（setupApi）と同じく、工程の外に出た例外も失敗の応答として受け止める */
+  const run = (s: S, input: { storeName?: string } = {}) => {
+    try {
+      return s.make().runUntilBlocked(input, 20);
+    } catch (e) {
+      return { state: null, waitingFor: null, error: { step: 'unknown', message: e instanceof Error ? e.message : String(e), fix: '' } } as unknown as ReturnType<Installer['runUntilBlocked']>;
+    }
+  };
+  /** 記録の保存を失敗させる（条件に合う保存を n 回） */
+  const failSaves = (s: S, when: (reg: Registry) => boolean, n: number) => {
+    const orig = s.deps.save;
+    let left = n;
+    s.deps.save = (reg, sec) => {
+      if (left > 0 && when(reg)) {
+        left--;
+        throw new Error('記録の保存に失敗しました（模擬）');
+      }
+      orig(reg, sec);
+    };
+  };
+
+  for (const which of ['core', 'admin'] as const) {
+    const step = `${which}.create` as const;
+    describe(`${which === 'core' ? 'Staff' : 'Admin'} のプロジェクト`, () => {
+      it('作成の要求の前の記録（目印）の保存に失敗: 作成を要求しない。以後も確認の明示まで作らず、確認の後に 1 つだけ作る', () => {
+        const s = setup();
+        if (which === 'admin') advanceTo(s, 'core');
+        failSaves(s, (r) => !!r[which].creatingAt, 1);
+        const r1 = which === 'admin' ? (s.core.authorize(), s.make().runUntilBlocked({}, 20)) : s.make().runUntilBlocked({ storeName: '店' }, 20);
+        expect(r1.error?.step).toBe(step);
+        expect(projectsOf(s, which)).toHaveLength(0);
+        const r2 = s.make().runUntilBlocked({}, 20);
+        expect(projectsOf(s, which)).toHaveLength(0);
+        if (r2.error?.confirm) {
+          const i = s.make();
+          i.retry(step, true);
+          i.runUntilBlocked({}, 20);
+        }
+        expect(projectsOf(s, which)).toHaveLength(1);
+      });
+
+      for (const saveFails of [1, 2] as const) {
+        it(`作成は成功したが、ID の記録の保存に失敗（${saveFails === 1 ? '1 回' : '同じ実行の中で続けて失敗し、目印の状態のまま'}）: 二重に作らず、関連付けで再開できる`, () => {
+          const s = setup();
+          if (which === 'admin') advanceTo(s, 'core');
+          failSaves(s, (r) => !!r[which].scriptId, saveFails);
+          if (which === 'admin') s.core.authorize();
+          run(s, which === 'core' ? { storeName: '店' } : {});
+          expect(projectsOf(s, which)).toHaveLength(1);
+          const r2 = run(s);
+          expect(projectsOf(s, which)).toHaveLength(1);
+          if (!ref(s, which).scriptId) {
+            // 記録に ID がない（目印のまま）: 確認を案内し、所有者が一覧で見つけた ID を関連付ける
+            expect(r2.error?.step).toBe(step);
+            expect(r2.error?.confirm).toBeTruthy();
+            const created = projectsOf(s, which)[0]![0];
+            expect(s.make().attach(step, 'bad id').ok).toBe(false);
+            let att: { ok: boolean; message: string };
+            try {
+              att = s.make().attach(step, created);
+            } catch (e) {
+              att = { ok: false, message: `例外: ${e instanceof Error ? e.message : String(e)}` };
+            }
+            expect(att.message).toContain('関連付けました');
+            expect(att.ok).toBe(true);
+          }
+          finish(s);
+          expect(projectsOf(s, which)).toHaveLength(1);
+          expect(ref(s, which).scriptId).toBe(projectsOf(s, which)[0]![0]);
+        });
+      }
+
+      it('作成と ID の記録は成功し、工程の完了の記録の保存に失敗: 再実行で記録の ID を使い、作らない', () => {
+        const s = setup();
+        if (which === 'admin') advanceTo(s, 'core');
+        failSaves(s, (r) => r.steps[step]?.status === 'done', 1);
+        if (which === 'admin') s.core.authorize();
+        s.make().runUntilBlocked(which === 'core' ? { storeName: '店' } : {}, 20);
+        finish(s);
+        expect(projectsOf(s, which)).toHaveLength(1);
+      });
+
+      for (const kind of ['一時的な 404（実際はある）', '実際に削除された'] as const) {
+        it(`記録しているプロジェクトの照会: ${kind} → 確認の明示なしでは作らない（Codex 監査23 #4）`, () => {
+          const s = setup();
+          if (which === 'admin') advanceTo(s, 'core');
+          if (which === 'admin') s.core.authorize();
+          s.make().runUntilBlocked(which === 'core' ? { storeName: '店' } : {}, 20);
+          const id = ref(s, which).scriptId!;
+          expect(id).toBeTruthy();
+          // 工程を「失敗」にして作成の工程からやり直す状態を作る（記録の ID はそのまま）
+          s.store.reg!.steps[step] = { status: 'error', at: new Date().toISOString() };
+          if (kind === '実際に削除された') s.api.projects.delete(id);
+          else s.api.faults.getProject404 = 1;
+          const before = projectsOf(s, which).length;
+          const i1 = s.make();
+          i1.retry(step);
+          const r = i1.runUntilBlocked({}, 20);
+          expect(r.error?.step).toBe(step);
+          expect(r.error?.confirm).toBeTruthy();
+          expect(projectsOf(s, which)).toHaveLength(before);
+          if (kind === '一時的な 404（実際はある）') {
+            finish(s); // 照会が回復: 記録のプロジェクトを使う
+            expect(projectsOf(s, which)).toHaveLength(1);
+            expect(ref(s, which).scriptId).toBe(id);
+            return;
+          }
+          const i2 = s.make();
+          i2.retry(step); // 確認の明示なし
+          expect(i2.runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+          expect(projectsOf(s, which)).toHaveLength(0);
+          const i3 = s.make();
+          i3.retry(step, true);
+          finish(s);
+          expect(projectsOf(s, which)).toHaveLength(1);
+        });
+      }
+    });
+
+    describe(`${which === 'core' ? 'Staff' : 'Admin'} のデプロイ`, () => {
+      const dstep = `${which}.deploy` as const;
+      for (const saveFails of [1, 3] as const) {
+        it(`作成は成功したが、ID の記録の保存に失敗（${saveFails} 回）: 一覧で照合して使い、二重に作らない`, () => {
+          const s = setup();
+          if (which === 'admin') advanceTo(s, 'core');
+          failSaves(s, (r) => !!r[which].deploymentId, saveFails);
+          if (which === 'admin') s.core.authorize();
+          run(s, which === 'core' ? { storeName: '店' } : {});
+          expect(depsOf(s, which).size).toBe(1);
+          finish(s);
+          expect(depsOf(s, which).size).toBe(1);
+          expect(depsOf(s, which).has(ref(s, which).deploymentId!)).toBe(true);
+        });
+      }
+      it('作成は成功したが応答を失い、一覧にもまだ現れない: 確認の明示なしでは作らず、関連付けで再開できる', () => {
+        const s = setup();
+        if (which === 'admin') advanceTo(s, 'core');
+        s.api.faults.createDeployment.push({ status: 504, created: true });
+        if (which === 'admin') s.core.authorize();
+        const r1 = s.make().runUntilBlocked(which === 'core' ? { storeName: '店' } : {}, 20);
+        expect(r1.error?.step).toBe(dstep);
+        s.api.faults.listLag = 3;
+        expect(s.make().runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+        expect(depsOf(s, which).size).toBe(1);
+        const created = [...depsOf(s, which).keys()][0]!;
+        expect(s.make().attach(dstep, created).ok).toBe(true);
+        s.api.faults.listLag = 0;
+        finish(s);
+        expect(depsOf(s, which).size).toBe(1);
+        expect(ref(s, which).deploymentId).toBe(created);
+      });
+    });
+  }
+
+  it('関連付け: 別の環境・名前のプロジェクトや、Shiftly のセットアップが作っていないデプロイは関連付けない', () => {
+    const s = setup();
+    s.api.faults.createProject.push({ status: 504, created: true });
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.api.projects.set('script_other_1', { title: 'Shiftly-Staff (env_other)', files: [], versions: 0, deployments: new Map() });
+    expect(s.make().attach('core.create', 'script_other_1').ok).toBe(false);
+    expect(s.make().attach('verify', 'script_other_1').ok).toBe(false);
+  });
+
+  it('構築の完了前の検証: 記録と一致しない Shiftly のデプロイが残っていれば完了しない（自動では削除しない）', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    const [, proj] = projectsOf(s, 'core')[0]!;
+    const [did, v] = [...proj.deployments.entries()][0]!;
+    proj.deployments.set(`${did}_extra`, v);
+    s.api.descriptions.set(`${did}_extra`, 'Shiftly 0.3.0 (手動で作成)');
+    const r = finish(s);
+    expect(r.error?.step).toBe('verify');
+    expect(r.error?.message).toContain('デプロイが 2 つ');
+    expect(r.state.complete).toBe(false);
+    expect(proj.deployments.size).toBe(2);
+  });
+
+  it('構築の完了前の検証: 自動で確かめた項目と、自動では確かめられない項目（プロジェクトの重複）を分けて記録する', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    const r = finish(s);
+    expect(r.state.complete).toBe(true);
+    expect(r.state.verification!.checked.length).toBeGreaterThanOrEqual(4);
+    expect(r.state.verification!.unverified.join()).toContain('プロジェクト一覧');
   });
 });

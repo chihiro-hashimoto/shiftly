@@ -420,7 +420,7 @@ export interface OwnerEnvelope {
 }
 
 /** Setup 用の鍵で実行できる操作（最小権限） */
-export const SETUP_ALLOWED_OPS = new Set(['system.info', 'system.integrityCheck', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.setMaintenance', 'backup.list']);
+export const SETUP_ALLOWED_OPS = new Set(['system.info', 'system.integrityCheck', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.setMaintenance', 'backup.list', 'system.storageCheck']);
 
 export function signOwnerEnvelope(p: Platform, key: Uint8Array, body: string, role: EnvelopeRole = 'admin'): OwnerEnvelope {
   const ts = p.now();

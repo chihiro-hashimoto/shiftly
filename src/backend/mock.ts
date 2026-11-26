@@ -156,6 +156,8 @@ export function createMockEnv(opts: { now?: number; autoClock?: boolean; kind?: 
     files,
     database: files,
     effectiveUserEmail: () => 'owner@example.invalid',
+    // モック（テスト・プレビュー）: Google ドライブの構成物はないため、点検は常に問題なし（実環境の点検は GAS の実装）
+    storageReport: () => ({ ok: true, issues: [], items: [] }),
     log: (level, message, meta) => {
       logs.push({ level, message, meta });
     },

@@ -40,6 +40,29 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
   // 作成の結果が分からない場合の確認（確認するまで「再実行」を押せない。Codex 監査19 #2）
   const [confirmed, setConfirmed] = useState(false);
   useEffect(() => setConfirmed(false), [res]);
+  // 既存のプロジェクト・デプロイの関連付け（作成の結果が分からない・記録したものが見つからない場合。D-026 S1）
+  const [attachId, setAttachId] = useState('');
+  const [attachMsg, setAttachMsg] = useState('');
+  useEffect(() => {
+    setAttachId('');
+    setAttachMsg('');
+  }, [res]);
+  const attach = async (step: string) => {
+    setBusy(true);
+    setAttachMsg('');
+    try {
+      const r = await transport.call<{ ok: boolean; message: string }>('attach', { step, id: attachId.trim() });
+      setAttachMsg(r.message);
+      if (r.ok) {
+        setRes(null);
+        await load();
+      }
+    } catch (e) {
+      setAttachMsg(e instanceof Error ? e.message : '関連付けに失敗しました');
+    } finally {
+      setBusy(false);
+    }
+  };
   const [storeName, setStoreName] = useState('');
 
   const load = useCallback(async () => {
@@ -124,6 +147,18 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                           <span>{res.error.confirm}</span>
                         </label>
                       )}
+                      {res.error.confirm && /\.(create|deploy)$/.test(res.error.step) && (
+                        <div className="row small" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+                          <label className="field" style={{ flex: '1 1 220px' }}>
+                            <span>既存の ID を関連付ける（Apps Script の画面で見つけた{res.error.step.endsWith('.create') ? 'プロジェクト' : 'デプロイ'}の ID）</span>
+                            <input className="input" value={attachId} onChange={(e) => setAttachId(e.target.value)} maxLength={200} autoComplete="off" />
+                          </label>
+                          <button className="btn btn-sm" disabled={busy || attachId.trim().length < 3} onClick={() => void attach(res.error!.step)}>
+                            関連付ける
+                          </button>
+                        </div>
+                      )}
+                      {attachMsg && <div className="small">{attachMsg}</div>}
                     </div>
                   )}
                   {res?.waitingFor && (
@@ -169,6 +204,27 @@ function Complete({ st }: { st: PublicState }) {
   return (
     <div className="stack">
       <div className="callout callout-board">セットアップが完了しました（バージョン {st.installedVersion ?? '—'}）。</div>
+      {st.verification && (
+        <div className="small">
+          <strong>完了前の確認</strong>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+            {st.verification.checked.map((c) => (
+              <li key={c}>確認済み: {c}</li>
+            ))}
+          </ul>
+          {st.verification.unverified.length > 0 && (
+            <div className="callout callout-warn" style={{ marginTop: 8 }}>
+              <strong>自動では確認していない項目（ご自身で確認してください）</strong>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+                {st.verification.unverified.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+              <div>同じ名前のプロジェクトが 2 つ以上ある場合は、使われていないほう（Setup の記録にない ID）を削除せずに残したまま、管理者に相談してください。</div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="s-urls">
         <div>
           <h3>管理者用（管理画面）</h3>

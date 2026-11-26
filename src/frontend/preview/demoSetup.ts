@@ -17,20 +17,22 @@ const rnd = (n: number) => {
 };
 
 export function createDemoSetupTransport(): SetupTransport {
-  const projects = new Map<string, { title: string; files: ScriptFile[]; v: number; deps: Map<string, number> }>();
+  const projects = new Map<string, { title: string; files: ScriptFile[]; v: number; deps: Map<string, number>; desc: Map<string, string> }>();
   let seq = 0;
   const http: Http = (method, url, body) => {
     const m = url.match(/\/projects(?:\/([^/?]+))?(?:\/(content|versions|deployments)(?:\/([^/?]+))?)?/)!;
     const [, id, sub, depId] = m;
     if (method === 'POST' && !id) {
       const sid = `demo_script_${++seq}`;
-      projects.set(sid, { title: (body as { title: string }).title, files: [], v: 0, deps: new Map() });
+      projects.set(sid, { title: (body as { title: string }).title, files: [], v: 0, deps: new Map(), desc: new Map() });
       return { status: 200, body: JSON.stringify({ scriptId: sid }) };
     }
     const p = id ? projects.get(id) : undefined;
     if (!p) return { status: 404, body: '{"error":{"message":"not found"}}' };
-    const dep = (d: string, v: number) => ({ deploymentId: d, deploymentConfig: { versionNumber: v }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${d}/exec` } }] });
+    const dep = (d: string, v: number) => ({ deploymentId: d, deploymentConfig: { versionNumber: v, description: p.desc.get(d) }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${d}/exec` } }] });
     if (method === 'GET' && !sub) return { status: 200, body: JSON.stringify({ scriptId: id, title: p.title }) };
+    if (method === 'GET' && sub === 'content') return { status: 200, body: JSON.stringify({ files: p.files }) };
+    if (method === 'GET' && sub === 'deployments' && !depId) return { status: 200, body: JSON.stringify({ deployments: [...p.deps.entries()].map(([d, v]) => dep(d, v)) }) };
     if (method === 'PUT' && sub === 'content') {
       p.files = (body as { files: ScriptFile[] }).files;
       return { status: 200, body: '{}' };
@@ -39,10 +41,15 @@ export function createDemoSetupTransport(): SetupTransport {
     if (method === 'POST' && sub === 'deployments') {
       const d = `DEMO${id}`;
       p.deps.set(d, (body as { versionNumber: number }).versionNumber);
+      p.desc.set(d, (body as { description?: string }).description ?? '');
       return { status: 200, body: JSON.stringify(dep(d, p.v)) };
     }
     if (sub === 'deployments' && depId) {
-      if (method === 'PUT') p.deps.set(depId, (body as { deploymentConfig: { versionNumber: number } }).deploymentConfig.versionNumber);
+      if (method === 'PUT') {
+        const c = (body as { deploymentConfig: { versionNumber: number; description?: string } }).deploymentConfig;
+        p.deps.set(depId, c.versionNumber);
+        if (c.description) p.desc.set(depId, c.description);
+      }
       return { status: 200, body: JSON.stringify(dep(depId, p.deps.get(depId) ?? 1)) };
     }
     return { status: 400, body: '{}' };
@@ -77,7 +84,8 @@ export function createDemoSetupTransport(): SetupTransport {
         }
         return { ok: false };
       },
-      callCoreAsSetup: (_u, _k, req) => (req.op === 'system.integrityCheck' ? { ok: true, data: { ok: true, issues: [] } } : { ok: true, data: { backupId: 'demo', requiresApproval: [] } }),
+      callCoreAsSetup: (_u, _k, req) =>
+        req.op === 'system.integrityCheck' || req.op === 'system.storageCheck' ? { ok: true, data: { ok: true, issues: [], items: [] } } : { ok: true, data: { backupId: 'demo', requiresApproval: [] } },
     });
   return {
     demo: true,
@@ -92,7 +100,8 @@ export function createDemoSetupTransport(): SetupTransport {
         const w = (r as { waitingFor: { step: string } | null }).waitingFor;
         if (w?.step === 'core.authorize') core.authorizeAsked.core = true;
         if (w?.step === 'admin.authorize') core.authorizeAsked.admin = true;
-      } else if (action === 'checkUpdate') r = i.checkUpdate();
+      } else if (action === 'attach') r = i.attach(String(args?.step) as never, typeof args?.id === 'string' ? args.id : '');
+      else if (action === 'checkUpdate') r = i.checkUpdate();
       else if (action === 'applyUpdate') r = i.applyUpdate({ approveDestructive: args?.approveDestructive === true });
       else if (action === 'rollback') r = { message: i.rollbackCode() };
       return r as T;

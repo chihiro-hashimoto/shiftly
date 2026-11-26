@@ -14,10 +14,13 @@ const fromSigned = (a: number[]) => Buffer.from(a.map((x) => x & 0xff));
 
 class Props {
   m = new Map<string, string>();
+  /** 保存の失敗の注入（テスト専用）: 該当するキーの setProperty を例外にする */
+  failSet?: (k: string, v: string) => boolean;
   getProperty(k: string) {
     return this.m.get(k) ?? null;
   }
   setProperty(k: string, v: string) {
+    if (this.failSet?.(k, v)) throw new Error(`PropertiesService: 保存に失敗しました（${k}）`);
     this.m.set(k, v);
     return this;
   }
@@ -84,7 +87,7 @@ export class GasEmulator {
    */
   /** generateIds で予約した ID */
   reservedIds = new Set<string>();
-  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean; failCreate?: (name: string, appProperties?: Record<string, string>) => boolean } = {};
+  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean; failCreate?: (name: string, appProperties?: Record<string, string>) => boolean; updateFail?: (id: string) => boolean } = {};
 
   private newId(p: string) {
     return `${p}${++this.seq}`;
@@ -246,6 +249,7 @@ export class GasEmulator {
           return { parents: self.files.get(id)?.parents ?? [] };
         },
         update(res: { trashed?: boolean; name?: string }, id: string, b?: ReturnType<typeof blob>) {
+          if (self.driveFaults.updateFail?.(id)) throw new Error('Drive: 更新に失敗しました（一時的なエラー）');
           const f = self.files.get(id);
           if (!f) throw new Error(`Drive: File not found: ${id}`);
           if (res.trashed) f.trashed = true;

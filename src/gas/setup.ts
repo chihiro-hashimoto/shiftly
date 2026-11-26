@@ -125,10 +125,12 @@ function deps(): InstallerDeps {
           try {
             createWithId(known);
             return;
-          } catch (e) {
-            // どちらもできない（削除された・一時的な失敗）: 次の保存で検索し直す。今回は止める（迷ったら止める）
-            up.deleteProperty(REG_FILE_ID_KEY);
-            throw e;
+          } catch {
+            // どちらもできない（一時的な失敗・作成済みのファイルとの競合など）: 予約・使用した ID は消さずに残し、止める
+            // （ID を消すと、検索に反映されていない間に新しい ID で二重に作り得る。Codex 監査23 #3、D-026 S1）。次の保存でも同じ ID で更新・作成する
+            throw new Error(
+              `Setup の記録ファイル（Google ドライブの「${REG_FILE}」、ID: ${known}）を保存できませんでした。時間をおいて再読み込みし、もう一度実行してください。解決しない場合は、Google ドライブでこのファイルがゴミ箱にないか確認してください（記録は Setup の中にも保存されています）`,
+            );
           }
         }
       }
@@ -174,6 +176,8 @@ export function setupApi(reqJson: string): string {
       case 'retry':
         inst.retry(String(a.step) as never, a.confirmedNoDuplicate === true);
         return ok(inst.runUntilBlocked({ storeName: typeof a.storeName === 'string' ? a.storeName : undefined }, 4));
+      case 'attach':
+        return ok(inst.attach(String(a.step) as never, typeof a.id === 'string' ? a.id : ''));
       case 'checkUpdate':
         return ok(inst.checkUpdate());
       case 'applyUpdate':

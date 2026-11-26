@@ -358,3 +358,124 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
     expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
   });
 });
+
+/**
+ * D-026 S1: Core の Google ドライブの構成物と Setup の記録ファイルを、構成物 × 失敗の地点 × 再実行 で確かめる（GAS エミュレーション）。
+ * 判定はエミュレータ上の実体（ファイル・フォルダの件数）で行う
+ */
+describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Core の保管先・Setup の記録ファイルの状態管理（D-026）', () => {
+  const count = (emu: GasEmulator, key: string, value: string) => [...emu.files.values()].filter((f) => !f.trashed && f.appProperties?.[key] === value).length;
+  const ITEMS = ['root', '00_System', '01_Database', '02_Payslips', '03_Exports', 'database', 'environment'] as const;
+  const PROP_OF: Record<string, string> = { root: 'SHIFTLY_ROOT_FOLDER', database: 'SHIFTLY_DB_ID', environment: 'SHIFTLY_ENV_FILE_ID' };
+  const load = () => {
+    const emu = new GasEmulator();
+    const code = randomBytes(32).toString('hex');
+    const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_s1c', storeName: 'S1店', adminPairingHash: sha(code), setupPairingHash: sha(code + 's') } });
+    return { emu, core };
+  };
+  const all = (emu: GasEmulator) => ITEMS.map((k) => count(emu, 'shiftly', k));
+
+  for (const target of ITEMS) {
+    it(`「${target}」: 作成の目印の保存に失敗 → 作成を要求しない`, () => {
+      const { emu, core } = load();
+      const marker = ['root', 'database', 'environment'].includes(target) ? target : `folder:${target}`;
+      let once = 1;
+      emu.scriptProps.failSet = (k, v) => k === 'SHIFTLY_STORAGE_CREATING' && v.includes(`"${marker}"`) && once-- > 0;
+      expect(() => core.shiftlyAuthorize()).toThrow();
+      expect(count(emu, 'shiftly', target)).toBe(0);
+      emu.scriptProps.failSet = undefined;
+      expect(core.shiftlyAuthorize().ok).toBe(true);
+      expect(all(emu)).toEqual(ITEMS.map(() => 1));
+    });
+
+    for (const fails of ['作成後の ID の保存に失敗', '作成後の ID の保存に失敗し、検索も 0 件（反映の遅れ）'] as const) {
+      it(`「${target}」: ${fails} → 目印を残し、二重に作らない（Codex 監査23 #2）`, () => {
+        const { emu, core } = load();
+        // 作成の後の ID の保存だけを 1 回失敗させる
+        let once = 1;
+        const created = () => count(emu, 'shiftly', target) === 1;
+        emu.scriptProps.failSet = (k) => (k === (PROP_OF[target] ?? 'SHIFTLY_FOLDERS')) && created() && once-- > 0;
+        expect(() => core.shiftlyAuthorize()).toThrow();
+        emu.scriptProps.failSet = undefined;
+        expect(count(emu, 'shiftly', target)).toBe(1);
+        expect(emu.scriptProps.getProperty('SHIFTLY_STORAGE_CREATING')).toContain(target === 'root' || target === 'database' || target === 'environment' ? target : `folder:${target}`);
+        if (fails.includes('反映の遅れ')) {
+          emu.driveFaults.listHide = (q) => q.includes(`value='${target}'`);
+          expect(() => core.shiftlyAuthorize()).toThrow(/shiftlyConfirmStorageNotCreated/);
+          expect(count(emu, 'shiftly', target)).toBe(1);
+          // 所有者の確認の操作: 検索し直して見つからないものだけ目印を外す。反映された後は見つかって関連付ける
+          emu.driveFaults = {};
+        }
+        expect(core.shiftlyAuthorize().ok).toBe(true);
+        expect(all(emu)).toEqual(ITEMS.map(() => 1));
+        expect(emu.scriptProps.getProperty('SHIFTLY_STORAGE_CREATING')).toBeNull();
+      });
+    }
+  }
+
+  it('確認の操作（shiftlyConfirmStorageNotCreated）: 見つかる構成物は関連付け、見つからない構成物の目印だけを外す', () => {
+    const { emu, core } = load();
+    let once = 1;
+    emu.driveFaults.loseCreate = (_n, ap) => ap?.shiftly === 'database' && once-- > 0; // DB は作成済み（応答を喪失）
+    expect(() => core.shiftlyAuthorize()).toThrow();
+    // 環境情報ファイルは作成されていない状態の目印を加える（作成前に止まった）
+    const m = JSON.parse(emu.scriptProps.getProperty('SHIFTLY_STORAGE_CREATING') ?? '{}');
+    emu.scriptProps.setProperty('SHIFTLY_STORAGE_CREATING', JSON.stringify({ ...m, environment: new Date().toISOString() }));
+    emu.driveFaults = {};
+    const r = core.shiftlyConfirmStorageNotCreated();
+    expect(r.adopted).toContain('database');
+    expect(r.cleared).toContain('environment');
+    expect(core.shiftlyAuthorize().ok).toBe(true);
+    expect(all(emu)).toEqual(ITEMS.map(() => 1));
+  });
+
+  it('検索で同じ構成物が 2 つ見つかった場合は、どちらも使わずに止める（自動では選ばない・削除しない）', () => {
+    const { emu, core } = load();
+    expect(core.shiftlyAuthorize().ok).toBe(true);
+    const dbFolder = JSON.parse(emu.scriptProps.getProperty('SHIFTLY_FOLDERS')!)['01_Database'];
+    emu.scriptProps.deleteProperty('SHIFTLY_DB_ID'); // 記録の ID を失った状態
+    emu.files.set('dup_db', { name: 'Shiftly Database - 重複', mimeType: 'application/vnd.google-apps.spreadsheet', parents: [dbFolder], data: null, appProperties: { shiftly: 'database' } });
+    expect(() => core.shiftlyAuthorize()).toThrow(/2 つあります/);
+    expect(count(emu, 'shiftly', 'database')).toBe(2);
+  });
+
+  it('完了前の点検（system.storageCheck）: 問題がなければ ok、重複・残った目印・記録の喪失を問題として返す', () => {
+    const emu = new GasEmulator();
+    const code = randomBytes(32).toString('hex');
+    const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_s1d', storeName: 'S1店', adminPairingHash: sha(code), setupPairingHash: sha(code + 's') } });
+    const post = (body: unknown) => JSON.parse(core.doPost({ postData: { contents: JSON.stringify(body) } }).content);
+    expect(core.shiftlyAuthorize().ok).toBe(true);
+    const key = post({ kind: 'pair', role: 'admin', pairingCode: code }).data.key as string;
+    const check = () => post(ownerEnvelope(key, { op: 'system.storageCheck', requestId: `emu_${randomBytes(6).toString('hex')}` })).data as { ok: boolean; issues: string[] };
+    expect(check().ok).toBe(true);
+    const root = emu.scriptProps.getProperty('SHIFTLY_ROOT_FOLDER')!;
+    emu.files.set('dup_exports', { name: '03_Exports', mimeType: 'application/vnd.google-apps.folder', parents: [root], data: null, appProperties: { shiftly: '03_Exports' } });
+    emu.scriptProps.setProperty('SHIFTLY_STORAGE_CREATING', JSON.stringify({ environment: new Date().toISOString() }));
+    emu.scriptProps.deleteProperty('SHIFTLY_ENV_FILE_ID');
+    const r = check();
+    expect(r.ok).toBe(false);
+    expect(r.issues.join()).toContain('03_Exports');
+    expect(r.issues.join()).toContain('目印');
+    expect(r.issues.join()).toContain('ID が保存されていません');
+  });
+
+  // Setup の記録ファイル: 作成の応答の喪失 → 直後の更新の一時的な失敗 → 同じ ID での作成は競合（作成済み）→ 予約 ID を消さずに止め、次の保存で 1 つのまま
+  it('Codex 監査23 #3: 記録ファイルの更新と同じ ID での作成が続けて失敗しても、予約 ID を消さず、二重に作らない', () => {
+    const emu = new GasEmulator();
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: { version: '1.3.0', core: [], admin: [], hashes: {} } });
+    let lose = 1;
+    emu.driveFaults.loseCreate = (_n, ap) => ap?.shiftlySetup === 'registry' && lose-- > 0;
+    let upd = 1;
+    emu.driveFaults.updateFail = () => upd-- > 0;
+    emu.driveFaults.listHide = (q) => q.includes('shiftlySetup');
+    JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: { storeName: '店' } })));
+    const reserved = emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID');
+    expect(reserved).toBeTruthy();
+    JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: { storeName: '店' } })));
+    expect(emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID')).toBe(reserved);
+    expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+    emu.driveFaults = {};
+    JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: { storeName: '店' } })));
+    expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+  });
+});

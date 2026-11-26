@@ -156,6 +156,15 @@ defineOps([
     },
   },
   {
+    // 構築の完了前の保管先の点検（D-026 S1。Setup の確認の工程で使う）。点検できない環境では ok にしない
+    name: 'system.storageCheck',
+    kind: 'read',
+    auth: 'owner',
+    mutating: false,
+    allowInMaintenance: true,
+    handler: (ctx) => (ctx.p.storageReport ? ctx.p.storageReport() : { ok: false, issues: ['この環境では保管先を点検できません'], items: [], unavailable: true }),
+  },
+  {
     name: 'system.info',
     kind: 'read',
     auth: 'owner',
