@@ -215,6 +215,41 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
     });
   }
 
+  // Codex 監査22 #3: 作成の結果が分からないとき、検索が「正常に 0 件」を返す（反映の遅れ）場合も、作り直さない。
+  // 作成物 × 失敗の種類（作成済みで応答を喪失・作成されていない）を回す
+  for (const target of ['root', '00_System', '01_Database', 'database', 'environment'] as const) {
+    for (const kind of ['作成済みで応答を喪失し、検索に反映されていない', '作成されていない'] as const) {
+      it(`Core の初期化: 「${target}」が${kind}場合、確認なしに作り直さない`, () => {
+        const emu = new GasEmulator();
+        const code = randomBytes(32).toString('hex');
+        const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_s1b', storeName: 'S1店', adminPairingHash: sha(code), setupPairingHash: sha(code + 's') } });
+        let once = 1;
+        if (kind === '作成されていない') emu.driveFaults.failCreate = (_n, ap) => ap?.shiftly === target && once-- > 0;
+        else emu.driveFaults.loseCreate = (_n, ap) => ap?.shiftly === target && once-- > 0;
+        expect(() => core.shiftlyAuthorize()).toThrow();
+        const expected = kind === '作成されていない' ? 0 : 1;
+        expect(count(emu, 'shiftly', target)).toBe(expected);
+        // 再実行: 検索が正常に 0 件を返す（反映の遅れ。作成されていない場合も検索は 0 件）→ 作らずに止める
+        emu.driveFaults = { listHide: (q) => q.includes(`value='${target}'`) };
+        expect(() => core.shiftlyAuthorize()).toThrow(/shiftlyConfirmStorageNotCreated/);
+        expect(count(emu, 'shiftly', target)).toBe(expected);
+        emu.driveFaults = {};
+        if (kind === '作成されていない') {
+          // 検索に反映されても見つからない → 止まったまま。所有者が確認して目印を外した後にだけ作る
+          expect(() => core.shiftlyAuthorize()).toThrow(/shiftlyConfirmStorageNotCreated/);
+          expect(count(emu, 'shiftly', target)).toBe(0);
+          emu.activeUser = '';
+          expect(() => core.shiftlyConfirmStorageNotCreated()).toThrow(); // 匿名の訪問者は実行できない
+          emu.activeUser = 'owner@example.invalid';
+          expect(core.shiftlyConfirmStorageNotCreated().cleared).toContain(target === 'root' || target === 'database' || target === 'environment' ? target : `folder:${target}`);
+        }
+        // 検索に反映された（または確認の後）: 既存を使う／1 つだけ作る
+        expect(core.shiftlyAuthorize().ok).toBe(true);
+        for (const k of ['root', '00_System', '01_Database', 'database', 'environment']) expect(count(emu, 'shiftly', k), k).toBe(1);
+      });
+    }
+  }
+
   const release = { version: '1.3.0', core: [], admin: [], hashes: {} };
   const registry = (steps: Record<string, unknown> = {}) => ({
     schema: 1,
@@ -263,6 +298,24 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
     api(setup, 'run', { storeName: '反映待ち店' });
     expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
   });
+
+  for (const kind of ['作成済みで応答を喪失した', '作成されていない'] as const) {
+    it(`Codex 監査22 #3: Setup の記録ファイルが${kind}場合も、検索に反映されていない間に二重に作らない`, () => {
+      const emu = new GasEmulator();
+      const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+      let once = 1;
+      if (kind === '作成されていない') emu.driveFaults.failCreate = (_n, ap) => ap?.shiftlySetup === 'registry' && once-- > 0;
+      else emu.driveFaults.loseCreate = (_n, ap) => ap?.shiftlySetup === 'registry' && once-- > 0;
+      emu.driveFaults.listHide = (q) => q.includes('shiftlySetup'); // 検索には反映されていない
+      // 1 回の実行の中で何度も保存する（最初の保存の作成で失敗し、同じ実行のエラーの記録の保存などが続く）
+      api(setup, 'run', { storeName: '反映待ち店' });
+      api(setup, 'run', { storeName: '反映待ち店' });
+      expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+      emu.driveFaults = {};
+      api(setup, 'run', { storeName: '反映待ち店' });
+      expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+    });
+  }
 
   it('独立した点検 S1-3: 同じ環境の記録ファイルが複数ある場合は、最後に保存した記録（updatedAt が最新）で再開する', () => {
     const emu = new GasEmulator();

@@ -22,6 +22,7 @@ export const PROP = {
   dbId: 'SHIFTLY_DB_ID',
   folders: 'SHIFTLY_FOLDERS',
   rootFolder: 'SHIFTLY_ROOT_FOLDER',
+  envFile: 'SHIFTLY_ENV_FILE_ID',
 } as const;
 
 /** GAS の Byte[]（-128..127）→ Uint8Array */
@@ -188,39 +189,79 @@ export function createGasPlatform(): Platform {
   };
 }
 
-/** 初回: フォルダ構成と DB スプレッドシートを作成（冪等） */
+/** 作成中の目印（構成物のキー → 作成の要求の開始時刻）。作成の結果が分からない間、作り直さないために使う */
+const STORAGE_CREATING = 'SHIFTLY_STORAGE_CREATING';
+
+/** 検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる（S1、D-025） */
+function findOne(q: string): string | null {
+  const r = Drive.Files.list({ q: `${q} and trashed = false`, fields: 'files(id)', pageSize: 2 });
+  return r.files?.[0]?.id ?? null;
+}
+
+/**
+ * 一度だけ作る Drive の構成物（Shiftly のフォルダ・DB・環境情報ファイル）を、二重に作らずに用意する（D-025 S1。Codex 監査22 #3）。
+ * 作成の要求の前に目印を保存し、作成が終わったら外す。目印が残っている（前回の作成の結果が分からない）間は、検索で見つからなくても
+ * 作らずに止める（作成済みでも、検索に反映されるまで時間がかかることがあるため）。Google ドライブで作られていないことを確認したら、
+ * 所有者がエディタで shiftlyConfirmStorageNotCreated を実行して目印を外す
+ */
+function ensureOnce(key: string, label: string, savedId: string | null, query: string, create: () => string): { id: string; created: boolean } {
+  if (savedId) return { id: savedId, created: false };
+  const props = PropertiesService.getScriptProperties();
+  const pending = JSON.parse(props.getProperty(STORAGE_CREATING) ?? '{}') as Record<string, string>;
+  const savePending = () => props.setProperty(STORAGE_CREATING, JSON.stringify(pending));
+  const found = findOne(query);
+  if (found) {
+    if (pending[key]) {
+      delete pending[key];
+      savePending();
+    }
+    return { id: found, created: false };
+  }
+  if (pending[key])
+    throw new Error(
+      `前回の「${label}」の作成の結果を確認できません（作成済みでも、Google ドライブの検索に反映されるまで時間がかかることがあります）。数分おいてから shiftlyAuthorize を再実行してください。Google ドライブに「${label}」がないこと（またはゴミ箱に移動したこと）を確認した場合は、shiftlyConfirmStorageNotCreated を実行してから shiftlyAuthorize を再実行してください`,
+    );
+  pending[key] = new Date().toISOString();
+  savePending();
+  const id = create();
+  delete pending[key];
+  savePending();
+  return { id, created: true };
+}
+
+/** 作成中の目印を外す（Google ドライブで構成物が作られていないことを所有者が確認した後に、エディタから実行する） */
+export function clearStorageCreatingMarkers(): string[] {
+  const props = PropertiesService.getScriptProperties();
+  const keys = Object.keys(JSON.parse(props.getProperty(STORAGE_CREATING) ?? '{}') as Record<string, string>);
+  props.deleteProperty(STORAGE_CREATING);
+  return keys;
+}
+
+/** 初回: フォルダ構成と DB スプレッドシートを作成（冪等。1 つ作るごとに ID を保存し、既存は appProperties で再検出する） */
 export function provisionStorage(storeLabel: string): { rootId: string; dbId: string; created: boolean } {
   const props = PropertiesService.getScriptProperties();
   const FOLDER = 'application/vnd.google-apps.folder';
-  // 途中失敗からの再実行でも重複作成しないよう、1 つ作るごとに ID を保存し、既存は appProperties で再検出する
-  // 検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる（作成済みのフォルダ・DB を見落として二重に作らない。
-  // 外部の作成の一回性 S1、D-025。再実行で検索できれば既存を使う）
-  const findOne = (q: string): string | null => {
-    const r = Drive.Files.list({ q: `${q} and trashed = false`, fields: 'files(id)', pageSize: 2 });
-    return r.files?.[0]?.id ?? null;
-  };
   let created = false;
-  let rootId = props.getProperty(PROP.rootFolder) ?? findOne("appProperties has { key='shiftly' and value='root' }");
-  if (!rootId) {
-    rootId = Drive.Files.create({ name: 'Shiftly', mimeType: FOLDER, appProperties: { shiftly: 'root' } }, null, { fields: 'id' }).id as string;
-    created = true;
-  }
+  const root = ensureOnce('root', 'Shiftly（フォルダ）', props.getProperty(PROP.rootFolder), "appProperties has { key='shiftly' and value='root' }", () =>
+    Drive.Files.create({ name: 'Shiftly', mimeType: FOLDER, appProperties: { shiftly: 'root' } }, null, { fields: 'id' }).id as string,
+  );
+  const rootId = root.id;
+  created = created || root.created;
   props.setProperty(PROP.rootFolder, rootId);
   const fmap: Record<string, string> = JSON.parse(props.getProperty(PROP.folders) ?? '{}') as Record<string, string>;
   for (const k of FOLDER_KEYS) {
-    if (fmap[k]) continue;
-    fmap[k] = findOne(`'${rootId}' in parents and appProperties has { key='shiftly' and value='${k}' }`) ?? (Drive.Files.create({ name: k, mimeType: FOLDER, parents: [rootId], appProperties: { shiftly: k } }, null, { fields: 'id' }).id as string);
+    const f = ensureOnce(`folder:${k}`, `Shiftly/${k}（フォルダ）`, fmap[k] ?? null, `'${rootId}' in parents and appProperties has { key='shiftly' and value='${k}' }`, () =>
+      Drive.Files.create({ name: k, mimeType: FOLDER, parents: [rootId], appProperties: { shiftly: k } }, null, { fields: 'id' }).id as string,
+    );
+    fmap[k] = f.id;
     props.setProperty(PROP.folders, JSON.stringify(fmap));
   }
-  let dbId = props.getProperty(PROP.dbId) ?? findOne(`'${fmap['01_Database']}' in parents and appProperties has { key='shiftly' and value='database' }`);
-  if (!dbId) {
-    dbId = Drive.Files.create(
-      { name: `Shiftly Database - ${storeLabel}`.slice(0, 100), mimeType: 'application/vnd.google-apps.spreadsheet', parents: [fmap['01_Database']], appProperties: { shiftly: 'database' } },
-      null,
-      { fields: 'id' },
-    ).id as string;
-    created = true;
-  }
+  const dbName = `Shiftly Database - ${storeLabel}`.slice(0, 100);
+  const db = ensureOnce('database', `${dbName}（スプレッドシート）`, props.getProperty(PROP.dbId), `'${fmap['01_Database']}' in parents and appProperties has { key='shiftly' and value='database' }`, () =>
+    Drive.Files.create({ name: dbName, mimeType: 'application/vnd.google-apps.spreadsheet', parents: [fmap['01_Database']], appProperties: { shiftly: 'database' } }, null, { fields: 'id' }).id as string,
+  );
+  const dbId = db.id;
+  created = created || db.created;
   props.setProperty(PROP.dbId, dbId);
   // タイムゾーン設定（冪等）
   Sheets.Spreadsheets.batchUpdate({ requests: [{ updateSpreadsheetProperties: { properties: { timeZone: 'Asia/Tokyo', locale: 'ja_JP' }, fields: 'timeZone,locale' } }] }, dbId);
@@ -232,7 +273,10 @@ export function writeEnvironmentFile(info: Record<string, unknown>) {
   const f = folders();
   const body = JSON.stringify(info, null, 2);
   const blob = Utilities.newBlob(body, 'application/json', 'shiftly-environment.json');
-  const existing = Drive.Files.list({ q: `'${f['00_System']}' in parents and name = 'shiftly-environment.json' and trashed = false`, fields: 'files(id)' });
-  if (existing.files && existing.files[0]) Drive.Files.update({}, existing.files[0].id, blob);
-  else Drive.Files.create({ name: 'shiftly-environment.json', mimeType: 'application/json', parents: [f['00_System']], appProperties: { shiftly: 'environment', envId: String(info.envId ?? '') } }, blob);
+  const props = PropertiesService.getScriptProperties();
+  const env = ensureOnce('environment', 'Shiftly/00_System/shiftly-environment.json', props.getProperty(PROP.envFile), `'${f['00_System']}' in parents and appProperties has { key='shiftly' and value='environment' }`, () =>
+    Drive.Files.create({ name: 'shiftly-environment.json', mimeType: 'application/json', parents: [f['00_System']], appProperties: { shiftly: 'environment', envId: String(info.envId ?? '') } }, blob, { fields: 'id' }).id as string,
+  );
+  props.setProperty(PROP.envFile, env.id);
+  if (!env.created) Drive.Files.update({}, env.id, blob);
 }

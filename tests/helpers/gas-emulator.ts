@@ -56,6 +56,7 @@ export interface GasFns {
   shiftlyAuthorize: (...a: unknown[]) => any;
   shiftlyDailyJob: (...a: unknown[]) => any;
   shiftlyResetAdminPairing: (...a: unknown[]) => any;
+  shiftlyConfirmStorageNotCreated: (...a: unknown[]) => any;
   adminApi: (...a: unknown[]) => any;
   setupApi: (...a: unknown[]) => any;
 }
@@ -78,9 +79,12 @@ export class GasEmulator {
   defaultRows = 1000;
   /**
    * Drive の失敗の注入（テスト専用）。listFail: 該当する検索を例外にする。loseCreate: 作成は行われたが応答を失った（例外）とする。
-   * mediaStatus: ファイルの内容の取得（alt=media）の応答コードを置き換える。listHide: 該当する検索が、まだ反映されていないかのように 0 件を返す
+   * mediaStatus: ファイルの内容の取得（alt=media）の応答コードを置き換える。listHide: 該当する検索が、まだ反映されていないかのように 0 件を返す。
+   * failCreate: 作成されずに例外になる
    */
-  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean } = {};
+  /** generateIds で予約した ID */
+  reservedIds = new Set<string>();
+  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean; failCreate?: (name: string, appProperties?: Record<string, string>) => boolean } = {};
 
   private newId(p: string) {
     return `${p}${++this.seq}`;
@@ -206,8 +210,11 @@ export class GasEmulator {
     };
     const Drive = {
       Files: {
-        create(res: { name: string; mimeType: string; parents?: string[]; appProperties?: Record<string, string> }, b: ReturnType<typeof blob> | null) {
-          const id = self.newId('f');
+        create(res: { id?: string; name: string; mimeType: string; parents?: string[]; appProperties?: Record<string, string> }, b: ReturnType<typeof blob> | null) {
+          if (self.driveFaults.failCreate?.(res.name, res.appProperties)) throw new Error('Drive: 作成に失敗しました（作成されていない）');
+          // 予約した ID（generateIds）での作成。予約していない ID・同じ ID のファイルがある場合は失敗する（実際の Drive の動作の想定。実環境では未検証）
+          if (res.id !== undefined && (!self.reservedIds.has(res.id) || self.files.has(res.id))) throw new Error(`Drive: ID ${res.id} では作成できません`);
+          const id = res.id ?? self.newId('f');
           self.files.set(id, { name: res.name, mimeType: res.mimeType, parents: res.parents ?? [], data: b ? b._data : null, appProperties: res.appProperties });
           if (res.mimeType === 'application/vnd.google-apps.spreadsheet') self.spreadsheets.set(id, { sheets: [{ title: 'Sheet1', sheetId: 0, rowCount: 1000, rows: [] }], props: {} });
           if (self.driveFaults.loseCreate?.(res.name, res.appProperties)) throw new Error('Drive: 応答を受け取れませんでした（作成は完了）');
@@ -230,11 +237,17 @@ export class GasEmulator {
           const files = [...self.files.entries()].filter(([, f]) => !f.trashed && (!parent || f.parents.includes(parent)) && (!name || f.name === name) && (!ap || f.appProperties?.[ap[1]!] === ap[2])).map(([id, f]) => ({ id, name: f.name, createdTime: new Date().toISOString(), size: f.data ? String(f.data.length) : null }));
           return { files };
         },
+        generateIds(opts: { count: number }) {
+          const ids = Array.from({ length: opts.count }, () => self.newId('rsv'));
+          for (const i of ids) self.reservedIds.add(i);
+          return { ids };
+        },
         get(id: string) {
           return { parents: self.files.get(id)?.parents ?? [] };
         },
         update(res: { trashed?: boolean; name?: string }, id: string, b?: ReturnType<typeof blob>) {
-          const f = self.files.get(id)!;
+          const f = self.files.get(id);
+          if (!f) throw new Error(`Drive: File not found: ${id}`);
           if (res.trashed) f.trashed = true;
           if (res.name) f.name = res.name;
           if (b) f.data = b._data;

@@ -35,6 +35,8 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     createDeployment: [] as Array<{ status: number; created: boolean } | 'throw' | 'noid'>,
     // listLag: デプロイの一覧が、作成済みのデプロイをまだ返さない回数（一覧への反映の遅れ）
     listLag: 0,
+    // getDeployment404: デプロイの個別照会が、存在するのに 404 を返す回数（一時的な照会の失敗）
+    getDeployment404: 0,
   };
   const descriptions = new Map<string, string>(); // deploymentId → 説明
   const http: Http = (method, url, body) => {
@@ -76,6 +78,10 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     if (method === 'PUT' && sub === 'content' && faults.putContent > 0) {
       faults.putContent--;
       return { status: 503, body: '{"error":{"message":"backend error"}}' };
+    }
+    if (method === 'GET' && sub === 'deployments' && depId && faults.getDeployment404 > 0) {
+      faults.getDeployment404--;
+      return { status: 404, body: '{"error":{"message":"not found"}}' };
     }
     if (method === 'GET' && sub === 'deployments' && depId && faults.getDeployment > 0) {
       faults.getDeployment--;
@@ -1461,6 +1467,47 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.error?.confirm).toBeTruthy();
     expect(coreDeps(s).size).toBe(0);
   });
+
+  // ---- Codex 監査22 #4: 記録しているデプロイが照会で見つからない場合（一時的な 404・実際に削除された場合） ----
+  for (const kind of ['一時的な 404（実際はある）', '実際に削除された'] as const) {
+    it(`記録しているデプロイの照会: ${kind} 場合、確認の明示なしでは新しく作らない`, () => {
+      const s = setup();
+      s.api.faults.omitDeployVersion = 'all'; // デプロイは作成・記録したが、版を確かめられずに止まった状態にする
+      expect(s.make().runUntilBlocked({ storeName: '店' }, 20).error?.step).toBe('core.deploy');
+      s.api.faults.omitDeployVersion = '';
+      const deps = coreDeps(s);
+      expect(deps.size).toBe(1);
+      const recorded = s.store.reg!.core.deploymentId!;
+      expect(deps.has(recorded)).toBe(true);
+      if (kind === '実際に削除された') deps.delete(recorded);
+      else s.api.faults.getDeployment404 = 1;
+      const inst = s.make();
+      inst.retry('core.deploy');
+      const r = inst.runUntilBlocked({}, 20);
+      expect(r.error?.step).toBe('core.deploy');
+      expect(r.error?.confirm).toBeTruthy();
+      expect(deps.size).toBe(kind === '実際に削除された' ? 0 : 1);
+      if (kind === '一時的な 404（実際はある）') {
+        // 確認の明示なしの再実行（照会が回復）で、記録しているデプロイを使う
+        const i2 = s.make();
+        i2.retry('core.deploy');
+        expect(i2.runUntilBlocked({}, 20).error).toBeNull();
+        expect(deps.size).toBe(1);
+        expect(s.store.reg!.core.deploymentId).toBe(recorded);
+        return;
+      }
+      // 確認の明示なしでは作らない
+      const i2 = s.make();
+      i2.retry('core.deploy');
+      expect(i2.runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+      expect(deps.size).toBe(0);
+      // 確認を明示した再実行で 1 つだけ作る
+      const i3 = s.make();
+      i3.retry('core.deploy', true);
+      expect(i3.runUntilBlocked({}, 20).error).toBeNull();
+      expect(deps.size).toBe(1);
+    });
+  }
 
   // ---- Codex 監査19（次の版の前）: デプロイの応答に版の番号がない場合 ----
   it('デプロイの作成の応答に版の番号がなくても、照会で実際の版を確かめて記録する', () => {

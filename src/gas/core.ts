@@ -6,7 +6,7 @@
  * - 公開関数: doGet, doPost, staffApi（互換: kioskApi）, shiftlyAuthorize, shiftlyDailyJob（ビルド時にトップレベル関数として生成）
  */
 import { handleRequest, verifyEnvelope, SECRET_KEYS, APP_VERSION, type Backend } from '../backend/index';
-import { createGasPlatform, provisionStorage, writeEnvironmentFile } from '../backend/gas/platform';
+import { clearStorageCreatingMarkers, createGasPlatform, provisionStorage, writeEnvironmentFile } from '../backend/gas/platform';
 import { SheetsAdapter } from '../backend/gas/sheets-adapter';
 import { ensureSecrets, windowBump, windowCount } from '../backend/auth';
 import { timingSafeEqualHex } from '../shared/crypto';
@@ -144,6 +144,17 @@ export function shiftlyAuthorize() {
   }
   writeEnvironmentFile({ envId: cfg.envId, app: 'shiftly', schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION, scriptId: ScriptApp.getScriptId(), databaseId: st.dbId, updatedAt: new Date().toISOString() });
   return { ok: r.ok, created: st.created };
+}
+
+/**
+ * Google 所有者がスクリプトエディタで実行: 初期化の作成中の目印を外す（D-025 S1）。
+ * shiftlyAuthorize が「前回の作成の結果を確認できません」で止まり、Google ドライブで該当のフォルダ・ファイルが作られていないこと
+ * （またはゴミ箱に移動したこと）を確認した後にだけ実行する。実行後に shiftlyAuthorize を再実行すると作成する
+ */
+export function shiftlyConfirmStorageNotCreated() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  const cleared = clearStorageCreatingMarkers();
+  return { ok: true, cleared, message: cleared.length ? '作成中の目印を外しました。shiftlyAuthorize を再実行してください' : '作成中の目印はありません' };
 }
 
 /**

@@ -111,23 +111,37 @@ function deps(): InstallerDeps {
       up.setProperty(REG_KEY, JSON.stringify(reg));
       up.setProperty(SEC_KEY, JSON.stringify(sec));
       const blob = Utilities.newBlob(JSON.stringify(reg, null, 2), 'application/json', REG_FILE);
-      // 作成・使用した記録ファイルの ID を保存し、以後は ID で更新する（作成の直後に検索へ反映されず、保存のたびに
-      // 新しいファイルを作ることを防ぐ。独立した点検 S1-3）
+      // 記録ファイルは ID で扱う（Codex 監査22 #3、D-025 S1）。作成するときは、先に Drive で ID を予約して保存し（generateIds）、
+      // その ID で作成する。作成の応答を失っても、次の保存は同じ ID で更新（なければ同じ ID で作成）するため、検索への反映の遅れに
+      // 左右されず、二重に作らない（同じ ID のファイルは 1 つしか作れない）
+      const createWithId = (id: string) => Drive.Files.create({ id, name: REG_FILE, mimeType: 'application/json', appProperties: { shiftlySetup: 'registry', envId: reg.envId } }, blob, { fields: 'id' });
       const known = up.getProperty(REG_FILE_ID_KEY);
       if (known) {
         try {
           Drive.Files.update({}, known, blob);
           return;
-        } catch (e) {
-          // 更新できない（削除された等）: 次の保存で検索し直す。今回は止める（迷ったら止める）
-          up.deleteProperty(REG_FILE_ID_KEY);
-          throw e;
+        } catch {
+          // 更新できない: 予約した ID でまだ作られていない（前回の作成が失敗した）可能性。同じ ID で作成する（作成済みなら失敗する）
+          try {
+            createWithId(known);
+            return;
+          } catch (e) {
+            // どちらもできない（削除された・一時的な失敗）: 次の保存で検索し直す。今回は止める（迷ったら止める）
+            up.deleteProperty(REG_FILE_ID_KEY);
+            throw e;
+          }
         }
       }
-      const id = findRegistryFiles()[0] ?? null;
-      if (id) Drive.Files.update({}, id, blob);
-      const saved = id ?? (Drive.Files.create({ name: REG_FILE, mimeType: 'application/json', appProperties: { shiftlySetup: 'registry', envId: reg.envId } }, blob, { fields: 'id' }).id as string);
-      up.setProperty(REG_FILE_ID_KEY, saved);
+      const latest = latestRegistryFile();
+      if (latest) {
+        up.setProperty(REG_FILE_ID_KEY, latest.id);
+        Drive.Files.update({}, latest.id, blob);
+        return;
+      }
+      const reserved = (Drive.Files.generateIds({ count: 1, space: 'drive' }).ids as string[])[0];
+      if (!reserved) throw new Error('Google ドライブで記録ファイルの ID を予約できませんでした。時間をおいて再実行してください');
+      up.setProperty(REG_FILE_ID_KEY, reserved);
+      createWithId(reserved);
     },
     userEmail: () => {
       try {

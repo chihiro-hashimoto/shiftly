@@ -60,6 +60,9 @@ export interface ProjectRef {
   deployingPrompted?: boolean;
   /** 案内の後、管理者がデプロイがないことを確認したと明示したか（一覧で見つからない場合に、同じ説明で作成してよい） */
   deployingConfirmed?: boolean;
+  /** 記録しているデプロイが照会で見つからないことを案内済みか／ないことの確認を明示したか（Codex 監査22 #4） */
+  deploymentMissingPrompted?: boolean;
+  deploymentMissingConfirmed?: boolean;
 }
 
 /** Staff・Admin の版の組 */
@@ -503,7 +506,24 @@ export class Installer {
   private deploy(which: 'core' | 'admin') {
     const ref = this.reg![which];
     const v = this.d.api.createVersion(ref.scriptId!, `Shiftly ${this.d.release.version}`);
-    const existing = ref.deploymentId ? this.d.api.getDeployment(ref.scriptId!, ref.deploymentId) : null;
+    let existing = ref.deploymentId ? this.d.api.getDeployment(ref.scriptId!, ref.deploymentId) : null;
+    if (ref.deploymentId && !existing) {
+      // 記録しているデプロイが照会で見つからない（一時的な照会の失敗の可能性がある）。確認の明示があるまで新しく作らない（Codex 監査22 #4、D-025 S1）
+      const name = which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin';
+      if (!ref.deploymentMissingConfirmed) {
+        this.reg![which] = { ...ref, deploymentMissingPrompted: true };
+        this.persist();
+        throw new InstallerError(
+          `${which}.deploy` as StepId,
+          `記録している「${name}」の Web アプリのデプロイ（${ref.deploymentId}）を確認できませんでした`,
+          `Apps Script のエディタで「${name}」を開き、「デプロイ」→「デプロイを管理」で、このデプロイがあるか確認してください。ある場合は、チェックを付けずに数分おいてから「再実行」を押してください。ない場合（削除・アーカイブした場合）は、確認のチェックを付けて「再実行」を押すと、新しいデプロイを作ります`,
+          `「デプロイを管理」で、デプロイ（${ref.deploymentId}）がないことを確認しました`,
+        );
+      }
+      this.reg![which] = { ...ref, deploymentId: undefined, deploymentMissingPrompted: undefined, deploymentMissingConfirmed: undefined };
+      this.persist();
+      existing = null;
+    }
     const dep: Deployment = existing
       ? this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, v.versionNumber, `Shiftly ${this.d.release.version}`)
       : this.createDeploymentOnce(which, v.versionNumber);
@@ -538,6 +558,8 @@ export class Installer {
       deployingDescription: undefined,
       deployingPrompted: undefined,
       deployingConfirmed: undefined,
+      deploymentMissingPrompted: undefined,
+      deploymentMissingConfirmed: undefined,
     };
     // 更新中は、今回配備した版を記録する（再開・完了の判定、ロールバックの判定に使う。Codex 監査13）
     if (upd) this.reg!.update = { ...upd, deployed: { ...(upd.deployed ?? {}), [which]: v.versionNumber } };
@@ -643,6 +665,7 @@ export class Installer {
       for (const [s, which] of [['core.deploy', 'core'], ['admin.deploy', 'admin']] as const) {
         const ref = this.reg[which];
         if (step === s && ref.deployingAt && ref.deployingPrompted && confirmedNoDuplicate) ref.deployingConfirmed = true;
+        if (step === s && ref.deploymentId && ref.deploymentMissingPrompted && confirmedNoDuplicate) ref.deploymentMissingConfirmed = true;
       }
       this.persist();
     }
