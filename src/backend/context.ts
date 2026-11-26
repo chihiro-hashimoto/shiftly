@@ -4,7 +4,7 @@
 import type { Platform } from './platform';
 import type { UnitOfWork } from './store';
 import type { Employee, PermissionKey, StoreSettings } from '../shared/types';
-import { E } from './errors';
+import { ApiError, E } from './errors';
 import { toIsoJst, toLocalDate } from '../shared/time';
 
 export type Principal =
@@ -177,15 +177,26 @@ export interface PayrollRestoreLock {
   restoredAt: string;
   backupId: string;
 }
+/**
+ * 復元後の給与の停止（期間 ID → 停止）。記録を読み取れない場合は「停止なし」と見なさず、エラーにする
+ * （確定・訂正・明細の発行・停止の解除・復元を止める。迷ったら止める。独立した点検 補足2）
+ */
 export function payrollRestoreLocks(ctx: Ctx): Record<string, PayrollRestoreLock> {
   const raw = metaValue(ctx, 'payrollRestoreLocks');
   if (!raw) return {};
+  const broken = () =>
+    new ApiError('PAYROLL_BLOCKED', '復元後の給与の確認の記録（system_metadata の payrollRestoreLocks）を読み取れないため、給与の確定・訂正・明細の発行を停止しています。DB を手で編集した場合は元に戻してください', 409);
+  let o: unknown;
   try {
-    const o = JSON.parse(raw) as unknown;
-    return o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, PayrollRestoreLock>) : {};
+    o = JSON.parse(raw);
   } catch {
-    return {};
+    throw broken();
   }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) throw broken();
+  for (const v of Object.values(o as Record<string, unknown>)) {
+    if (!v || typeof v !== 'object' || typeof (v as PayrollRestoreLock).restoredAt !== 'string' || typeof (v as PayrollRestoreLock).backupId !== 'string') throw broken();
+  }
+  return o as Record<string, PayrollRestoreLock>;
 }
 export function setPayrollRestoreLocks(ctx: Ctx, locks: Record<string, PayrollRestoreLock>) {
   setMeta(ctx, 'payrollRestoreLocks', JSON.stringify(locks));

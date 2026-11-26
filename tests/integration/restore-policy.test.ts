@@ -150,3 +150,131 @@ describe('復元後の給与の照合: 計算結果の全項目を比べる（di
     expect(code(h.owner('payroll.correct', { periodId: p.id, employeeId: a, reason: '確認のための訂正', acknowledgements: acks }))).toBe('PAYROLL_BLOCKED');
   });
 });
+
+/**
+ * 復元と楽観的排他（版）: 復元で行の版を小さくしない（D-025 R1。独立した点検 R1-1）。
+ * 版が小さくなると、復元前に開いていた画面（Google 所有者の管理画面はセッションの失効の対象外）からの古い内容の上書きが、
+ * 版の照合を通ってしまう。全表で「復元前からある行の版は小さくならず、内容が変わった行・引き継いだ行の版は大きくなる」ことを確かめる
+ */
+describe('復元と楽観的排他（版）', () => {
+  type Row = Record<string, unknown> & { id: string; version: number };
+  const snapshot = (h: Harness) => {
+    const u = uowOf(h);
+    const out = new Map<string, Map<string, Row>>();
+    for (const def of TABLES) out.set(def.name, new Map(u.list<Row>(def.name).map((r) => [r.id, r])));
+    return out;
+  };
+  const content = (r: Row) => JSON.stringify(Object.keys(r).filter((k) => k !== 'version' && k !== 'updatedAt').sort().map((k) => [k, r[k] ?? null]));
+
+  /** バックアップの後に、restore・carry の両方の表で行を作成・更新した状態から復元する */
+  function scenario() {
+    const h = new Harness();
+    h.setupStore();
+    h.setNow('2026-11-02', '09:00');
+    const a = h.addStaff('山田', '482913', { rate: 1200 });
+    const emp = h.ownerOk<any>('employees.list', {}).find((e: any) => e.id === a);
+    const wr = h.ownerOk<any>('payconf.get', { employeeId: a }).wageRules[0];
+    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    h.setNow('2026-11-02', '10:00');
+    // carry の表: スタッフの更新 2 回・権限・PIN・バックアップの後に作ったスタッフ
+    const e1 = h.ownerOk<any>('employees.update', { employeeId: a, displayName: '山田2', version: emp.version });
+    const e2 = h.ownerOk<any>('employees.update', { employeeId: a, electronicPayslipConsent: false, version: e1.version });
+    h.ownerOk('permissions.set', { employeeId: a, permissions: ['shift_edit'] });
+    h.ownerOk('credentials.setPin', { employeeId: a, pin: '582914' });
+    const b = h.ownerOk<{ id: string }>('employees.create', { displayName: '後から', kana: 'あとから', payType: 'hourly', hireDate: '2025-01-01' });
+    const bList = h.ownerOk<any>('employees.list', {}).find((e: any) => e.id === b.id);
+    const b2 = h.ownerOk<any>('employees.update', { employeeId: b.id, note: '更新', version: bList.version });
+    // restore の表: 時給ルールの更新 2 回・店舗設定・シフト
+    const w1 = h.ownerOk<any>('payconf.upsertWageRule', { id: wr.id, version: wr.version, employeeId: a, kind: 'base', hourlyRate: 1300, effectiveFrom: '2025-01-01', priority: 0 }).rule;
+    const w2 = h.ownerOk<any>('payconf.upsertWageRule', { id: wr.id, version: w1.version, employeeId: a, kind: 'base', hourlyRate: 1400, effectiveFrom: '2025-01-01', priority: 0 }).rule;
+    h.ownerOk('settings.update', { storeName: '復元前の店名' });
+    h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-10', start: '09:00', end: '17:00', breakMinutes: 60 });
+    const before = snapshot(h);
+    h.setNow('2026-11-02', '12:00');
+    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    const after = snapshot(h);
+    return { h, a, b: b.id, e1, e2, b1Version: bList.version, b2, w1, w2, before, after };
+  }
+
+  it('全表: 復元前からある行の版は小さくならず、内容が変わった行・引き継いだ行（carry）の版は大きくなる', () => {
+    const { before, after } = scenario();
+    let changedRestoreRows = 0;
+    let carriedRows = 0;
+    for (const def of TABLES) {
+      const pol = RESTORE_POLICY[def.name].policy;
+      if (pol === 'revoke' || pol === 'skip') continue; // セッションはすべて失効・処理記録は候補のまま（画面から版で更新しない）
+      for (const [id, b] of before.get(def.name)!) {
+        const a = after.get(def.name)!.get(id);
+        if (!a) continue; // restore の表で、バックアップの後に作られた行（復元で消える。古い画面の更新は「見つからない」で拒否される）
+        expect(a.version, `${def.name} ${id}`).toBeGreaterThanOrEqual(b.version);
+        if (pol === 'carry') {
+          expect(a.version, `${def.name} ${id}（carry）`).toBeGreaterThan(b.version);
+          carriedRows++;
+        } else if (content(a) !== content(b)) {
+          expect(a.version, `${def.name} ${id}（内容が変わった行）`).toBeGreaterThan(b.version);
+          changedRestoreRows++;
+        }
+      }
+    }
+    // 検証が空にならないこと（restore の表で内容が戻った行・carry の行の両方を確かめている）
+    expect(changedRestoreRows).toBeGreaterThan(0);
+    expect(carriedRows).toBeGreaterThan(0);
+  });
+
+  it('独立した点検 R1-1: 復元前に開いていたスタッフの編集画面（版 2）からの保存は、復元後に衝突として拒否する（同意の撤回を古い値に戻さない）', () => {
+    const { h, a, e1 } = scenario();
+    const r = h.owner('employees.update', { employeeId: a, electronicPayslipConsent: true, version: e1.version });
+    expect(code(r)).toBe('CONFLICT');
+    const now = h.ownerOk<any>('employees.list', {}).find((e: any) => e.id === a);
+    expect(now.electronicPayslipConsent).toBe(false);
+    // 開き直した画面（最新の版）からは保存できる
+    expect(code(h.owner('employees.update', { employeeId: a, note: '開き直して保存', version: now.version }))).toBe('OK');
+  });
+
+  it('独立した点検 R1-1: バックアップの後に作ったスタッフも、復元前の古い版（版 1）からの保存を拒否する', () => {
+    const { h, b, b1Version } = scenario();
+    expect(code(h.owner('employees.update', { employeeId: b, note: '古い画面', version: b1Version }))).toBe('CONFLICT');
+  });
+
+  it('restore の表: 復元後に時給ルールを保存して版が進んでも、復元前に開いていた画面（復元前の版）からの保存は拒否する', () => {
+    const { h, a, w1, w2 } = scenario();
+    const restored = h.ownerOk<any>('payconf.get', { employeeId: a }).wageRules.find((x: any) => x.id === w1.id);
+    expect(restored.hourlyRate).toBe(1200); // 内容はバックアップの時点
+    // 復元後に開き直して保存（版が 1 つ進む）。版を小さくしていると、ここで復元前の画面の版と重なる
+    let cur = h.ownerOk<any>('payconf.upsertWageRule', { id: w1.id, version: restored.version, employeeId: a, kind: 'base', hourlyRate: 1250, effectiveFrom: '2025-01-01', priority: 0 }).rule;
+    for (let i = 0; i < 2; i++) {
+      for (const v of [w1.version, w2.version]) {
+        const r = h.owner('payconf.upsertWageRule', { id: w1.id, version: v, employeeId: a, kind: 'base', hourlyRate: 1500, effectiveFrom: '2025-01-01', priority: 0 });
+        expect(code(r), `復元前の版 ${v}（復元後の保存 ${i + 1} 回目の後）`).toBe('CONFLICT');
+      }
+      cur = h.ownerOk<any>('payconf.upsertWageRule', { id: w1.id, version: cur.version, employeeId: a, kind: 'base', hourlyRate: 1260 + i, effectiveFrom: '2025-01-01', priority: 0 }).rule;
+    }
+    expect(h.ownerOk<any>('payconf.get', { employeeId: a }).wageRules.find((x: any) => x.id === w1.id).hourlyRate).toBe(1261);
+  });
+});
+
+describe('復元後の給与の停止の記録が壊れている場合（独立した点検 補足2）', () => {
+  // 記録を読み取れない場合は「停止なし」と見なさず、確定を止める（迷ったら止める）。壊れ方の種類を列挙して確かめる
+  const BROKEN = ['{壊れた', '[]', 'null', '"text"', '{"pd_x":1}', '{"pd_x":{"restoredAt":1}}'];
+  for (const raw of BROKEN) {
+    it(`記録が ${raw} のとき、給与の確定を止める`, () => {
+      const h = new Harness();
+      h.setupStore();
+      const a = h.addStaff('佐藤', '582913', { payType: 'monthly' });
+      h.ownerOk('payconf.upsertSalaryRule', { employeeId: a, effectiveFrom: '2025-01-01', monthlyScheduledMinutes: 160 * 60, scheduledWeekdays: [1, 2, 3, 4, 5], scheduledDailyMinutes: 480, confirmed: true, monthlySalary: 240000 });
+      const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
+      h.ownerOk('deductions.upsert', { employeeId: a, periodId: p.id, status: 'explicit_none' });
+      h.setNow('2026-12-01', '06:00');
+      const c = h.ownerOk('payroll.compute', { periodId: p.id });
+      const acks = c.employees[0].issues.filter((i: any) => i.severity === 'confirm').map((i: any) => i.key);
+      // DB の記録を直接壊す（手での編集を模す）
+      const u = uowOf(h);
+      const meta = u.list<any>('system_metadata');
+      const row = meta.find((m) => m.key === 'payrollRestoreLocks');
+      if (row) u.update('system_metadata', { ...row, value: raw });
+      else u.insert('system_metadata', { key: 'payrollRestoreLocks', value: raw } as never, 'met');
+      u.flush();
+      expect(code(h.owner('payroll.confirm', { periodId: p.id, acknowledgements: acks }))).toBe('PAYROLL_BLOCKED');
+    });
+  }
+});

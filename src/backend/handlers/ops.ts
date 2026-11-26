@@ -471,6 +471,12 @@ function pruneBackups(ctx: Ctx, kind: BackupHistory['kind']) {
  * - skip: 候補のまま（内部の処理記録）
  */
 type RestorePolicy = 'restore' | 'append' | 'carry' | 'revoke' | 'skip';
+/** 行の内容が同じか（版・更新日時を除く）。復元で版を上げる必要があるかの判定に使う */
+function sameRowContent(a: Record<string, unknown>, b: Record<string, unknown> | null | undefined): boolean {
+  if (!b) return false;
+  const strip = (r: Record<string, unknown>) => JSON.stringify(Object.keys(r).filter((k) => k !== 'version' && k !== 'updatedAt').sort().map((k) => [k, r[k] ?? null]));
+  return strip(a) === strip(b);
+}
 type RowKey = (r: Record<string, unknown>) => string;
 const byId: RowKey = (r) => String(r.id);
 export const RESTORE_POLICY: Record<TableName, { policy: RestorePolicy; key?: RowKey; why: string }> = {
@@ -572,12 +578,14 @@ defineOps([
         //    v1.3: 管理者パスワード、勤怠修正（確認状態）・休憩の申告・早出残業申請（承認・実労働の確認）も現行を引き継ぐ
         //    （復元で承認済みの実労働や確認結果が失われ、賃金の計算が変わることを防ぐ）
         //    給与の確定データ・バックアップの履歴・端末登録コードなども、RESTORE_POLICY の carry として同じ規則で引き継ぐ
+        //    版は復元前・候補のどちらよりも大きくする（小さくすると、復元前に開いていた画面からの古い内容の上書きが
+        //    版の照合を通ってしまう。D-025 R1。独立した点検 R1-1）
         const carry = (t: TableName, key: RowKey) => {
           const candRows = new Map(uowC.list<Record<string, unknown>>(t).map((r) => [key(r), r]));
           for (const cur of ctx.uow.list<Record<string, unknown>>(t)) {
             const c = candRows.get(key(cur));
-            if (c) uowC.update(t, { ...cur, id: c.id, version: c.version } as never);
-            else uowC.insert(t, cur as never);
+            const version = Math.max(Number(cur.version) || 0, Number(c?.version) || 0) + 1;
+            uowC.putForRestore(t, { ...cur, id: c ? c.id : cur.id, version } as never);
           }
         };
         // 給与の確定データ（期間・計算結果のリビジョン・明細）も現行を引き継ぐ。バックアップ後に確定・訂正・発行した給与を
@@ -608,6 +616,20 @@ defineOps([
         for (const key of ['maintenance', 'pendingUpdate', 'appVersion'] as const) {
           const cur = metaValue(ctx, key);
           if (cur !== null) setMeta(ctxC, key, cur);
+        }
+        // 4c) バックアップの時点に戻す表（restore）でも、バックアップの後に更新された行は、版を復元前より大きくする
+        //     （内容はバックアップの時点、版は復元前の版 + 1。復元前に開いていた画面からの上書きを衝突として拒否する。D-025 R1）
+        for (const def of TABLES) {
+          if (RESTORE_POLICY[def.name].policy !== 'restore') continue;
+          const curRows = new Map(ctx.uow.list<Record<string, unknown> & { id: string; version: number }>(def.name).map((r) => [r.id, r]));
+          for (const r of uowC.list<Record<string, unknown> & { id: string; version: number }>(def.name)) {
+            const cur = curRows.get(r.id);
+            if (!cur) continue;
+            const cv = Number(cur.version) || 0;
+            const rv = Number(r.version) || 0;
+            // 復元前の版のほうが大きい（バックアップの後に更新された）、または同じ版で内容が違う場合は、復元前の版 + 1 にする
+            if (cv > rv || (cv === rv && !sameRowContent(r, cur))) uowC.putForRestore(def.name, { ...r, version: cv + 1 } as never);
+          }
         }
         // 5) 全セッション（スタッフ・管理者）失効・バックアップ履歴は現行を引き継ぐ
         revokeSessionsWhere(ctxC, () => true);

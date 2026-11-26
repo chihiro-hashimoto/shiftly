@@ -212,6 +212,17 @@ export class UnitOfWork {
     return next;
   }
 
+  /**
+   * 復元専用: 版を指定して書き込む（楽観的排他の照合はしない）。復元で行の版を復元前より小さくしないために使う
+   * （小さくすると、復元前に開いていた画面からの古い内容の上書きが版の照合を通ってしまう。D-025 R1）。通常の更新には使わない
+   */
+  putForRestore<T extends RowMeta>(table: TableName, row: T): T {
+    const next = { ...row, updatedAt: this.nowIso() } as T;
+    this.updatedKeys.add(`${table}|${row.id}`);
+    this.stage(table, next as unknown as Record<string, unknown>);
+    return next;
+  }
+
   private stage(table: TableName, row: Record<string, unknown>) {
     const def = TABLE_BY_NAME[table];
     const part = partitionKeyOf(def, row);
