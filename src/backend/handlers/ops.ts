@@ -471,12 +471,6 @@ function pruneBackups(ctx: Ctx, kind: BackupHistory['kind']) {
  * - skip: 候補のまま（内部の処理記録）
  */
 type RestorePolicy = 'restore' | 'append' | 'carry' | 'revoke' | 'skip';
-/** 行の内容が同じか（版・更新日時を除く）。復元で版を上げる必要があるかの判定に使う */
-function sameRowContent(a: Record<string, unknown>, b: Record<string, unknown> | null | undefined): boolean {
-  if (!b) return false;
-  const strip = (r: Record<string, unknown>) => JSON.stringify(Object.keys(r).filter((k) => k !== 'version' && k !== 'updatedAt').sort().map((k) => [k, r[k] ?? null]));
-  return strip(a) === strip(b);
-}
 type RowKey = (r: Record<string, unknown>) => string;
 const byId: RowKey = (r) => String(r.id);
 export const RESTORE_POLICY: Record<TableName, { policy: RestorePolicy; key?: RowKey; why: string }> = {
@@ -562,6 +556,13 @@ defineOps([
       const ctxC: Ctx = { ...ctx, uow: uowC };
       let restored = 0;
       try {
+        // 版の基準（4c で使う）: 前回までの復元で記録した最大の版と、復元前・候補の戻す表・引き継ぐ表の全行の版の最大
+        let versionFloor = Number(metaValue(ctx, 'restoreVersionFloor') ?? '0') || 0;
+        for (const def of TABLES) {
+          const pol = RESTORE_POLICY[def.name].policy;
+          if (pol !== 'restore' && pol !== 'carry') continue;
+          for (const u of [ctx.uow, uowC]) for (const r of u.list<{ version: number }>(def.name)) versionFloor = Math.max(versionFloor, Number(r.version) || 0);
+        }
         // 3) 追記だけの事実・履歴（RESTORE_POLICY が append の表）は、時刻ではなく ID で突合し、候補にない行をすべて再投入
         //    （バックアップと同じ秒に保存された打刻も取りこぼさない）
         for (const def of TABLES) {
@@ -617,18 +618,16 @@ defineOps([
           const cur = metaValue(ctx, key);
           if (cur !== null) setMeta(ctxC, key, cur);
         }
-        // 4c) バックアップの時点に戻す表（restore）でも、バックアップの後に更新された行は、版を復元前より大きくする
-        //     （内容はバックアップの時点、版は復元前の版 + 1。復元前に開いていた画面からの上書きを衝突として拒否する。D-025 R1）
+        // 4c) 版を復元をまたいで単調に増やす（D-025 R1。Codex 監査22 #2）。戻した表（restore）と引き継いだ表（carry）の全行を、
+        //     これまでに使われた最大の版（復元前・候補の全行と、前回までの復元で記録した最大の版）+ 1 にそろえる。
+        //     復元を何回・どの順で行っても、復元前に開いていた画面が持つ版とは重ならない（古い内容の保存は版の照合で拒否される）
+        const nextVersion = versionFloor + 1;
+        setMeta(ctxC, 'restoreVersionFloor', String(nextVersion));
         for (const def of TABLES) {
-          if (RESTORE_POLICY[def.name].policy !== 'restore') continue;
-          const curRows = new Map(ctx.uow.list<Record<string, unknown> & { id: string; version: number }>(def.name).map((r) => [r.id, r]));
+          const pol = RESTORE_POLICY[def.name].policy;
+          if (pol !== 'restore' && pol !== 'carry') continue;
           for (const r of uowC.list<Record<string, unknown> & { id: string; version: number }>(def.name)) {
-            const cur = curRows.get(r.id);
-            if (!cur) continue;
-            const cv = Number(cur.version) || 0;
-            const rv = Number(r.version) || 0;
-            // 復元前の版のほうが大きい（バックアップの後に更新された）、または同じ版で内容が違う場合は、復元前の版 + 1 にする
-            if (cv > rv || (cv === rv && !sameRowContent(r, cur))) uowC.putForRestore(def.name, { ...r, version: cv + 1 } as never);
+            if (Number(r.version) !== nextVersion) uowC.putForRestore(def.name, { ...r, version: nextVersion } as never);
           }
         }
         // 5) 全セッション（スタッフ・管理者）失効・バックアップ履歴は現行を引き継ぐ

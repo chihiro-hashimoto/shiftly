@@ -182,8 +182,10 @@ export interface PayrollRestoreLock {
  * （確定・訂正・明細の発行・停止の解除・復元を止める。迷ったら止める。独立した点検 補足2）
  */
 export function payrollRestoreLocks(ctx: Ctx): Record<string, PayrollRestoreLock> {
-  const raw = metaValue(ctx, 'payrollRestoreLocks');
-  if (!raw) return {};
+  // 記録の行がない場合だけ「停止なし」。行があるのに値が空・空白・壊れている場合は止める（Codex 監査22 #1。停止なしは '{}' で表す）
+  const row = ctx.uow.list<{ key: string; value: string | null }>('system_metadata').find((m) => m.key === 'payrollRestoreLocks');
+  if (!row) return {};
+  const raw = typeof row.value === 'string' ? row.value : '';
   const broken = () =>
     new ApiError('PAYROLL_BLOCKED', '復元後の給与の確認の記録（system_metadata の payrollRestoreLocks）を読み取れないため、給与の確定・訂正・明細の発行を停止しています。DB を手で編集した場合は元に戻してください', 409);
   let o: unknown;

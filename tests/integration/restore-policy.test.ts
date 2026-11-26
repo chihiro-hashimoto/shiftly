@@ -10,6 +10,7 @@ import { TABLES } from '../../src/backend/schema';
 import { RESTORE_POLICY } from '../../src/backend/handlers/ops';
 import { differingTotals } from '../../src/backend/handlers/payroll';
 import { UnitOfWork } from '../../src/backend/store';
+import type { PayrollTotals } from '../../src/shared/types';
 
 const code = (r: any) => (r.ok ? 'OK' : r.error.code);
 const uowOf = (h: Harness) => new UnitOfWork(h.env.adapter, { now: () => Date.now(), newId: (p) => `${p}_${Math.random().toString(16).slice(2, 12)}` });
@@ -109,14 +110,26 @@ describe('復元後の給与の照合: 計算結果の全項目を比べる（di
   }
   it('計算結果のどの 1 項目が違っても差として検出し、違う項目の名前を返す（項目を個別に選ばない）', () => {
     const base = sampleTotals();
-    const keys = Object.keys(base);
-    expect(keys.length).toBeGreaterThan(15);
+    // 型（PayrollTotals）の全項目を列挙する（Record<keyof PayrollTotals, true> なので、項目を追加すると型検査で決め忘れが分かる）。
+    // 計算結果に全項目が出ていることも確かめ、計算結果に現れた項目だけを回すことにならないようにする（Codex 監査22 のテストの指摘）
+    const ALL: Record<keyof PayrollTotals, true> = {
+      workDays: true, workMinutes: true, overtimeMinutes: true, over60Minutes: true, nightMinutes: true, holidayMinutes: true, basePay: true, extraHoursBasePay: true,
+      overtimePremium: true, over60Premium: true, nightPremium: true, holidayPremium: true, fixedOvertimePay: true, fixedOvertimeExcess: true, paidLeavePay: true,
+      paidLeaveDays: true, allowances: true, transport: true, absenceDeduction: true, grossPay: true, deductions: true, deductionTotal: true, netPay: true,
+    };
+    const keys = Object.keys(ALL);
+    expect(Object.keys(base).sort()).toEqual([...keys].sort());
     expect(differingTotals(base as never, JSON.parse(JSON.stringify(base)))).toEqual([]);
     for (const k of keys) {
       const changed = JSON.parse(JSON.stringify(base));
       changed[k] = Array.isArray(base[k]) ? [...(base[k] as unknown[]), { name: '追加', amount: 1 }] : typeof base[k] === 'number' ? (base[k] as number) + 1 : 'changed';
       const d = differingTotals(base as never, changed);
       expect(d, k).toHaveLength(1);
+      // 片方にだけない項目（以前の版で確定した結果など）も差として検出する
+      const missing = JSON.parse(JSON.stringify(base));
+      delete missing[k];
+      expect(differingTotals(base as never, missing), `${k}（片方にない）`).toHaveLength(1);
+      expect(differingTotals(missing, base as never), `${k}（片方にない・逆）`).toHaveLength(1);
     }
   });
 
@@ -255,9 +268,11 @@ describe('復元と楽観的排他（版）', () => {
 
 describe('復元後の給与の停止の記録が壊れている場合（独立した点検 補足2）', () => {
   // 記録を読み取れない場合は「停止なし」と見なさず、確定を止める（迷ったら止める）。壊れ方の種類を列挙して確かめる
-  const BROKEN = ['{壊れた', '[]', 'null', '"text"', '{"pd_x":1}', '{"pd_x":{"restoredAt":1}}'];
-  for (const raw of BROKEN) {
-    it(`記録が ${raw} のとき、給与の確定を止める`, () => {
+  // 有効な値は「停止なし（{}）」と「期間 ID → { restoredAt, backupId }」だけ。それ以外（空欄・空白を含む）はすべて止める（Codex 監査22 #1）
+  const BROKEN = ['', ' ', '\n', '{壊れた', '[]', 'null', '0', 'true', '"text"', '"{}"', '{"pd_x":1}', '{"pd_x":null}', '{"pd_x":{"restoredAt":1}}', '{"pd_x":{"restoredAt":"2026-11-01"}}', '{"pd_x":{"backupId":"b"}}'];
+  for (const raw of [...BROKEN, '{}', null]) {
+    const ok = raw === '{}' || raw === null; // 停止なし（{}）・記録の行がない場合だけ確定できる
+    it(`記録が ${raw === null ? '（行なし）' : JSON.stringify(raw)} のとき、給与の確定を${ok ? '止めない' : '止める'}`, () => {
       const h = new Harness();
       h.setupStore();
       const a = h.addStaff('佐藤', '582913', { payType: 'monthly' });
@@ -271,10 +286,82 @@ describe('復元後の給与の停止の記録が壊れている場合（独立�
       const u = uowOf(h);
       const meta = u.list<any>('system_metadata');
       const row = meta.find((m) => m.key === 'payrollRestoreLocks');
-      if (row) u.update('system_metadata', { ...row, value: raw });
-      else u.insert('system_metadata', { key: 'payrollRestoreLocks', value: raw } as never, 'met');
-      u.flush();
-      expect(code(h.owner('payroll.confirm', { periodId: p.id, acknowledgements: acks }))).toBe('PAYROLL_BLOCKED');
+      expect(row).toBeUndefined(); // 復元していないので行はない
+      if (raw !== null) {
+        u.insert('system_metadata', { key: 'payrollRestoreLocks', value: raw } as never, 'met');
+        u.flush();
+        expect(uowOf(h).list<any>('system_metadata').find((m) => m.key === 'payrollRestoreLocks')?.value).toBe(raw); // 保存と読み込みで値が変わらない
+      }
+      expect(code(h.owner('payroll.confirm', { periodId: p.id, acknowledgements: acks }))).toBe(ok ? 'OK' : 'PAYROLL_BLOCKED');
+    });
+  }
+});
+
+/**
+ * 復元を続けて行う場合の版（Codex 監査22 #2）。復元の順番の組み合わせを回し、各復元の後に、戻した表・引き継いだ表の全行の版が、
+ * それまでに見えたどの版（どの DB の、どの時点の行の版）よりも大きいことを確かめる。あわせて、いったん消えて復活した時給ルールを、
+ * 過去に見えたどの版で保存しても衝突として拒否することを確かめる
+ */
+describe('復元を続けて行う場合の版（復元の順番の組み合わせ）', () => {
+  type Row = { id: string; version: number };
+  const SEQUENCES = [['A', 'B'], ['B', 'A', 'B'], ['A', 'B', 'A', 'B'], ['B', 'B'], ['A', 'A', 'B']];
+  for (const seq of SEQUENCES) {
+    it(`復元の順番 ${seq.join('→')}`, () => {
+      const h = new Harness();
+      h.setupStore();
+      h.setNow('2026-11-02', '09:00');
+      const a = h.addStaff('山田', '482913'); // 時給ルールなし
+      const bkA = h.ownerOk('backup.run', { kind: 'manual' });
+      h.setNow('2026-11-02', '09:10');
+      const w1 = h.ownerOk<any>('payconf.upsertWageRule', { employeeId: a, kind: 'base', hourlyRate: 1400, effectiveFrom: '2025-01-01', priority: 0 }).rule;
+      const bkB = h.ownerOk('backup.run', { kind: 'manual' });
+      h.setNow('2026-11-02', '09:20');
+      h.ownerOk('payconf.upsertWageRule', { id: w1.id, version: w1.version, employeeId: a, kind: 'base', hourlyRate: 1500, effectiveFrom: '2025-01-01', priority: 0 });
+      const ids = { A: bkA.id, B: bkB.id } as Record<string, string>;
+      const seen = new Map<string, number>(); // `${表}|${ID}` → これまでに見えた最大の版
+      const observe = () => {
+        const u = uowOf(h);
+        for (const def of TABLES) {
+          const pol = RESTORE_POLICY[def.name].policy;
+          if (pol !== 'restore' && pol !== 'carry') continue;
+          for (const r of u.list<Row>(def.name)) {
+            const k = `${def.name}|${r.id}`;
+            seen.set(k, Math.max(seen.get(k) ?? 0, r.version));
+          }
+        }
+      };
+      const wageVersions = new Set<number>([w1.version, w1.version + 1]);
+      let minute = 30;
+      for (const step of seq) {
+        observe();
+        const before = new Map(seen);
+        h.setNow('2026-11-02', `09:${minute++}`);
+        h.ownerOk('backup.restore', { backupId: ids[step], confirmText: '復元する' });
+        const u = uowOf(h);
+        let checked = 0;
+        for (const def of TABLES) {
+          const pol = RESTORE_POLICY[def.name].policy;
+          if (pol !== 'restore' && pol !== 'carry') continue;
+          for (const r of u.list<Row>(def.name)) {
+            const prev = before.get(`${def.name}|${r.id}`);
+            if (prev !== undefined) {
+              expect(r.version, `${step} の復元後 ${def.name} ${r.id}`).toBeGreaterThan(prev);
+              checked++;
+            }
+          }
+        }
+        expect(checked).toBeGreaterThan(0);
+        // 復元後の時給ルール（あれば）を、これまでに見えたどの版で保存しても拒否する
+        const rule = h.ownerOk<any>('payconf.get', { employeeId: a }).wageRules.find((x: any) => x.id === w1.id);
+        if (rule) {
+          for (const v of wageVersions) {
+            const r = h.owner('payconf.upsertWageRule', { id: w1.id, version: v, employeeId: a, kind: 'base', hourlyRate: 1000, effectiveFrom: '2025-01-01', priority: 0 });
+            expect(code(r), `${step} の復元後、過去の版 ${v}`).toBe('CONFLICT');
+          }
+          expect(h.ownerOk<any>('payconf.get', { employeeId: a }).wageRules.find((x: any) => x.id === w1.id).hourlyRate).toBe(1400); // B の時点
+          wageVersions.add(rule.version);
+        }
+      }
     });
   }
 });
