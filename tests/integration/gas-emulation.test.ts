@@ -297,7 +297,7 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
     const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
     emu.driveFaults.listHide = (q) => q.includes('shiftlySetup'); // 作成直後で検索にまだ出ない
     // 初回の実行（アカウントの確認・店舗名の保存・作成の失敗の記録など、1 回の実行の中で何度も保存する）
-    api(setup, 'run', { storeName: '反映待ち店' });
+    api(setup, 'retry', { step: 'account', confirmedNoDuplicate: true, storeName: '反映待ち店' }); // 記録がない: 初めての構築の確認を明示して開始（D-026 #9）
     expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
     // 別の実行（再読み込み）でも、保存済みの ID で更新する
     api(setup, 'run', { storeName: '反映待ち店' });
@@ -313,7 +313,7 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
       else emu.driveFaults.loseCreate = (_n, ap) => ap?.shiftlySetup === 'registry' && once-- > 0;
       emu.driveFaults.listHide = (q) => q.includes('shiftlySetup'); // 検索には反映されていない
       // 1 回の実行の中で何度も保存する（最初の保存の作成で失敗し、同じ実行のエラーの記録の保存などが続く）
-      api(setup, 'run', { storeName: '反映待ち店' });
+      api(setup, 'retry', { step: 'account', confirmedNoDuplicate: true, storeName: '反映待ち店' }); // 記録がない: 初めての構築の確認を明示して開始（D-026 #9）
       api(setup, 'run', { storeName: '反映待ち店' });
       expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
       emu.driveFaults = {};
@@ -321,6 +321,24 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
       expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
     });
   }
+
+  it('独立した点検 #9（D-026）: Setup の記録が見つからない場合は、初めての構築の確認を明示するまで新しい環境を作らない', () => {
+    const emu = new GasEmulator();
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    emu.driveFaults.listHide = (q) => q.includes('shiftlySetup'); // 以前の記録が検索に見えていない状態
+    for (const req of [{ action: 'run', args: { storeName: '店' } }, { action: 'retry', args: { step: 'account', storeName: '店' } }, { action: 'retry', args: { step: 'core.create', confirmedNoDuplicate: true } }]) {
+      const r = JSON.parse(setup.setupApi(JSON.stringify(req)));
+      expect(r.ok).toBe(true);
+      expect(r.data.error.step).toBe('account');
+      expect(r.data.error.confirm).toContain('初めて');
+      expect(emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY')).toBeNull(); // 新しい環境を作っていない
+    }
+    const ok = JSON.parse(setup.setupApi(JSON.stringify({ action: 'retry', args: { step: 'account', confirmedNoDuplicate: true, storeName: '店' } })));
+    expect(ok.ok).toBe(true);
+    expect(emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY')).not.toBeNull();
+    // 記録ができた後の「続きから実行」は確認を求めない
+    expect(JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: {} }))).data.error?.step).not.toBe('account');
+  });
 
   it('独立した点検 S1-3: 同じ環境の記録ファイルが複数ある場合は、最後に保存した記録（updatedAt が最新）で再開する', () => {
     const emu = new GasEmulator();
@@ -414,6 +432,15 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Core の�
     }
   }
 
+  it('独立した点検 #5: Core の構成物（環境情報ファイルを含む）は、すべてスクリプトロックの中で作る（目印の読み書きを含む）', () => {
+    const { emu, core } = load();
+    expect(core.shiftlyAuthorize().ok).toBe(true);
+    const storage = emu.createLog.filter((c) => c.appProperties?.shiftly);
+    expect(storage.map((c) => c.appProperties!.shiftly).sort()).toEqual([...ITEMS].sort());
+    for (const c of storage) expect(c.underLock, c.appProperties!.shiftly).toBe(true);
+    expect(emu.scriptLockHeld).toBe(0);
+  });
+
   it('確認の操作（shiftlyConfirmStorageNotCreated）: 見つかる構成物は関連付け、見つからない構成物の目印だけを外す', () => {
     const { emu, core } = load();
     let once = 1;
@@ -469,7 +496,7 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Core の�
     let upd = 1;
     emu.driveFaults.updateFail = () => upd-- > 0;
     emu.driveFaults.listHide = (q) => q.includes('shiftlySetup');
-    JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: { storeName: '店' } })));
+    JSON.parse(setup.setupApi(JSON.stringify({ action: 'retry', args: { step: 'account', confirmedNoDuplicate: true, storeName: '店' } })));
     const reserved = emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID');
     expect(reserved).toBeTruthy();
     JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: { storeName: '店' } })));
@@ -478,5 +505,70 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Core の�
     emu.driveFaults = {};
     JSON.parse(setup.setupApi(JSON.stringify({ action: 'run', args: { storeName: '店' } })));
     expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+  });
+});
+
+/**
+ * D-026 R1 を GAS のアダプタ（Sheets・Drive・Script Properties）の経路で確かめる（独立した点検 #4）:
+ * Shiftly-Admin（adminApi。epoch の転送）→ Core（doPost）→ 復元（Drive の複製・DB の切替）→ 古い世代の拒否・世代の保持・保管先の点検
+ */
+describe.skipIf(!built || !existsSync('dist/gas/admin/Code.js'))('R1: GAS のアダプタでの復元世代（D-026）', () => {
+  function stack() {
+    const coreEmu = new GasEmulator();
+    const adminEmu = new GasEmulator();
+    const code = randomBytes(32).toString('hex');
+    const core = coreEmu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_r1', storeName: 'R1店', adminPairingHash: sha(code), setupPairingHash: sha(code + 's') } });
+    expect(core.shiftlyAuthorize().ok).toBe(true);
+    // Admin の UrlFetchApp を Core の doPost につなぐ（実環境では Web アプリの URL への POST）
+    const admin = adminEmu.load('admin', {
+      SHIFTLY_ADMIN_BOOTSTRAP: { envId: 'env_r1', coreUrl: 'https://script.google.com/macros/s/core/exec', pairingCode: code },
+      UrlFetchApp: { fetch: (_url: string, opts: { payload: string }) => ({ getResponseCode: () => 200, getContentText: () => core.doPost({ postData: { contents: opts.payload } }).content }) },
+    });
+    const api = (req: Record<string, unknown>) => JSON.parse(admin.adminApi(JSON.stringify({ requestId: `emu_${randomBytes(6).toString('hex')}`, ...req })));
+    const epoch = () => Number(coreEmu.scriptProps.getProperty('SHIFTLY_RESTORE_EPOCH'));
+    return { coreEmu, core, api, epoch };
+  }
+
+  it('復元で DB を切り替えても世代は Script Properties に残って進み、復元前の世代の保存は拒否される（Admin は数値の世代だけを転送する）', () => {
+    const { coreEmu, api, epoch } = stack();
+    const e0 = epoch();
+    expect(e0).toBeGreaterThan(0);
+    const got = api({ op: 'settings.get' });
+    expect(got.ok).toBe(true);
+    expect(got.epoch).toBe(e0);
+    expect(api({ op: 'settings.update', args: { storeName: '復元前' }, epoch: e0 }).ok).toBe(true);
+    const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: e0 });
+    expect(bk.ok).toBe(true);
+    const dbBefore = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID');
+    const r = api({ op: 'backup.restore', args: { backupId: bk.data.id, confirmText: '復元する' } });
+    expect(r.ok).toBe(true);
+    expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).not.toBe(dbBefore); // DB は切り替わった
+    const e1 = epoch();
+    expect(e1).toBeGreaterThan(e0); // 世代は DB の外にあり、切替をまたいで進む
+    // 復元前の画面（世代 e0）・世代なし・文字列の世代（Admin は転送しない）は拒否
+    for (const ep of [e0, undefined, String(e1)]) expect(api({ op: 'settings.update', args: { storeName: '古い画面' }, ...(ep !== undefined ? { epoch: ep } : {}) }).error?.code).toBe('STALE_VIEW');
+    expect(api({ op: 'settings.update', args: { storeName: '読み込み直した画面' }, epoch: e1 }).ok).toBe(true);
+    // 保管先の点検: DB の目印は稼働中の 1 つだけ（候補・置き換え済み・バックアップの複製を DB と数えない）
+    const sc = api({ op: 'system.storageCheck' });
+    expect(sc.ok).toBe(true);
+    expect(sc.data.issues).toEqual([]);
+    expect(sc.data.ok).toBe(true);
+  });
+
+  it('DB の切替に失敗した場合は、復元の候補を破棄し、稼働中の DB は変えない（世代は進んでいてもよい）', () => {
+    const { coreEmu, api, epoch } = stack();
+    const e0 = epoch();
+    const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: e0 });
+    const dbBefore = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID');
+    let once = 1;
+    coreEmu.scriptProps.failSet = (k) => k === 'SHIFTLY_DB_ID' && once-- > 0;
+    const r = api({ op: 'backup.restore', args: { backupId: bk.data.id, confirmText: '復元する' } });
+    coreEmu.scriptProps.failSet = undefined;
+    expect(r.ok).toBe(false);
+    expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).toBe(dbBefore);
+    const candidates = [...coreEmu.files.values()].filter((f) => !f.trashed && f.appProperties?.shiftly === 'restore_candidate');
+    expect(candidates).toHaveLength(0);
+    expect(api({ op: 'settings.update', args: { storeName: 'x' }, epoch: e0 }).error?.code).toBe('STALE_VIEW'); // 世代は進んだ（安全側）
+    expect(api({ op: 'settings.update', args: { storeName: 'x' }, epoch: epoch() }).ok).toBe(true);
   });
 });

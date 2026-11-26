@@ -94,7 +94,14 @@ export function createDemoSetupTransport(): SetupTransport {
       const i = inst();
       let r: unknown;
       if (action === 'state') r = i.state();
-      else if (action === 'run' || action === 'retry') {
+      else if ((action === 'run' || action === 'retry') && !i.hasRegistry() && !(action === 'retry' && args?.step === 'account' && args?.confirmedNoDuplicate === true)) {
+        // 本番の Setup（src/gas/setup.ts）と同じく、記録がない場合は「初めての構築」の確認を求める
+        r = {
+          state: i.state(),
+          waitingFor: null,
+          error: { step: 'account', message: 'Setup の記録が見つかりません。初めての構築として進めてよいかの確認が必要です', fix: '初めての構築の場合は、確認のチェックを付けて実行してください', confirm: 'この Google アカウントで Shiftly を構築するのは初めてです（以前に構築した環境はありません）' },
+        };
+      } else if (action === 'run' || action === 'retry') {
         if (action === 'retry') i.retry(String(args?.step) as never);
         r = i.runUntilBlocked({ storeName: typeof args?.storeName === 'string' ? args.storeName : undefined }, 20);
         const w = (r as { waitingFor: { step: string } | null }).waitingFor;

@@ -204,7 +204,7 @@
 | `export.payroll` | output | 出力（同上） |
 | `export.shifts` | output | 出力（同上） |
 | `export.wageLedger` | output | 出力（同上） |
-| `attendance.punch` | punch | 打刻の時刻はサーバーの時刻で、画面のデータで既存のデータを書き換えない（打刻原本は追記だけ。復元でも再投入される）。復元でスタッフのセッションは失効し、ログインし直す |
+| `attendance.punch` | punch | 打刻の時刻はサーバーの時刻で、打刻原本は追記だけ（復元でも再投入される）。ただし、退勤の打刻に休憩の申告（画面で選んだ内容。既存の申告を置き換える）が付いている場合は、世代を照合する（editWhen）。復元でスタッフのセッションは失効し、ログインし直す |
 | `backup.restore` | system | 復元そのもの（Google 所有者だけ。確認の入力が必要。実行時に世代を進める） |
 | `backup.run` | system | バックアップの作成（現在のデータを複製するだけ） |
 | `system.finishUpdate` | system | 更新の完了（整合性の確認と版の記録。Setup の工程） |

@@ -661,8 +661,19 @@ defineOps([
       // 7) 切替（候補は検証済み）。切替の直前に復元世代を進める（D-026）。世代を進めた後に切替が失敗しても、
       //    復元前に開いた画面の古い世代は以後すべて拒否される（安全側）。切替は世代を進めた後にだけ行うため、
       //    新しい DB が古い世代の要求を受け入れることはない。復元と通常の更新はロックで排他する
-      advanceEpoch(ctx.p);
-      const sw = ctx.p.database.activate(cand.candidateId);
+      let sw: { previousId: string };
+      try {
+        advanceEpoch(ctx.p);
+        sw = ctx.p.database.activate(cand.candidateId);
+      } catch (e) {
+        // 切替の前に失敗した場合は候補を破棄する（稼働中になった DB は破棄しない: discard が拒否する）。世代はすでに進んでいてもよい（安全側）
+        try {
+          ctx.p.database.discard(cand.candidateId);
+        } catch {
+          /* 破棄できない場合も稼働中の DB には影響しない */
+        }
+        throw e;
+      }
       ctx.uow.adapter.reset?.();
       const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
       const ctx2: Ctx = { ...ctx, uow: uow2 };

@@ -160,6 +160,24 @@ function deps(): InstallerDeps {
   };
 }
 
+/**
+ * Setup の記録（UserProperties・Google ドライブの記録ファイル）が見つからない場合は、検索の 0 件だけを根拠に新しい環境を作らない
+ * （以前の環境の記録が見えていないだけの可能性がある。D-026 S1・独立した点検 #9）。所有者が「初めての構築」であることを確認してから作る
+ */
+export const FIRST_INSTALL_CONFIRM = 'この Google アカウントで Shiftly を構築するのは初めてです（以前に構築した環境はありません）';
+export function firstInstallPrompt(state: unknown) {
+  return {
+    state,
+    waitingFor: null,
+    error: {
+      step: 'account',
+      message: 'Setup の記録が見つかりません。初めての構築として進めてよいかの確認が必要です',
+      fix: '以前にこの Google アカウントで Shiftly を構築した場合は、Google ドライブの「Shiftly Setup Registry.json」がゴミ箱にないか確認し、ある場合は元に戻してから画面を再読み込みしてください（新しく構築すると、Staff・Admin・DB が二重にできます）。初めての構築の場合は、確認のチェックを付けて実行してください',
+      confirm: FIRST_INSTALL_CONFIRM,
+    },
+  };
+}
+
 /** Setup 画面からの呼び出し（同一ユーザーの同時実行はロックで防止） */
 export function setupApi(reqJson: string): string {
   const lock = LockService.getUserLock();
@@ -172,8 +190,14 @@ export function setupApi(reqJson: string): string {
       case 'state':
         return ok(inst.state());
       case 'run':
+        if (!inst.hasRegistry()) return ok(firstInstallPrompt(inst.state()));
         return ok(inst.runUntilBlocked({ storeName: typeof a.storeName === 'string' ? a.storeName : undefined }, 4));
       case 'retry':
+        if (!inst.hasRegistry()) {
+          // 記録がない状態での実行は、「初めての構築」の確認を明示した場合だけ（アカウントの確認の工程から始める）
+          if (a.step !== 'account' || a.confirmedNoDuplicate !== true) return ok(firstInstallPrompt(inst.state()));
+          return ok(inst.runUntilBlocked({ storeName: typeof a.storeName === 'string' ? a.storeName : undefined }, 4));
+        }
         inst.retry(String(a.step) as never, a.confirmedNoDuplicate === true);
         return ok(inst.runUntilBlocked({ storeName: typeof a.storeName === 'string' ? a.storeName : undefined }, 4));
       case 'attach':

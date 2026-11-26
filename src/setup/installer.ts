@@ -207,13 +207,20 @@ export class InstallerError extends Error {
 }
 
 /**
- * 外部の作成の要求が失敗したとき、作成されたかどうかが分からないか（Codex 監査19 #2）。
- * Google が要求を拒否したこと（4xx）が分かる場合だけ「作成されていない」とし、それ以外（通信の例外・タイムアウト・5xx）は
- * 作成されたかどうか分からないとして扱う（応答だけが失われた可能性がある）
+ * 「作成されていない」と判断してよい応答（D-026 S1。許可リスト）。要求の内容・認証・権限・利用上限の段階で Google が拒否した
+ * （作成の処理に進んでいない）ことが分かるものだけ。400: 要求の形式が不正／401: 認証されていない／403: 権限がない・API が無効／
+ * 429: 利用上限。404・409・410・412・499（取消）などは、作成済みかどうかを応答から判断できないため含めない
+ */
+export const DEFINITELY_NOT_CREATED = new Set([400, 401, 403, 429]);
+
+/**
+ * 外部の作成の要求が失敗したとき、作成されたかどうかが分からないか（Codex 監査19 #2・独立した点検 D-026）。
+ * 許可リスト（DEFINITELY_NOT_CREATED）の応答だけを「作成されていない」とし、それ以外（通信の例外・タイムアウト・5xx・
+ * その他の 4xx・ID のない成功応答）はすべて、作成されたかどうか分からないとして扱う
  */
 export function createOutcomeUnknown(e: unknown): boolean {
   if (!(e instanceof AppsScriptApiError)) return true;
-  return e.status === 0 || e.status === 408 || e.status >= 500;
+  return !DEFINITELY_NOT_CREATED.has(e.status);
 }
 
 const editorUrl = (id?: string) => (id ? `https://script.google.com/home/projects/${encodeURIComponent(id)}/edit` : null);
@@ -239,6 +246,11 @@ export class Installer {
     this.reg!.setupPairingHash = this.d.sha256Hex(code);
     for (const s of ['core.upload', 'core.deploy', 'setup.pair', 'verify'] as StepId[]) delete this.reg!.steps[s];
     this.persist();
+  }
+
+  /** Setup の記録（レジストリ）を読み込めたか（ない場合は新しい環境の構築になる） */
+  hasRegistry(): boolean {
+    return !!this.reg;
   }
 
   state(): PublicState {
@@ -786,12 +798,29 @@ export class Installer {
     if (!which) return { ok: false, message: 'この工程では関連付けできません' };
     const ref = this.reg[which];
     const expectedTitle = ref.title ?? `${which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin'} (${this.reg.envId})`;
+    // 関連付けは、その工程が失敗していて、作成の結果を確認できないことを案内した場合だけ受け付ける（独立した点検 #6）
+    const prompted =
+      step === 'core.create' || step === 'admin.create' ? !!(ref.creatingPrompted || ref.projectMissingPrompted) : step === 'core.deploy' || step === 'admin.deploy' ? !!(ref.deployingPrompted || ref.deploymentMissingPrompted) : false;
+    if (this.reg.steps[step]?.status !== 'error' || !prompted) return { ok: false, message: '関連付けは、作成の結果を確認できないと案内された工程でだけ行えます' };
+    // 関連付けの後にやり直す工程（後続の工程と最後の確認）。Staff の URL が変わり得るため、Staff の場合は Admin の配置以降もやり直す
+    const redo: Record<string, StepId[]> = {
+      'core.create': ['core.create', 'core.upload', 'core.deploy', 'core.authorize', 'admin.upload', 'admin.deploy', 'admin.authorize', 'setup.pair', 'verify'],
+      'admin.create': ['admin.create', 'admin.upload', 'admin.deploy', 'admin.authorize', 'verify'],
+      'core.deploy': ['core.deploy', 'admin.upload', 'admin.deploy', 'verify'],
+      'admin.deploy': ['admin.deploy', 'verify'],
+    };
+    const resetSteps = (sameAsRecorded = false) => {
+      // 記録と同じものを関連付けた場合は、その工程と最後の確認だけをやり直す（接続・承認はそのまま有効）
+      for (const s of sameAsRecorded ? [step, 'verify' as StepId] : (redo[step] ?? [step, 'verify'])) delete this.reg!.steps[s];
+    };
     if (step === 'core.create' || step === 'admin.create') {
       const p = this.d.api.getProject(id);
       if (!p) return { ok: false, message: 'その ID のプロジェクトを確認できませんでした' };
       if (p.title !== expectedTitle) return { ok: false, message: `プロジェクトの名前が「${expectedTitle}」と一致しません（${p.title}）` };
-      this.reg[which] = { title: expectedTitle, scriptId: id };
-      delete this.reg.steps[step];
+      const same = ref.scriptId === id;
+      // 記録と同じプロジェクトならデプロイ等の記録を残す（消すと新しいデプロイを作ってしまう）。別のプロジェクトなら記録を作り直す
+      this.reg[which] = same ? { ...ref, title: expectedTitle, scriptId: id, creatingAt: undefined, creatingPrompted: undefined, projectMissingPrompted: undefined, projectMissingConfirmed: undefined } : { title: expectedTitle, scriptId: id };
+      resetSteps(same);
       this.persist();
       return { ok: true, message: `「${expectedTitle}」を関連付けました` };
     }
@@ -801,8 +830,9 @@ export class Installer {
       if (!dep) return { ok: false, message: 'その ID のデプロイを確認できませんでした' };
       const desc = dep.deploymentConfig?.description ?? '';
       if (!desc.startsWith(`Shiftly `) || !desc.includes(`${this.reg.envId} ${which}`)) return { ok: false, message: 'Shiftly のセットアップで作成したデプロイではありません（説明が一致しません）' };
+      const same = ref.deploymentId === id;
       this.reg[which] = { ...ref, deploymentId: id, deployingAt: undefined, deployingDescription: undefined, deployingPrompted: undefined, deployingConfirmed: undefined, deploymentMissingPrompted: undefined, deploymentMissingConfirmed: undefined };
-      delete this.reg.steps[step];
+      resetSteps(same);
       this.persist();
       return { ok: true, message: 'デプロイを関連付けました' };
     }

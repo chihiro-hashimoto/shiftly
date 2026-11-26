@@ -37,6 +37,11 @@ export interface OpDef {
   name: string;
   /** 操作の分類（D-026） */
   kind: OpKind;
+  /**
+   * edit 以外の更新系の操作のうち、引数によっては画面上のデータに基づく更新を含む場合に true を返す。true の要求は edit と同じく
+   * 世代を照合する（例: 退勤の打刻に付けた休憩の申告。D-026 の独立した点検 #7）
+   */
+  editWhen?: (args: unknown) => boolean;
   auth: AuthKind;
   /** staff_or_owner / session で要求する権限（いずれか） */
   perms?: PermissionKey[];
@@ -133,7 +138,7 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
       if (!def.allowInMaintenance && isMaintenance(ctx) && ctx.principal.kind !== 'owner' && ctx.principal.kind !== 'system') throw E.maintenance();
       // 画面からの業務更新は、画面がデータを取得した時点の復元世代を照合する（D-026。ロックの内側で照合し、復元と競合しない）。
       // 世代がない・古い要求は拒否する。世代の記録がない・壊れている場合も、古い要求を受け入れないよう更新を止める
-      if (def.kind === 'edit') {
+      if (def.kind === 'edit' || (def.editWhen && def.editWhen(r.args))) {
         const cur = currentEpoch(p);
         if (cur === null) throw new ApiError('EPOCH_UNAVAILABLE', 'データの世代情報を確認できないため、更新を停止しています。Google 所有者が Shiftly-Staff のエディタで shiftlyAuthorize を実行してください', 409);
         if (typeof r.epoch !== 'number' || r.epoch !== cur)
@@ -172,8 +177,13 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
 
     // 更新系で端末認証が必要な操作は、ロック取得前に読み取りのみで認証する（未認証リクエストでロックを占有させない）
     if (def.mutating && !trusted && def.auth !== 'public') preAuthenticate(be, def, r);
+    // 応答に付ける世代は、処理の前と後に読み、途中で変わった（処理の間に復元が切り替わった）場合は前の世代を返す。
+    // 読み取りはロックの外で行うため、新しく開いた画面が「世代を進めた後・DB の切替の前」に旧 DB を読み、新しい世代を固定することを防ぐ
+    // （前の世代を固定した画面は、次の応答で古い画面として検知される。D-026 の独立した点検 #2）
+    const before = safeEpoch(p);
     const data = def.mutating ? p.withLock(15000, run) : run();
-    return { ok: true, data, epoch: safeEpoch(p) };
+    const after = safeEpoch(p);
+    return { ok: true, data, epoch: before === after ? after : before };
   } catch (e) {
     if (e instanceof ApiError) return { ok: false, error: { code: e.code, message: e.message }, epoch: safeEpoch(p) };
     if (e instanceof ConflictError) return { ok: false, error: { code: 'CONFLICT', message: e.message }, epoch: safeEpoch(p) };

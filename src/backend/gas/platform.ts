@@ -92,7 +92,8 @@ class GasFiles implements FileStore, DatabaseControl {
   copyDatabase(folder: FolderKey, name: string) {
     const id = PropertiesService.getScriptProperties().getProperty(PROP.dbId);
     if (!id) throw new Error('DB が未作成です');
-    const f = Drive.Files.copy({ name, parents: [folders()[folder]] }, id, { fields: 'id,size' });
+    // 複製には元の DB の目印（appProperties の shiftly=database）を引き継がせず、バックアップの目印を付ける（D-026 S1。保管先の点検で DB と数えない）
+    const f = Drive.Files.copy({ name, parents: [folders()[folder]], appProperties: { shiftly: 'backup' } }, id, { fields: 'id,size' });
     return { fileId: f.id as string, sizeBytes: f.size ? Number(f.size) : null };
   }
   storageQuota() {
@@ -128,15 +129,17 @@ class GasFiles implements FileStore, DatabaseControl {
     return id;
   }
   prepareRestoreCopy(backupFileId: string) {
-    const f = Drive.Files.copy({ name: `Shiftly Database (restore candidate ${new Date().toISOString().slice(0, 19)})`, parents: [folders()['01_Database']] }, backupFileId, { fields: 'id' });
+    // 復元の候補には「候補」の目印を付ける（切替のときに DB の目印へ付け替える。D-026 S1）
+    const f = Drive.Files.copy({ name: `Shiftly Database (restore candidate ${new Date().toISOString().slice(0, 19)})`, parents: [folders()['01_Database']], appProperties: { shiftly: 'restore_candidate' } }, backupFileId, { fields: 'id' });
     const id = f.id as string;
     return { candidateId: id, adapter: new SheetsAdapter(() => id) };
   }
   activate(candidateId: string) {
     const prev = this.currentId();
-    // 旧 DB は削除せず名前を変更して保持（ロールバック可能）
-    Drive.Files.update({ name: `Shiftly Database (replaced ${new Date().toISOString().slice(0, 19)})` }, prev);
-    Drive.Files.update({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})` }, candidateId);
+    // 旧 DB は削除せず名前と目印を変更して保持（ロールバック可能）。DB の目印（shiftly=database）は常に稼働中の 1 つだけにする
+    // （保管先の点検で、置き換え済みの DB・候補を DB と数えない。D-026 S1）。途中で止まった場合は 0 件になり、点検で検出される
+    Drive.Files.update({ name: `Shiftly Database (replaced ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'replaced_database' } }, prev);
+    Drive.Files.update({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'database' } }, candidateId);
     PropertiesService.getScriptProperties().setProperty(PROP.dbId, candidateId);
     return { previousId: prev };
   }

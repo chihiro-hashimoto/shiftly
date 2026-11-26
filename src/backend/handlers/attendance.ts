@@ -42,6 +42,8 @@ defineOps([
   {
     name: 'attendance.punch',
     kind: 'punch',
+    // 退勤の打刻に休憩の申告（画面で選んだ内容）が付いている場合は、申告が既存の申告を置き換えるため、世代を照合する
+    editWhen: (args) => !!args && typeof args === 'object' && (args as { breakDeclaration?: unknown }).breakDeclaration !== undefined && (args as { breakDeclaration?: unknown }).breakDeclaration !== null,
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],

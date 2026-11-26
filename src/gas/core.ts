@@ -142,7 +142,10 @@ export function shiftlyAuthorize() {
   if (!ScriptApp.getProjectTriggers().some((t) => t.getHandlerFunction() === 'shiftlyDailyJob')) {
     ScriptApp.newTrigger('shiftlyDailyJob').timeBased().everyDays(1).atHour(4).inTimezone('Asia/Tokyo').create();
   }
-  writeEnvironmentFile({ envId: cfg.envId, app: 'shiftly', schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION, scriptId: ScriptApp.getScriptId(), databaseId: st.dbId, updatedAt: new Date().toISOString() });
+  // 環境情報ファイルも一度だけ作る構成物のため、作成中の目印の読み書きを含めてスクリプトロックの中で行う（handleRequest とは入れ子にしない。D-026 S1）
+  b.p.withLock(30000, () =>
+    writeEnvironmentFile({ envId: cfg.envId, app: 'shiftly', schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION, scriptId: ScriptApp.getScriptId(), databaseId: st.dbId, updatedAt: new Date().toISOString() }),
+  );
   return { ok: r.ok, created: st.created };
 }
 

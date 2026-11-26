@@ -39,6 +39,19 @@ describe('操作の分類（D-026）', () => {
       expect(o.kind === 'read', o.name).toBe(!o.mutating);
     }
   });
+  it('世代の照合を適用しない更新系の操作は、この一覧（見直し済み）と一致する（追加・変更にはテストの更新＝見直しが必要）', () => {
+    const EXPECTED = [
+      'attendance.punch',
+      'auth.login', 'auth.logout', 'auth.changePin', 'auth.stepUp',
+      'adminAuth.login', 'adminAuth.logout', 'adminAuth.reauth', 'adminAuth.changePassword', 'adminAuth.setPassword', 'adminAuth.unlock', 'adminAuth.revokeSessions',
+      'credentials.setPin', 'credentials.clearPin', 'credentials.unlock', 'credentials.setStepUp',
+      'staff.enroll', 'devices.createEnrollment', 'devices.revoke',
+      'backup.restore', 'backup.run', 'system.initialize', 'system.migrate', 'system.prepareUpdate', 'system.finishUpdate', 'system.setMaintenance', 'system.resetSetupPairing',
+      'export.attendance', 'export.payroll', 'export.shifts', 'export.wageLedger',
+      'system.dailyJob', 'notifications.scan',
+    ];
+    expect(Object.keys(EPOCH_EXEMPT).sort()).toEqual([...EXPECTED].sort());
+  });
   it('世代の照合を適用しない更新系の操作は、すべて理由が登録されている（登録の過不足がない）', () => {
     const exempt = ops.filter((o) => o.mutating && o.kind !== 'edit').map((o) => o.name).sort();
     expect(Object.keys(EPOCH_EXEMPT).sort()).toEqual(exempt);
@@ -308,5 +321,56 @@ describe('RESTORE_POLICY の全表: 代表行で実際の復元の結果を確�
       checked++;
     }
     expect(checked).toBe(TABLES.length);
+  });
+});
+
+describe('応答に付ける世代（D-026 の独立した点検 #2）', () => {
+  it('読み取りの処理の間に世代が進んだ場合は、処理の前の世代を返す（新しい画面が旧 DB のデータを新しい世代として固定しない）', () => {
+    const h = new Harness();
+    h.setupStore();
+    const before = h.currentEpoch()!;
+    const p = h.env.platform;
+    // 読み取りの処理の途中で、別の実行の復元が世代を進めた状態を模す（DB の切替はまだ）
+    const ad = h.env.adapter as unknown as { read: (...a: unknown[]) => unknown; readMany?: (...a: unknown[]) => unknown };
+    let once = true;
+    const advance = () => {
+      if (once) {
+        once = false;
+        p.secrets.set('SHIFTLY_RESTORE_EPOCH', String(before + 1000));
+      }
+    };
+    const read = ad.read.bind(ad);
+    ad.read = (...a: unknown[]) => (advance(), read(...a));
+    if (ad.readMany) {
+      const readMany = ad.readMany.bind(ad);
+      ad.readMany = (...a: unknown[]) => (advance(), readMany(...a));
+    }
+    const r: any = h.owner('settings.get');
+    expect(r.ok).toBe(true);
+    expect(r.epoch).toBe(before); // 前の世代 → 画面は前の世代を固定し、次の応答（新しい世代）で古い画面として検知する
+    expect((h.owner('settings.get') as any).epoch).toBe(before + 1000);
+  });
+});
+
+describe('退勤の打刻に付けた休憩の申告（D-026 の独立した点検 #7）', () => {
+  it('申告の付いた退勤は、復元前に読み込んだ画面（世代）からは拒否する。申告のない打刻は世代を照合しない', () => {
+    const h = new Harness();
+    h.setupStore({ breakMode: 'scheduled', timeBasis: 'shift' });
+    const a = h.addStaff('山田', '482913', { rate: 1200 });
+    h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-03', start: '09:00', end: '17:00', breakMinutes: 60, fixedBreakStart: '12:00' });
+    h.ownerOk('shifts.publish', { from: '2026-11-03', to: '2026-11-03' });
+    h.setNow('2026-11-03', '09:00');
+    h.login(a, '482913');
+    expect(code(h.staff('attendance.punch', { type: 'clock_in' }, { epoch: null }))).toBe('OK'); // 申告なし: 照合しない
+    const opened = h.currentEpoch()!;
+    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    h.setNow('2026-11-03', '17:00');
+    h.login(a, '482913'); // 復元でセッションは失効。ログインし直す（画面は復元前に読み込んだまま）
+    const decl = { kind: 'as_scheduled', expectedPlanned: { start: '2026-11-03T12:00', end: '2026-11-03T13:00', minutes: 60 } };
+    expect(code(h.staff('attendance.punch', { type: 'clock_out', breakDeclaration: decl }, { epoch: opened }))).toBe('STALE_VIEW');
+    expect(code(h.staff('attendance.punch', { type: 'clock_out', breakDeclaration: decl }, { epoch: null }))).toBe('STALE_VIEW');
+    // 読み込み直した画面（現在の世代）からは申告付きで退勤できる
+    expect(code(h.staff('attendance.punch', { type: 'clock_out', breakDeclaration: decl }))).toBe('OK');
   });
 });

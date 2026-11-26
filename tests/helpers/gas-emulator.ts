@@ -87,6 +87,10 @@ export class GasEmulator {
    */
   /** generateIds で予約した ID */
   reservedIds = new Set<string>();
+  /** スクリプトロックを保持している数（入れ子の検出・ロックの中での作成の確認に使う） */
+  scriptLockHeld = 0;
+  /** Drive の作成の記録（作成した時点でスクリプトロックを保持していたか） */
+  createLog: Array<{ name: string; appProperties?: Record<string, string>; underLock: boolean }> = [];
   driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean; failCreate?: (name: string, appProperties?: Record<string, string>) => boolean; updateFail?: (id: string) => boolean } = {};
 
   private newId(p: string) {
@@ -215,6 +219,7 @@ export class GasEmulator {
       Files: {
         create(res: { id?: string; name: string; mimeType: string; parents?: string[]; appProperties?: Record<string, string> }, b: ReturnType<typeof blob> | null) {
           if (self.driveFaults.failCreate?.(res.name, res.appProperties)) throw new Error('Drive: 作成に失敗しました（作成されていない）');
+          self.createLog.push({ name: res.name, appProperties: res.appProperties, underLock: self.scriptLockHeld > 0 });
           // 予約した ID（generateIds）での作成。予約していない ID・同じ ID のファイルがある場合は失敗する（実際の Drive の動作の想定。実環境では未検証）
           if (res.id !== undefined && (!self.reservedIds.has(res.id) || self.files.has(res.id))) throw new Error(`Drive: ID ${res.id} では作成できません`);
           const id = res.id ?? self.newId('f');
@@ -223,10 +228,11 @@ export class GasEmulator {
           if (self.driveFaults.loseCreate?.(res.name, res.appProperties)) throw new Error('Drive: 応答を受け取れませんでした（作成は完了）');
           return { id, webViewLink: `https://drive.example/${id}` };
         },
-        copy(res: { name: string; parents: string[] }, srcId: string) {
+        copy(res: { name: string; parents: string[]; appProperties?: Record<string, string> }, srcId: string) {
           const id = self.newId('f');
           const src = self.files.get(srcId)!;
-          self.files.set(id, { ...src, name: res.name, parents: res.parents });
+          // 実際の Drive と同じく、指定した appProperties は元のファイルの値を上書きする（指定しない場合は引き継ぐ想定）
+          self.files.set(id, { ...src, name: res.name, parents: res.parents, appProperties: res.appProperties ? { ...(src.appProperties ?? {}), ...res.appProperties } : src.appProperties });
           const ss = self.spreadsheets.get(srcId);
           if (ss) self.spreadsheets.set(id, structuredClone(ss));
           return { id, size: '1234' };
@@ -248,12 +254,13 @@ export class GasEmulator {
         get(id: string) {
           return { parents: self.files.get(id)?.parents ?? [] };
         },
-        update(res: { trashed?: boolean; name?: string }, id: string, b?: ReturnType<typeof blob>) {
+        update(res: { trashed?: boolean; name?: string; appProperties?: Record<string, string> }, id: string, b?: ReturnType<typeof blob>) {
           if (self.driveFaults.updateFail?.(id)) throw new Error('Drive: 更新に失敗しました（一時的なエラー）');
           const f = self.files.get(id);
           if (!f) throw new Error(`Drive: File not found: ${id}`);
           if (res.trashed) f.trashed = true;
           if (res.name) f.name = res.name;
+          if (res.appProperties) f.appProperties = { ...(f.appProperties ?? {}), ...res.appProperties };
           if (b) f.data = b._data;
           return { id };
         },
@@ -268,7 +275,19 @@ export class GasEmulator {
       console: { log: () => {} },
       PropertiesService: { getScriptProperties: () => self.scriptProps, getUserProperties: () => self.userProps },
       CacheService: { getScriptCache: () => ({ get: (k: string) => self.cache.get(k) ?? null, put: (k: string, v: string) => self.cache.set(k, v), remove: (k: string) => self.cache.delete(k) }) },
-      LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }), getUserLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
+      // スクリプトロック: 単一スレッドのため排他は模擬しないが、ロックを保持しているか（scriptLockHeld）を記録する
+      LockService: {
+        getScriptLock: () => ({
+          tryLock: () => {
+            self.scriptLockHeld++;
+            return true;
+          },
+          releaseLock: () => {
+            self.scriptLockHeld--;
+          },
+        }),
+        getUserLock: () => ({ tryLock: () => true, releaseLock: () => {} }),
+      },
       Utilities: {
         getUuid: () => randomUUID(),
         DigestAlgorithm: { SHA_256: 'sha256' },

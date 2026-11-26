@@ -1340,6 +1340,12 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     { name: '504（作成済みで応答だけ喪失）', fault: { status: 504, created: true }, unknown: true },
     { name: '通信の例外（作成されていない）', fault: 'throw', unknown: true },
     { name: '成功（2xx）だが応答に ID がない（作成済み。独立した点検 S1-2）', fault: 'noid', unknown: true },
+    // 許可リスト（400・401・403・429）以外の 4xx は、作成済みかどうか分からないものとして扱う（D-026 の独立した点検 #1）
+    { name: '401（認証されていない）', fault: { status: 401, created: false }, unknown: false },
+    { name: '404（作成済み）', fault: { status: 404, created: true }, unknown: true },
+    { name: '409（作成済み）', fault: { status: 409, created: true }, unknown: true },
+    { name: '410（作成されていない）', fault: { status: 410, created: false }, unknown: true },
+    { name: '499（取消。作成済み）', fault: { status: 499, created: true }, unknown: true },
   ];
   for (const { name, fault, unknown } of CREATE_FAILURES) {
     it(`作成の失敗の種類: ${name}`, () => {
@@ -1405,6 +1411,11 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     { name: '504（作成済みで応答だけ喪失）', fault: { status: 504, created: true }, unknown: true, created: true },
     { name: '通信の例外（作成されていない）', fault: 'throw', unknown: true, created: false },
     { name: '成功（2xx）だが応答に ID がない（作成済み）', fault: 'noid', unknown: true, created: true },
+    { name: '401（認証されていない）', fault: { status: 401, created: false }, unknown: false, created: false },
+    { name: '404（作成済み）', fault: { status: 404, created: true }, unknown: true, created: true },
+    { name: '409（作成済み）', fault: { status: 409, created: true }, unknown: true, created: true },
+    { name: '410（作成されていない）', fault: { status: 410, created: false }, unknown: true, created: false },
+    { name: '499（取消。作成済み）', fault: { status: 499, created: true }, unknown: true, created: true },
   ];
   for (const { name, fault, unknown, created } of DEPLOY_FAILURES) {
     it(`デプロイの作成の失敗の種類: ${name}`, () => {
@@ -1754,6 +1765,10 @@ describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-02
     { name: '504（作成済み）', fault: { status: 504, created: true }, unknown: true, created: true },
     { name: '通信の例外', fault: 'throw', unknown: true, created: false },
     { name: '2xx で ID なし（作成済み）', fault: 'noid', unknown: true, created: true },
+    { name: '401', fault: { status: 401, created: false }, unknown: false, created: false },
+    { name: '404（作成済み）', fault: { status: 404, created: true }, unknown: true, created: true },
+    { name: '409（作成済み）', fault: { status: 409, created: true }, unknown: true, created: true },
+    { name: '499（取消。作成済み）', fault: { status: 499, created: true }, unknown: true, created: true },
   ];
   for (const k of KINDS) {
     it(`Admin のプロジェクトの作成の失敗: ${k.name}`, () => {
@@ -1810,6 +1825,30 @@ describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-02
     });
   }
 
+  it('独立した点検 #6: 関連付けは、作成の結果を確認できないと案内された失敗中の工程だけ。関連付けの後は後続の工程と最後の確認をやり直す', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    const done = finish(s);
+    expect(done.state.complete).toBe(true);
+    const id = ref(s, 'core').scriptId!;
+    // 完了済みの環境・案内されていない工程では受け付けない
+    for (const st of ['core.create', 'core.deploy', 'admin.create', 'admin.deploy'] as const) expect(s.make().attach(st, id).ok, st).toBe(false);
+    expect(ref(s, 'core').url).toBeTruthy();
+    // 案内された工程（記録のプロジェクトの照会の 404）では受け付け、後続の工程（最後の確認を含む）を消す
+    s.store.reg!.steps['core.create'] = { status: 'error', at: new Date().toISOString() };
+    s.api.faults.getProject404 = 1;
+    const i = s.make();
+    i.retry('core.create');
+    expect(i.runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+    expect(s.make().attach('core.create', id).ok).toBe(true);
+    // 記録と同じプロジェクトの関連付け: その工程と最後の確認をやり直す（デプロイの記録・接続は残す。消すとデプロイを二重に作る）
+    for (const st of ['core.create', 'verify'] as const) expect(s.store.reg!.steps[st], st).toBeUndefined();
+    expect(ref(s, 'core').deploymentId).toBeTruthy();
+    expect(finish(s).state.complete).toBe(true);
+    expect(projectsOf(s, 'core')).toHaveLength(1);
+    expect(depsOf(s, 'core').size).toBe(1);
+  });
+
   it('関連付け: 別の環境・名前のプロジェクトや、Shiftly のセットアップが作っていないデプロイは関連付けない', () => {
     const s = setup();
     s.api.faults.createProject.push({ status: 504, created: true });
@@ -1831,6 +1870,20 @@ describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-02
     expect(r.error?.message).toContain('デプロイが 2 つ');
     expect(r.state.complete).toBe(false);
     expect(proj.deployments.size).toBe(2);
+  });
+
+  it('構築の完了前の検証: Core の保管先の点検で問題があれば完了しない（点検の結果を検証に使う）', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.core.env.storageIssues.push('「Shiftly/03_Exports（フォルダ）」が Google ドライブに 2 つあります（1 つのはず）');
+    const r = finish(s);
+    expect(r.error?.step).toBe('verify');
+    expect(r.error?.message).toContain('03_Exports');
+    expect(r.state.complete).toBe(false);
+    s.core.env.storageIssues.length = 0;
+    const i = s.make();
+    i.retry('verify');
+    expect(i.runUntilBlocked({}, 20).state.complete).toBe(true);
   });
 
   it('構築の完了前の検証: 自動で確かめた項目と、自動では確かめられない項目（プロジェクトの重複）を分けて記録する', () => {
