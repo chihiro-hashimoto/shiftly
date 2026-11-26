@@ -511,6 +511,15 @@ export class Installer {
    * 4) DB マイグレーション（破壊的変更は承認がなければ停止）5) 完了・整合性確認。失敗時はロールバック。
    */
   applyUpdate(opts: { approveDestructive: boolean }): { ok: boolean; message: string; requiresApproval?: string[] } {
+    // 想定外の失敗（処理しきれない例外）は、安全側に止める（D-024）
+    try {
+      return this.applyUpdateInner(opts);
+    } catch (e) {
+      return { ok: false, message: this.failSafe('更新', e) };
+    }
+  }
+
+  private applyUpdateInner(opts: { approveDestructive: boolean }): { ok: boolean; message: string; requiresApproval?: string[] } {
     const guard = this.guardAccount();
     if (guard) return { ok: false, message: guard.message };
     if (!this.state().complete) return { ok: false, message: '初期セットアップが完了していません' };
@@ -800,6 +809,50 @@ export class Installer {
 
   /** GAS コードのロールバック（デプロイを以前のバージョン番号へ戻す。URL は変わらない） */
   rollbackCode(prevCore?: number, prevAdmin?: number, opts: { keepMaintenance?: boolean } = {}): string {
+    // 想定外の失敗（記録の保存の失敗など、処理しきれない例外）は、安全側に止める（D-024。Codex 監査16）
+    try {
+      return this.rollbackCodeInner(prevCore, prevAdmin, opts);
+    } catch (e) {
+      return this.failSafe('ロールバック', e);
+    }
+  }
+
+  /**
+   * 「迷ったら止める」（D-024）: 更新・ロールバックの途中で想定外の失敗が起きた場合は、それ以上の切替・解除をせずに中止する。
+   * メンテナンスを開始していた場合は解除しない（スタッフの打刻は止まったまま。紙のタイムカードで記録する）。
+   * 現在の配備の組とメンテナンスの状態を、確認できる範囲で返す（確認・記録の失敗はさらに例外にしない）
+   */
+  private failSafe(op: string, e: unknown): string {
+    const msg = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+    let deployed = '現在の配備: 確認できませんでした';
+    try {
+      const p = this.actualPair();
+      if (p) deployed = `現在の配備: Staff v${p.core}／Admin v${p.admin}`;
+    } catch {
+      /* 確認できない */
+    }
+    let maint = 'メンテナンス: 確認できませんでした';
+    try {
+      const i = this.coreInfo();
+      if (i) maint = i.maintenance ? 'メンテナンス: 継続中（スタッフの打刻は停止中）' : 'メンテナンス: 解除中';
+    } catch {
+      /* 確認できない */
+    }
+    const text =
+      `${op}の途中で想定外のエラーが発生したため、安全のため処理を中止しました（${msg}）。メンテナンスを開始していた場合は、解除せずに継続しています。${deployed}。${maint}。` +
+      '打刻は紙のタイムカードで記録し、docs/update-rollback.md「想定外の失敗」の手順で状態を確認してから、「直前のバージョンに戻す」または更新の再実行を行ってください';
+    try {
+      if (this.reg?.update) {
+        this.reg.update = { ...this.reg.update, stage: 'failed', message: text };
+        this.persist();
+      }
+    } catch {
+      /* 記録の保存にも失敗した場合は、応答だけを返す */
+    }
+    return text;
+  }
+
+  private rollbackCodeInner(prevCore?: number, prevAdmin?: number, opts: { keepMaintenance?: boolean } = {}): string {
     const reg = this.reg!;
     const out: string[] = [];
     let rbFailed = false;

@@ -1129,4 +1129,52 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     const latest = [reg().core, reg().admin].map((x) => s.api.projects.get(x.scriptId!)!.versions);
     expect(deployedPair()).toEqual(latest);
   });
+
+  // ---- Codex 監査16・D-024（迷ったら止める） ----
+  it('Codex 監査16・D-024: 前の組へ戻す途中で記録の保存が例外になった場合、例外を返さずに中止し、メンテナンスを継続したまま状態を返す（再実行で復旧できる）', () => {
+    const { s, deployedPair, prev, cur } = afterGoodUpdate();
+    const orig = s.deps.save;
+    let thrown = false;
+    s.deps.save = (r, sec) => {
+      if (!thrown && (r as { pendingRollback?: unknown }).pendingRollback) {
+        thrown = true;
+        throw new Error('Drive への保存に失敗しました');
+      }
+      return orig(r, sec);
+    };
+    let msg = '';
+    expect(() => {
+      msg = s.make().rollbackCode();
+    }).not.toThrow();
+    expect(msg).toContain('想定外のエラー');
+    expect(msg).toContain(`Staff v${cur[0]}／Admin v${cur[1]}`);
+    // 切替はしていない。迷ったら止める（メンテナンスは解除しない）
+    expect(deployedPair()).toEqual(cur);
+    expect(maintenance(s)).toBe(true);
+    // 障害の解消後の再実行で、前の組へ戻して解除する
+    s.make().rollbackCode();
+    expect(deployedPair()).toEqual(prev);
+    expect(maintenance(s)).toBe(false);
+  });
+
+  it('D-024: 更新の失敗の後始末で記録の保存が例外になった場合も、例外を返さずに中止し、状態を返す', () => {
+    const { s } = afterGoodUpdate();
+    s.api.faults.putContent = 1; // コードの更新が失敗 → 自動ロールバック → 失敗の記録を保存
+    const orig = s.deps.save;
+    let thrown = false;
+    s.deps.save = (r, sec) => {
+      if (!thrown && (r as { update?: { stage?: string } }).update?.stage === 'failed') {
+        thrown = true;
+        throw new Error('UserProperties への保存に失敗しました');
+      }
+      return orig(r, sec);
+    };
+    s.deps.release = release('0.4.0');
+    let res: { ok: boolean; message: string } = { ok: true, message: '' };
+    expect(() => {
+      res = s.make().applyUpdate({ approveDestructive: false });
+    }).not.toThrow();
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain('想定外のエラー');
+  });
 });
