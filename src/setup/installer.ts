@@ -8,7 +8,7 @@
  * - Google の権限承認は利用者本人が行う工程として止める（自動で迂回しない）。
  * - アカウント取り違え防止: 既存レジストリの所有者メールと現在のアカウントが異なれば停止。
  */
-import { AppsScriptApi, AppsScriptApiError, webAppUrl, type ScriptFile } from './apps-script-api';
+import { AppsScriptApi, AppsScriptApiError, webAppUrl, type Deployment, type ScriptFile } from './apps-script-api';
 
 export type StepId =
   | 'account'
@@ -50,6 +50,10 @@ export interface ProjectRef {
   title?: string;
   /** 作成 API の呼び出し開始時刻（応答を受け取る前に保存。応答喪失時に重複作成しないための目印） */
   creatingAt?: string;
+  /** Web アプリのデプロイの作成の目印（呼び出しの前に保存。応答喪失・中断の後の再開で、既存のデプロイを照合する。Codex 監査17 #3） */
+  deployingAt?: string;
+  /** 作成を要求したデプロイの説明（照合に使う） */
+  deployingDescription?: string;
 }
 
 /** Staff・Admin の版の組 */
@@ -452,18 +456,62 @@ export class Installer {
   private deploy(which: 'core' | 'admin') {
     const ref = this.reg![which];
     const v = this.d.api.createVersion(ref.scriptId!, `Shiftly ${this.d.release.version}`);
-    let dep = ref.deploymentId ? this.d.api.getDeployment(ref.scriptId!, ref.deploymentId) : null;
-    if (dep) dep = this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, v.versionNumber, `Shiftly ${this.d.release.version}`);
-    else dep = this.d.api.createDeployment(ref.scriptId!, v.versionNumber, `Shiftly ${this.d.release.version}`);
+    const existing = ref.deploymentId ? this.d.api.getDeployment(ref.scriptId!, ref.deploymentId) : null;
+    const dep: Deployment = existing
+      ? this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, v.versionNumber, `Shiftly ${this.d.release.version}`)
+      : this.createDeploymentOnce(which, v.versionNumber);
     const url = webAppUrl(dep);
     if (!url) throw new InstallerError(`${which}.deploy` as StepId, 'Web アプリの URL を取得できませんでした', 'マニフェストの webapp 設定を確認してください（導入手順書）');
     // 更新中の再配備（中断からの再開）では、ロールバック先を更新開始前の版のまま保持する（Codex 監査5）
     const upd = this.reg!.update;
     const before = upd ? (which === 'core' ? upd.prevCore : upd.prevAdmin) : undefined;
-    this.reg![which] = { ...ref, deploymentId: dep.deploymentId, url, previousVersionNumber: before ?? ref.versionNumber, versionNumber: v.versionNumber };
+    this.reg![which] = {
+      ...this.reg![which],
+      deploymentId: dep.deploymentId,
+      url,
+      previousVersionNumber: before ?? ref.versionNumber,
+      versionNumber: v.versionNumber,
+      deployingAt: undefined,
+      deployingDescription: undefined,
+    };
     // 更新中は、今回配備した版を記録する（再開・完了の判定、ロールバックの判定に使う。Codex 監査13）
     if (upd) this.reg!.update = { ...upd, deployed: { ...(upd.deployed ?? {}), [which]: v.versionNumber } };
     this.persist();
+  }
+
+  /**
+   * Web アプリのデプロイを 1 つだけ作る（Codex 監査17 #3）。
+   * 作成の要求の前に目印を保存し、前回の作成の結果が不明（目印が残っている）なら、デプロイの一覧で照合する:
+   * 作成を要求した説明の Web アプリのデプロイが 1 つならそれを使い、0 なら作成し、2 つ以上なら作成を止めて確認を案内する
+   */
+  private createDeploymentOnce(which: 'core' | 'admin', versionNumber: number): Deployment {
+    const ref = this.reg![which];
+    const step: StepId = which === 'core' ? 'core.deploy' : 'admin.deploy';
+    const name = which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin';
+    if (ref.deployingAt) {
+      const desc = ref.deployingDescription;
+      // 説明で照合する（一覧の応答に Web アプリの URL が含まれない場合に備え、使うデプロイは個別に取得し直す。実環境での一覧の応答の内容は未検証）
+      const found = this.d.api.listDeployments(ref.scriptId!).filter((d) => !!desc && d.deploymentConfig?.description === desc);
+      if (found.length === 1) {
+        const full = this.d.api.getDeployment(ref.scriptId!, found[0]!.deploymentId) ?? found[0]!;
+        this.reg![which] = { ...ref, deploymentId: full.deploymentId, deployingAt: undefined, deployingDescription: undefined };
+        this.persist();
+        return full;
+      }
+      if (found.length > 1)
+        throw new InstallerError(
+          step,
+          `「${name}」の Web アプリのデプロイが複数見つかりました（前回の作成の結果を確認できなかったため）`,
+          `Apps Script のエディタで「${name}」を開き、「デプロイ」→「デプロイを管理」で、説明が「${desc}」のデプロイを 1 つだけ残して、ほかをアーカイブしてから「再実行」を押してください（管理されていない URL が残るのを防ぐため、自動では選びません）`,
+        );
+    }
+    const description = `Shiftly ${this.d.release.version} (${this.reg!.envId} ${which} ${this.d.now()})`;
+    this.reg![which] = { ...ref, deployingAt: this.d.now(), deployingDescription: description };
+    this.persist();
+    const dep = this.d.api.createDeployment(ref.scriptId!, versionNumber, description);
+    this.reg![which] = { ...this.reg![which], deploymentId: dep.deploymentId, deployingAt: undefined, deployingDescription: undefined };
+    this.persist();
+    return dep;
   }
 
   private ping(): CorePing | null {

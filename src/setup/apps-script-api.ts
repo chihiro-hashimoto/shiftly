@@ -80,6 +80,21 @@ export class AppsScriptApi {
       deploymentConfig: { versionNumber, manifestFileName: 'appsscript', description },
     });
   }
+  /** デプロイの一覧（作成の応答が失われた場合の照合に使う。Codex 監査17 #3） */
+  listDeployments(scriptId: string): Deployment[] {
+    const out: Deployment[] = [];
+    let pageToken: string | undefined;
+    for (let i = 0; i < 20; i++) {
+      const r = this.req<{ deployments?: Deployment[]; nextPageToken?: string }>(
+        'GET',
+        `/projects/${encodeURIComponent(scriptId)}/deployments${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ''}`,
+      );
+      out.push(...(r.deployments ?? []));
+      if (!r.nextPageToken) break;
+      pageToken = r.nextPageToken;
+    }
+    return out;
+  }
   getDeployment(scriptId: string, deploymentId: string): Deployment | null {
     try {
       return this.req('GET', `/projects/${encodeURIComponent(scriptId)}/deployments/${encodeURIComponent(deploymentId)}`);
@@ -92,7 +107,7 @@ export class AppsScriptApi {
 
 export interface Deployment {
   deploymentId: string;
-  deploymentConfig?: { versionNumber?: number };
+  deploymentConfig?: { versionNumber?: number; description?: string };
   entryPoints?: Array<{ entryPointType: string; webApp?: { url: string } }>;
 }
 

@@ -136,6 +136,7 @@
 | `payroll.openPeriod` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_confirm`, `pay_conditions_edit` | 必要 | ○ |  |  | ○ |
 | `payroll.periods` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_view_all`, `payroll_confirm`, `pay_conditions_edit`, `payslip_view_others`, `export_payroll` | 必要 | ○ |  |  |  |
 | `payroll.releaseRestoreLock` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_confirm` | 必要 | ○ | ○ |  | ○ |
+| `payroll.restoreLockReview` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_confirm` | 必要 | ○ |  |  |  |
 | `payroll.resultDetail` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_view_all` | 必要 | ○ |  |  |  |
 | `payroll.results` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_view_all`, `payroll_confirm` | 必要 | ○ |  |  |  |
 | `payroll.submitReview` | 管理者（Google 所有者・管理者モード）／委任スタッフ | `payroll_confirm` | 必要 | ○ |  |  | ○ |

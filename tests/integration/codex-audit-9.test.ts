@@ -54,7 +54,8 @@ describe('Codex 監査9 #1: 復元で引き継いだ確定済みの給与は、�
     const checked = { checkedWageRules: true, checkedAllowances: true, checkedDeductions: true };
     expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, ...checked, confirmText: 'はい' }))).toBe('INVALID_INPUT');
     expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, ...checked, checkedDeductions: false, confirmText: '確認しました' }))).toBe('INVALID_INPUT');
-    h.ownerOk('payroll.releaseRestoreLock', { periodId: p.id, ...checked, confirmText: '確認しました' });
+    // C-17 で、確定時と現在の条件で総支給額が異なる場合（この例は 7,000 円と 6,000 円）は差額の確認も必須になったため、入力に追加（アサーションは変更していない）
+    h.ownerOk('payroll.releaseRestoreLock', { periodId: p.id, ...checked, acknowledgedDifferences: true, confirmText: '確認しました' });
     expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeNull();
     expect(code(h.owner('payslips.issue', { periodId: p.id }))).toBe('OK');
   });

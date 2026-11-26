@@ -49,6 +49,31 @@ function updatePeriodStatus(ctx: Ctx, p: PayrollPeriod) {
   if (st !== p.status) ctx.uow.update('payroll_periods', { ...p, status: st });
 }
 
+/**
+ * 復元で停止中の期間について、確定済みの給与（最新の確定・発行済みのリビジョン）と、現在の給与条件で計算し直した総支給額を比べる
+ * （Codex 監査17 #1。月給の変更など、確認項目だけでは見落とし得る差を、解除の前に示す）
+ */
+function restoreLockReview(ctx: Ctx, p: PayrollPeriod) {
+  const latest = new Map<string, PayrollResult>();
+  for (const r of ctx.uow.list<PayrollResult>('payroll_results').filter((x) => x.periodId === p.id && (x.status === 'confirmed' || x.status === 'issued'))) {
+    const cur = latest.get(r.employeeId);
+    if (!cur || r.revision > cur.revision) latest.set(r.employeeId, r);
+  }
+  const rows: Array<{ employeeId: string; displayName: string; payType: Employee['payType']; revision: number; confirmedGross: number; currentGross: number | null; differs: boolean }> = [];
+  for (const r of latest.values()) {
+    const e = ctx.uow.get<Employee>('employees', r.employeeId);
+    if (!e) continue;
+    let current: number | null;
+    try {
+      current = runPayroll(ctx, e, p).output.totals.grossPay;
+    } catch {
+      current = null; // 計算できない（条件の不足など）場合も「差あり」として扱う
+    }
+    rows.push({ employeeId: e.id, displayName: e.displayName, payType: e.payType, revision: r.revision, confirmedGross: r.totals.grossPay, currentGross: current, differs: current === null || current !== r.totals.grossPay });
+  }
+  return { hasMonthly: rows.some((x) => x.payType === 'monthly'), rows, differences: rows.filter((x) => x.differs).length };
+}
+
 /** 復元で引き継いだ確定済みの給与がある期間は、給与条件の確認（解除）まで確定・訂正・明細の発行をしない（Codex 監査9 #1） */
 function assertNoRestoreLock(ctx: Ctx, p: PayrollPeriod) {
   const l = payrollRestoreLocks(ctx)[p.id];
@@ -227,6 +252,19 @@ defineOps([
     },
   },
   {
+    // 復元後の確認のための比較（確定済みの総支給額と、現在の条件で計算し直した額。Codex 監査17 #1）
+    name: 'payroll.restoreLockReview',
+    auth: 'staff_or_owner',
+    perms: ['payroll_confirm'],
+    sensitive: true,
+    mutating: false,
+    handler: (ctx, raw) => {
+      const p = period(ctx, v.id(v.obj(raw), 'periodId'));
+      if (!payrollRestoreLocks(ctx)[p.id]) throw E.conflict('この期間には復元後の確認の対象がありません');
+      return restoreLockReview(ctx, p);
+    },
+  },
+  {
     // 復元後の確認の完了（Codex 監査9 #1）。給与条件が確定時と一致する、または訂正の必要がないことを管理者が確認した後に解除する
     name: 'payroll.releaseRestoreLock',
     auth: 'staff_or_owner',
@@ -244,9 +282,27 @@ defineOps([
       const locks = payrollRestoreLocks(ctx);
       const l = locks[p.id];
       if (!l) throw E.conflict('この期間には復元後の確認の対象がありません');
+      const review = restoreLockReview(ctx, p);
+      // 月給制のスタッフの確定済みの給与がある期間は、月給設定（固定残業代・所定労働時間を含む）の確認も必須（Codex 監査17 #1）
+      if (review.hasMonthly && !v.bool(a, 'checkedSalaryRules'))
+        throw E.invalid('月給制のスタッフがいるため、月給設定（基本給・固定残業代・所定労働時間を含む）が確定時と一致することも確認してください');
+      // 確定済みの総支給額と、現在の条件で計算し直した額が異なるスタッフがいる場合は、差額を確認したことの明示が必要（Codex 監査17 #1）
+      if (review.differences > 0 && !v.bool(a, 'acknowledgedDifferences'))
+        throw new ApiError(
+          'RESTORE_DIFFERENCES',
+          `確定済みの給与と、現在の給与条件で計算し直した額が異なるスタッフが ${review.differences} 名います。差額を確認し、給与条件を確定時に合わせるか、差額が正しいことを確かめてから完了してください`,
+          409,
+        );
       delete locks[p.id];
       setPayrollRestoreLocks(ctx, locks);
-      audit(ctx, 'payroll.releaseRestoreLock', 'payroll_period', p.id, `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認項目=時給ルール・手当・控除（すべて一致を確認）`);
+      // 監査ログには定型の確認項目と人数だけを記録する（氏名・金額は記録しない）
+      audit(
+        ctx,
+        'payroll.releaseRestoreLock',
+        'payroll_period',
+        p.id,
+        `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認項目=時給ルール・手当・控除${review.hasMonthly ? '・月給設定' : ''}（すべて一致を確認） 差額の確認=${review.differences}名`,
+      );
       return { periodId: p.id, released: true };
     },
   },
@@ -418,4 +474,3 @@ defineOps([
     },
   },
 ]);
-

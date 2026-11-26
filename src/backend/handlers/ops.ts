@@ -515,7 +515,10 @@ defineOps([
         // 4) スタッフ・認証情報・権限・端末は現行の状態を引き継ぐ（PIN・管理用パスコード・委任権限・退職・端末失効を巻き戻さない）
         //    v1.3: 管理者パスワード、勤怠修正（確認状態）・休憩の申告・早出残業申請（承認・実労働の確認）も現行を引き継ぐ
         //    （復元で承認済みの実労働や確認結果が失われ、賃金の計算が変わることを防ぐ）
-        const carry = <T extends { id: string; version: number }>(t: 'employees' | 'credentials' | 'permissions' | 'devices' | 'admin_credentials' | 'attendance_corrections' | 'break_declarations' | 'overtime_requests' | 'payroll_periods' | 'payroll_results' | 'pay_slips', key: (r: T) => string) => {
+        const carry = <T extends { id: string; version: number }>(
+          t: 'employees' | 'credentials' | 'permissions' | 'devices' | 'admin_credentials' | 'attendance_corrections' | 'break_declarations' | 'overtime_requests' | 'payroll_periods' | 'payroll_results' | 'pay_slips' | 'backup_history',
+          key: (r: T) => string,
+        ) => {
           const candRows = new Map(uowC.list<T>(t).map((r) => [key(r), r]));
           for (const cur of ctx.uow.list<T>(t)) {
             const c = candRows.get(key(cur));
@@ -562,7 +565,8 @@ defineOps([
         // 5) 全セッション（スタッフ・管理者）失効・バックアップ履歴は現行を引き継ぐ
         revokeSessionsWhere(ctxC, () => true);
         revokeAdminSessions(ctxC, () => true, 'restored');
-        for (const h of ctx.uow.list<BackupHistory>('backup_history')) if (!uowC.get<BackupHistory>('backup_history', h.id)) uowC.insert('backup_history', h as never);
+        // バックアップの履歴は現行の行を優先する（同じ ID の行も現行で上書き。世代管理で削除済み＝pruned の行を ok に戻さない。Codex 監査17 #2）
+        carry<BackupHistory & { version: number }>('backup_history', (r) => r.id);
         uowC.flush();
         // 6) 候補の整合性を確認してから切り替える。不合格なら稼働中の DB はそのまま
         const check = integrityCheck(ctxC);

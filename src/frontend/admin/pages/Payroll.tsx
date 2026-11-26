@@ -170,15 +170,35 @@ export function PayrollPage() {
 function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; lock: RestoreLock; onReleased: () => void }) {
   const client = useClient();
   const { busy, run } = useAction();
-  const [checks, setChecks] = useState({ wage: false, allowance: false, deduction: false });
+  // 確定済みの総支給額と、現在の条件で計算し直した額の比較（Codex 監査17 #1）
+  const review = useLoad(
+    () =>
+      client.call<{
+        hasMonthly: boolean;
+        differences: number;
+        rows: Array<{ employeeId: string; displayName: string; payType: string; revision: number; confirmedGross: number; currentGross: number | null; differs: boolean }>;
+      }>('payroll.restoreLockReview', { periodId }),
+    [periodId],
+  );
+  const [checks, setChecks] = useState({ wage: false, allowance: false, deduction: false, salary: false, differences: false });
   const [confirmText, setConfirmText] = useState('');
-  const allChecked = checks.wage && checks.allowance && checks.deduction;
+  const r = review.data;
+  const allChecked = !!r && checks.wage && checks.allowance && checks.deduction && (!r.hasMonthly || checks.salary) && (r.differences === 0 || checks.differences);
   const release = async () => {
-    const r = await run(
-      () => client.call('payroll.releaseRestoreLock', { periodId, checkedWageRules: checks.wage, checkedAllowances: checks.allowance, checkedDeductions: checks.deduction, confirmText }),
+    const res = await run(
+      () =>
+        client.call('payroll.releaseRestoreLock', {
+          periodId,
+          checkedWageRules: checks.wage,
+          checkedAllowances: checks.allowance,
+          checkedDeductions: checks.deduction,
+          checkedSalaryRules: checks.salary,
+          acknowledgedDifferences: checks.differences,
+          confirmText,
+        }),
       '復元後の確認を完了しました',
     );
-    if (r) onReleased();
+    if (res) onReleased();
   };
   const check = (k: keyof typeof checks, label: string) => (
     <label className="row small">
@@ -190,24 +210,67 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
     <div className="callout callout-warn" role="alert">
       <strong>復元後の給与条件の確認が必要です</strong>
       <p className="small" style={{ margin: '6px 0' }}>
-        この期間は、バックアップの復元（{lock.restoredAt.slice(0, 16).replace('T', ' ')}）で確定済みの給与を引き継ぎました。復元後の給与条件（時給・手当・控除など）は、確定したときと異なる可能性があります。条件を確認するまで、確定・訂正・明細の発行は停止しています。
+        この期間は、バックアップの復元（{lock.restoredAt.slice(0, 16).replace('T', ' ')}）で確定済みの給与を引き継ぎました。復元後の給与条件（時給・月給・手当・控除など）は、確定したときと異なる可能性があります。条件を確認するまで、確定・訂正・明細の発行は停止しています。
       </p>
-      <div className="stack" style={{ gap: 8 }}>
-        <fieldset className="stack" style={{ gap: 4, border: 0, padding: 0, margin: 0 }}>
-          <legend className="small muted">確定したときと一致することを確認した項目（監査ログには確認したことだけを記録します）</legend>
-          {check('wage', '時給ルール')}
-          {check('allowance', '手当（通勤手当を含む）')}
-          {check('deduction', '控除')}
-        </fieldset>
-        <Field label="確認のため「確認しました」と入力">
-          <input className="input" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} maxLength={20} style={{ maxWidth: 200 }} />
-        </Field>
-        <div>
-          <button className="btn btn-sm btn-primary" disabled={busy || !allChecked || confirmText !== '確認しました'} onClick={() => void release()}>
-            復元後の確認を完了
-          </button>
+      {review.loading && !r && <Loading />}
+      {review.error && <ErrorBox message={review.error} onRetry={review.reload} />}
+      {r && (
+        <div className="stack" style={{ gap: 8 }}>
+          {r.differences > 0 ? (
+            <div>
+              <p className="small" style={{ margin: '4px 0' }}>
+                <strong>確定済みの総支給額と、現在の条件で計算し直した額が異なるスタッフが {r.differences} 名います。</strong>給与条件を確定時に合わせるか、差額が正しいことを確かめてください。
+              </p>
+              <div className="table-wrap">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>スタッフ</th>
+                      <th className="r">確定済み（総支給）</th>
+                      <th className="r">現在の条件で計算</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.rows
+                      .filter((x) => x.differs)
+                      .map((x) => (
+                        <tr key={x.employeeId}>
+                          <td>
+                            {x.displayName}（{x.payType === 'monthly' ? '月給' : '時給'}・第{x.revision}版）
+                          </td>
+                          <td className="r">
+                            <Yen v={x.confirmedGross} />
+                          </td>
+                          <td className="r">{x.currentGross === null ? '計算できません' : <Yen v={x.currentGross} />}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <p className="small" style={{ margin: '4px 0' }}>
+              確定済みの総支給額と、現在の条件で計算し直した額は、すべてのスタッフで一致しています。
+            </p>
+          )}
+          <fieldset className="stack" style={{ gap: 4, border: 0, padding: 0, margin: 0 }}>
+            <legend className="small muted">確定したときと一致することを確認した項目（監査ログには確認したことだけを記録します）</legend>
+            {check('wage', '時給ルール')}
+            {r.hasMonthly && check('salary', '月給設定（基本給・固定残業代・所定労働時間を含む）')}
+            {check('allowance', '手当（通勤手当を含む）')}
+            {check('deduction', '控除')}
+            {r.differences > 0 && check('differences', `上の差額（${r.differences} 名）を確認しました`)}
+          </fieldset>
+          <Field label="確認のため「確認しました」と入力">
+            <input className="input" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} maxLength={20} style={{ maxWidth: 200 }} />
+          </Field>
+          <div>
+            <button className="btn btn-sm btn-primary" disabled={busy || !allChecked || confirmText !== '確認しました'} onClick={() => void release()}>
+              復元後の確認を完了
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1181,4 +1244,3 @@ function PayrollRulesModal({ onClose, onDone }: { onClose: () => void; onDone: (
     </Modal>
   );
 }
-

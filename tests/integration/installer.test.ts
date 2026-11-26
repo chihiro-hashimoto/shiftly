@@ -22,7 +22,8 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
   const calls: string[] = [];
   // 一時的な障害の注入（残り回数）。getDeployment: デプロイの照会 / putContent: コードの更新
   // scriptFail: 指定したプロジェクトの版の作成・デプロイの切替を、指定回数だけ失敗させる
-  const faults = { getDeployment: 0, putContent: 0, scriptFail: new Map<string, number>() };
+  const faults = { getDeployment: 0, putContent: 0, scriptFail: new Map<string, number>(), loseCreateDeployment: 0 };
+  const descriptions = new Map<string, string>(); // deploymentId → 説明
   const http: Http = (method, url, body) => {
     calls.push(`${method} ${url.replace('https://script.googleapis.com/v1', '')}`);
     if (opts.apiDisabled) return { status: 403, body: JSON.stringify({ error: { message: 'User has not enabled the Apps Script API. Enable it by visiting https://script.google.com/home/usersettings' } }) };
@@ -62,11 +63,20 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
       return { status: 200, body: '{}' };
     }
     if (method === 'POST' && sub === 'versions') return { status: 200, body: JSON.stringify({ versionNumber: ++p.versions }) };
-    const dep = (did: string, v: number) => ({ deploymentId: did, deploymentConfig: { versionNumber: v }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${did}/exec` } }] });
+    const dep = (did: string, v: number) => ({ deploymentId: did, deploymentConfig: { versionNumber: v, description: descriptions.get(did) }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${did}/exec` } }] });
     if (method === 'POST' && sub === 'deployments') {
       const did = `dep_${id}_${p.deployments.size + 1}`;
       p.deployments.set(did, (body as { versionNumber: number }).versionNumber);
+      descriptions.set(did, (body as { description?: string }).description ?? '');
+      if (faults.loseCreateDeployment > 0) {
+        // 作成は成功したが応答が失われた（タイムアウト等）
+        faults.loseCreateDeployment--;
+        return { status: 504, body: '{"error":{"message":"gateway timeout"}}' };
+      }
       return { status: 200, body: JSON.stringify(dep(did, (body as { versionNumber: number }).versionNumber)) };
+    }
+    if (method === 'GET' && sub === 'deployments' && !depId) {
+      return { status: 200, body: JSON.stringify({ deployments: [...p.deployments.entries()].map(([did, v]) => dep(did, v)) }) };
     }
     if (method === 'GET' && sub === 'deployments' && depId) {
       const v = p.deployments.get(depId);
@@ -79,7 +89,7 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     }
     return { status: 400, body: '{"error":{"message":"bad"}}' };
   };
-  return { http, projects, calls, faults };
+  return { http, projects, calls, faults, descriptions };
 }
 
 /** Core の doPost 相当（ping / pair / owner envelope） */
@@ -1176,5 +1186,36 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     }).not.toThrow();
     expect(res.ok).toBe(false);
     expect(res.message).toContain('想定外のエラー');
+  });
+
+  // ---- Codex 監査17 #3 ----
+  it('Codex 監査17 #3: 初回の構築で Web アプリのデプロイの作成の応答が失われても、再開で既存のデプロイを照合して使い、二重に作らない', () => {
+    const s = setup();
+    s.api.faults.loseCreateDeployment = 1;
+    const r1 = s.make().runUntilBlocked({ storeName: '店' }, 20);
+    expect(r1.error?.step).toBe('core.deploy');
+    const r2 = s.make().runUntilBlocked({}, 20);
+    expect(r2.error).toBeNull();
+    const coreRef = s.store.reg!.core;
+    const deps = s.api.projects.get(coreRef.scriptId!)!.deployments;
+    expect(deps.size).toBe(1);
+    expect(deps.has(coreRef.deploymentId!)).toBe(true);
+    expect(coreRef.deployingAt).toBeUndefined();
+  });
+
+  it('Codex 監査17 #3: 照合で同じ説明のデプロイが複数見つかった場合は、自動で選ばずに作成を止めて確認を案内する', () => {
+    const s = setup();
+    s.api.faults.loseCreateDeployment = 1;
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    // 同じ説明のデプロイがもう一つある状態（手動の操作など）
+    const coreRef = s.store.reg!.core;
+    const proj = s.api.projects.get(coreRef.scriptId!)!;
+    const [did, v] = [...proj.deployments.entries()][0]!;
+    proj.deployments.set(`${did}_dup`, v);
+    s.api.descriptions.set(`${did}_dup`, s.api.descriptions.get(did)!);
+    const r = s.make().runUntilBlocked({}, 20);
+    expect(r.error?.step).toBe('core.deploy');
+    expect(r.error?.fix).toContain('デプロイを管理');
+    expect(proj.deployments.size).toBe(2);
   });
 });
