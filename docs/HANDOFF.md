@@ -39,8 +39,8 @@
 5. v1.3 で追加した確認待ちの事項: 管理者パスワードの初期設定（Google 所有者が Shiftly-Admin で設定）、既存店舗の時間基準（既定はシフト基準。実績基準に戻す場合は店舗設定）
 
 ## テスト結果（直近の実行）
-- `npm run verify`（2026-11-26、Codex 監査18 の修正後に実行、exit 0。権限表を再生成）: lint・typecheck 合格／単体 97・統合 180・セキュリティ 39・E2E 84 件すべて合格
-  - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2〜6 の回帰（codex-audit-2.test.ts・codex-audit-3.test.ts・codex-audit-6.test.ts・codex-audit-8.test.ts・codex-audit-9.test.ts・codex-audit-10.test.ts・codex-audit-17.test.ts・installer.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
+- `npm run verify`（2026-11-26、Codex 監査19 の対応・独立した点検の対応の後に実行、exit 0。権限表・DB 定義は再生成して差分なし）: lint・typecheck 合格／単体 97・統合 232・セキュリティ 39・E2E 84 件すべて合格
+  - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2〜6 の回帰（codex-audit-2.test.ts・codex-audit-3.test.ts・codex-audit-6.test.ts・codex-audit-8.test.ts・codex-audit-9.test.ts・codex-audit-10.test.ts・codex-audit-17.test.ts・installer.test.ts・restore-policy.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
   - E2E は店舗 iPad（スタッフ・管理者モード・PIN 未設定・休憩確認）・Google 所有者の管理画面の全ページ・Setup（iPad 横・縦／PC 1440／スマホ 390、Chromium）
 - GitHub CI: v1.3 の各コミット（`564a04a`・`d132bd6`・`12ea421`）で成功。最新コミットは PR のチェックを参照
 - いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
