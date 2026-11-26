@@ -6,7 +6,7 @@ import { defineOps } from '../api';
 import { actorId, audit, isOwner, nowIso, payrollRestoreLocks, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
-import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PaySlip } from '../../shared/types';
+import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PayrollTotals, PaySlip } from '../../shared/types';
 import { issueKey, unacknowledged, type PayrollIssue, type PayrollOutput, type PayrollInput } from '../../shared/payroll';
 import { employeesInPeriod, getOrCreatePeriod, latestResult, overlappingPeriod, periodClosedAt, periodConfig, runPayroll } from '../services';
 import { periodForDate } from '../../shared/period';
@@ -49,9 +49,56 @@ function updatePeriodStatus(ctx: Ctx, p: PayrollPeriod) {
   if (st !== p.status) ctx.uow.update('payroll_periods', { ...p, status: st });
 }
 
+/** 給与の計算結果（totals）の項目名（比較の結果の表示用） */
+const TOTAL_LABELS: Record<string, string> = {
+  workDays: '出勤日数',
+  workMinutes: '労働時間',
+  overtimeMinutes: '時間外労働の時間',
+  over60Minutes: '月60時間を超える時間外労働',
+  nightMinutes: '深夜労働の時間',
+  holidayMinutes: '休日労働の時間',
+  basePay: '基本給',
+  extraHoursBasePay: '所定時間外の通常賃金',
+  overtimePremium: '時間外の割増',
+  over60Premium: '月60時間超の割増',
+  nightPremium: '深夜の割増',
+  holidayPremium: '休日の割増',
+  fixedOvertimePay: '固定残業代',
+  fixedOvertimeExcess: '固定残業代の超過分',
+  paidLeavePay: '有給の賃金',
+  paidLeaveDays: '有給の日数',
+  allowances: '手当',
+  transport: '交通費',
+  absenceDeduction: '欠勤・遅刻早退の控除',
+  grossPay: '総支給額',
+  deductions: '控除の内訳',
+  deductionTotal: '控除合計',
+  netPay: '差引支給額',
+};
+
+/** 項目の順序に左右されない比較用の文字列（オブジェクトのキーを並べ替える。配列の順序は計算結果の順序として比較する） */
+function canonical(x: unknown): string {
+  if (Array.isArray(x)) return `[${x.map(canonical).join(',')}]`;
+  if (x && typeof x === 'object')
+    return `{${Object.keys(x as Record<string, unknown>)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical((x as Record<string, unknown>)[k])}`)
+      .join(',')}}`;
+  return JSON.stringify(x ?? null);
+}
+
+/** 二つの計算結果（totals）で異なる項目（すべての項目を比べる。項目を個別に選ばない。Codex 監査19 #1） */
+export function differingTotals(confirmed: PayrollTotals, current: PayrollTotals): string[] {
+  const a = confirmed as unknown as Record<string, unknown>;
+  const b = current as unknown as Record<string, unknown>;
+  const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])];
+  return keys.filter((k) => canonical(a[k]) !== canonical(b[k])).map((k) => TOTAL_LABELS[k] ?? k);
+}
+
 /**
- * 復元で停止中の期間について、確定済みの給与（最新の確定・発行済みのリビジョン）と、現在の給与条件で計算し直した総支給額を比べる
- * （Codex 監査17 #1。月給の変更など、確認項目だけでは見落とし得る差を、解除の前に示す）
+ * 復元で停止中の期間について、確定済みの給与（最新の確定・発行済みのリビジョン）と、現在の給与条件で計算し直した結果を比べる。
+ * 比べるのは計算結果の全項目（日数・時間・支給の各項目・手当・控除の内訳・差引支給額）と、確定を止める問題の有無
+ * （Codex 監査17 #1・監査18 #1・監査19 #1。項目を個別に選んで比べると、選ばなかった項目の違いを見落とすため）
  */
 function restoreLockReview(ctx: Ctx, p: PayrollPeriod) {
   const latest = new Map<string, PayrollResult>();
@@ -59,19 +106,45 @@ function restoreLockReview(ctx: Ctx, p: PayrollPeriod) {
     const cur = latest.get(r.employeeId);
     if (!cur || r.revision > cur.revision) latest.set(r.employeeId, r);
   }
-  const rows: Array<{ employeeId: string; displayName: string; payType: Employee['payType']; revision: number; confirmedGross: number; currentGross: number | null; differs: boolean }> = [];
+  const rows: Array<{
+    employeeId: string;
+    displayName: string;
+    payType: Employee['payType'];
+    revision: number;
+    confirmedGross: number;
+    currentGross: number | null;
+    confirmedNet: number;
+    currentNet: number | null;
+    differingItems: string[];
+    differs: boolean;
+  }> = [];
   for (const r of latest.values()) {
     const e = ctx.uow.get<Employee>('employees', r.employeeId);
     if (!e) continue;
-    let current: number | null;
+    let out: PayrollOutput | null;
     try {
-      current = runPayroll(ctx, e, p).output.totals.grossPay;
+      out = runPayroll(ctx, e, p).output;
     } catch {
-      current = null; // 計算できない（条件の不足など）場合も「差あり」として扱う
+      out = null; // 計算できない（条件の不足など）場合も「差あり」として扱う
     }
-    rows.push({ employeeId: e.id, displayName: e.displayName, payType: e.payType, revision: r.revision, confirmedGross: r.totals.grossPay, currentGross: current, differs: current === null || current !== r.totals.grossPay });
+    const items = out ? differingTotals(r.totals, out.totals) : ['計算できない'];
+    if (out && !out.canConfirm) items.push('確定を止める問題がある');
+    rows.push({
+      employeeId: e.id,
+      displayName: e.displayName,
+      payType: e.payType,
+      revision: r.revision,
+      confirmedGross: r.totals.grossPay,
+      currentGross: out ? out.totals.grossPay : null,
+      confirmedNet: r.totals.netPay,
+      currentNet: out ? out.totals.netPay : null,
+      differingItems: items,
+      differs: items.length > 0,
+    });
   }
-  return { hasMonthly: rows.some((x) => x.payType === 'monthly'), rows, differences: rows.filter((x) => x.differs).length };
+  // 確定済みの結果があるのにスタッフが見つからない場合も、照合できないため「差あり」とする
+  const missing = [...latest.values()].filter((r) => !ctx.uow.get<Employee>('employees', r.employeeId)).length;
+  return { hasMonthly: rows.some((x) => x.payType === 'monthly'), rows, differences: rows.filter((x) => x.differs).length + missing };
 }
 
 /** 復元で引き継いだ確定済みの給与がある期間は、給与条件の確認（解除）まで確定・訂正・明細の発行をしない（Codex 監査9 #1） */
@@ -291,7 +364,7 @@ defineOps([
       if (review.differences > 0)
         throw new ApiError(
           'RESTORE_DIFFERENCES',
-          `確定済みの給与と、現在の給与条件で計算し直した額が異なるスタッフが ${review.differences} 名います。差がある間は解除できません。給与条件を確定時に合わせてから「復元後の確認を完了」し、変更が必要な場合はその後に通常の訂正を行ってください`,
+          `確定済みの給与と、現在の給与条件で計算し直した結果（支給・控除・差引支給額などの全項目）が異なるスタッフが ${review.differences} 名います。差がある間は解除できません。給与条件を確定時に合わせてから「復元後の確認を完了」し、変更が必要な場合はその後に通常の訂正を行ってください`,
           409,
         );
       delete locks[p.id];

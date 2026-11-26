@@ -176,7 +176,18 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
       client.call<{
         hasMonthly: boolean;
         differences: number;
-        rows: Array<{ employeeId: string; displayName: string; payType: string; revision: number; confirmedGross: number; currentGross: number | null; differs: boolean }>;
+        rows: Array<{
+          employeeId: string;
+          displayName: string;
+          payType: string;
+          revision: number;
+          confirmedGross: number;
+          currentGross: number | null;
+          confirmedNet: number;
+          currentNet: number | null;
+          differingItems: string[];
+          differs: boolean;
+        }>;
       }>('payroll.restoreLockReview', { periodId }),
     [periodId],
   );
@@ -219,7 +230,7 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
           {r.differences > 0 ? (
             <div>
               <p className="small" style={{ margin: '4px 0' }}>
-                <strong>確定済みの総支給額と、現在の条件で計算し直した額が異なるスタッフが {r.differences} 名います。差がある間は解除できません。</strong>
+                <strong>確定済みの給与と、現在の条件で計算し直した結果が異なるスタッフが {r.differences} 名います。差がある間は解除できません。</strong>
                 給与条件（「スタッフ・権限」の時給ルール・月給設定、手当、控除）を確定時に合わせてから、「比較を更新」を押してください。変更が必要な場合は、解除した後に通常の訂正を行ってください。
               </p>
               <div className="table-wrap">
@@ -227,8 +238,9 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
                   <thead>
                     <tr>
                       <th>スタッフ</th>
-                      <th className="r">確定済み（総支給）</th>
-                      <th className="r">現在の条件で計算</th>
+                      <th>違いのある項目</th>
+                      <th className="r">確定済み（差引支給）</th>
+                      <th className="r">現在の条件で計算（差引支給）</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -239,10 +251,11 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
                           <td>
                             {x.displayName}（{x.payType === 'monthly' ? '月給' : '時給'}・第{x.revision}版）
                           </td>
+                          <td className="small">{x.differingItems.join('・')}</td>
                           <td className="r">
-                            <Yen v={x.confirmedGross} />
+                            <Yen v={x.confirmedNet} />
                           </td>
-                          <td className="r">{x.currentGross === null ? '計算できません' : <Yen v={x.currentGross} />}</td>
+                          <td className="r">{x.currentNet === null ? '計算できません' : <Yen v={x.currentNet} />}</td>
                         </tr>
                       ))}
                   </tbody>
@@ -251,7 +264,7 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
             </div>
           ) : (
             <p className="small" style={{ margin: '4px 0' }}>
-              確定済みの総支給額と、現在の条件で計算し直した額は、すべてのスタッフで一致しています。
+              確定済みの給与と、現在の条件で計算し直した結果は、すべてのスタッフで全項目（支給・控除・差引支給額など）が一致しています。
             </p>
           )}
           <fieldset className="stack" style={{ gap: 4, border: 0, padding: 0, margin: 0 }}>
