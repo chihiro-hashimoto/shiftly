@@ -37,6 +37,9 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
   const [res, setRes] = useState<StepResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // 作成の結果が分からない場合の確認（確認するまで「再実行」を押せない。Codex 監査19 #2）
+  const [confirmed, setConfirmed] = useState(false);
+  useEffect(() => setConfirmed(false), [res]);
   const [storeName, setStoreName] = useState('');
 
   const load = useCallback(async () => {
@@ -50,11 +53,11 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
     void load();
   }, [load]);
 
-  const exec = async (action: 'run' | 'retry', step?: string) => {
+  const exec = async (action: 'run' | 'retry', step?: string, confirmedNoDuplicate?: boolean) => {
     setBusy(true);
     setErr('');
     try {
-      const r = await transport.call<StepResult>(action, { storeName: storeName || undefined, step });
+      const r = await transport.call<StepResult>(action, { storeName: storeName || undefined, step, ...(confirmedNoDuplicate ? { confirmedNoDuplicate: true } : {}) });
       setRes(r);
       setSt(r.state);
     } catch (e) {
@@ -115,6 +118,12 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                     <div className="callout callout-bull" role="alert">
                       <strong>{res.error.message}</strong>
                       <div className="small">対処方法: {res.error.fix}</div>
+                      {res.error.confirm && (
+                        <label className="row small" style={{ marginTop: 8 }}>
+                          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+                          <span>{res.error.confirm}</span>
+                        </label>
+                      )}
                     </div>
                   )}
                   {res?.waitingFor && (
@@ -134,8 +143,8 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                   )}
                   <div className="row">
                     {res?.error ? (
-                      <button className="btn btn-primary btn-lg" disabled={busy} onClick={() => void exec('retry', res.error!.step)}>
-                        {busy ? '実行中…' : '再実行'}
+                      <button className="btn btn-primary btn-lg" disabled={busy || (!!res.error.confirm && !confirmed)} onClick={() => void exec('retry', res.error!.step, res.error!.confirm ? confirmed : undefined)}>
+                        {busy ? '実行中…' : res.error.confirm ? '確認したので再実行' : '再実行'}
                       </button>
                     ) : (
                       <button className="btn btn-primary btn-lg" disabled={busy || (!!needStore && !storeName.trim())} onClick={() => void exec('run')}>

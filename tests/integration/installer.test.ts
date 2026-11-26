@@ -22,13 +22,28 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
   const calls: string[] = [];
   // 一時的な障害の注入（残り回数）。getDeployment: デプロイの照会 / putContent: コードの更新
   // scriptFail: 指定したプロジェクトの版の作成・デプロイの切替を、指定回数だけ失敗させる
-  const faults = { getDeployment: 0, putContent: 0, scriptFail: new Map<string, number>(), loseCreateDeployment: 0 };
+  // createProject: プロジェクトの作成の失敗の注入（先頭から順に使う）。status=応答のステータス、created=Google 側で作成されたか、throw=通信の例外
+  // omitDeployVersion: デプロイの応答から版の番号を除く（response=作成・切替の応答だけ / all=照会の応答も）
+  const faults = {
+    getDeployment: 0,
+    putContent: 0,
+    scriptFail: new Map<string, number>(),
+    loseCreateDeployment: 0,
+    createProject: [] as Array<{ status: number; created: boolean } | 'throw'>,
+    omitDeployVersion: '' as '' | 'response' | 'all',
+  };
   const descriptions = new Map<string, string>(); // deploymentId → 説明
   const http: Http = (method, url, body) => {
     calls.push(`${method} ${url.replace('https://script.googleapis.com/v1', '')}`);
     if (opts.apiDisabled) return { status: 403, body: JSON.stringify({ error: { message: 'User has not enabled the Apps Script API. Enable it by visiting https://script.google.com/home/usersettings' } }) };
     const m = url.match(/\/projects(?:\/([^/?]+))?(?:\/(content|versions|deployments)(?:\/([^/?]+))?)?/)!;
     const [, id, sub, depId] = m;
+    if (method === 'POST' && !id && faults.createProject.length) {
+      const f = faults.createProject.shift()!;
+      if (f === 'throw') throw new Error('Exception: Address unavailable: https://script.googleapis.com/v1/projects');
+      if (f.created) projects.set(`script_${++n}`, { title: (body as { title: string }).title, files: [], versions: 0, deployments: new Map() });
+      return { status: f.status, body: JSON.stringify({ error: { message: `HTTP ${f.status}` } }) };
+    }
     if (method === 'POST' && !id) {
       if (failOnce) {
         failOnce = false;
@@ -63,7 +78,11 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
       return { status: 200, body: '{}' };
     }
     if (method === 'POST' && sub === 'versions') return { status: 200, body: JSON.stringify({ versionNumber: ++p.versions }) };
-    const dep = (did: string, v: number) => ({ deploymentId: did, deploymentConfig: { versionNumber: v, description: descriptions.get(did) }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${did}/exec` } }] });
+    const depFull = (did: string, v: number) => ({ deploymentId: did, deploymentConfig: { versionNumber: v, description: descriptions.get(did) }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${did}/exec` } }] });
+    // 応答から版の番号を除く（実際の API の応答の違いを模す）
+    const strip = (d: ReturnType<typeof depFull>) => ({ ...d, deploymentConfig: { description: d.deploymentConfig.description } });
+    const dep = (did: string, v: number) => (faults.omitDeployVersion ? strip(depFull(did, v)) : depFull(did, v));
+    const depGet = (did: string, v: number) => (faults.omitDeployVersion === 'all' ? strip(depFull(did, v)) : depFull(did, v));
     if (method === 'POST' && sub === 'deployments') {
       const did = `dep_${id}_${p.deployments.size + 1}`;
       p.deployments.set(did, (body as { versionNumber: number }).versionNumber);
@@ -80,7 +99,7 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     }
     if (method === 'GET' && sub === 'deployments' && depId) {
       const v = p.deployments.get(depId);
-      return v ? { status: 200, body: JSON.stringify(dep(depId, v)) } : { status: 404, body: '{}' };
+      return v ? { status: 200, body: JSON.stringify(depGet(depId, v)) } : { status: 404, body: '{}' };
     }
     if (method === 'PUT' && sub === 'deployments' && depId) {
       const v = (body as { deploymentConfig: { versionNumber: number } }).deploymentConfig.versionNumber;
@@ -256,7 +275,8 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     const r1 = s.make().runUntilBlocked({ storeName: '店' }, 20);
     expect(r1.error?.step).toBe('core.create');
     const inst = s.make();
-    inst.retry('core.create');
+    // C-19 で、作成の結果が分からない失敗（5xx を含む）の再実行には、重複がないことの確認の明示（画面のチェック）が必須になったため入力を追加（アサーションは変更していない）
+    inst.retry('core.create', true);
     inst.runUntilBlocked({}, 20);
     expect([...s.api.projects.values()].filter((p) => p.title.startsWith('Shiftly-Staff'))).toHaveLength(1);
   });
@@ -272,7 +292,8 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     // 管理者が一覧で確認し、応答の失われたプロジェクトをゴミ箱へ移動してから再実行
     s.api.projects.delete(staffProjects()[0]![0]);
     const inst = s.make();
-    inst.retry('core.create');
+    // C-19 で、再実行には重複がないことの確認の明示（画面のチェック）が必須になったため入力を追加（アサーションは変更していない）
+    inst.retry('core.create', true);
     inst.runUntilBlocked({}, 20);
     expect(staffProjects()).toHaveLength(1);
   });
@@ -1228,5 +1249,88 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.error?.step).toBe('core.deploy');
     expect(r.error?.fix).toContain('デプロイを管理');
     expect(proj.deployments.size).toBe(2);
+  });
+
+  // ---- Codex 監査19 #2: プロジェクトの作成の失敗の種類ごとの扱い（指摘の再現だけでなく、失敗の種類の全体を網羅する） ----
+  /*
+   * 不変条件:
+   *   P1 Google が要求を拒否したこと（4xx）が分かる失敗は「作成されていない」。確認の案内を出さず、確認なしの再実行で 1 つだけ作成する
+   *   P2 作成されたかどうか分からない失敗（通信の例外・5xx・応答の喪失）は、最初の失敗から確認の案内（confirm）を出す
+   *   P3 P2 の後、確認の明示がない再実行では作成しない（目印を残し、再び案内する）
+   *   P4 P2 の後、一覧で確認・整理したうえで確認を明示した再実行では、同名のプロジェクトはちょうど 1 つになる
+   */
+  const staffProjects = (s: ReturnType<typeof setup>) => [...s.api.projects.entries()].filter(([, p]) => p.title.startsWith('Shiftly-Staff'));
+  const CREATE_FAILURES: Array<{ name: string; fault: { status: number; created: boolean } | 'throw'; unknown: boolean }> = [
+    { name: '400（不正な要求）', fault: { status: 400, created: false }, unknown: false },
+    { name: '403（権限なし）', fault: { status: 403, created: false }, unknown: false },
+    { name: '429（利用上限）', fault: { status: 429, created: false }, unknown: false },
+    { name: '500（内部エラー）', fault: { status: 500, created: false }, unknown: true },
+    { name: '503（一時的に利用不可）', fault: { status: 503, created: false }, unknown: true },
+    { name: '504（作成済みで応答だけ喪失）', fault: { status: 504, created: true }, unknown: true },
+    { name: '通信の例外（作成されていない）', fault: 'throw', unknown: true },
+  ];
+  for (const { name, fault, unknown } of CREATE_FAILURES) {
+    it(`作成の失敗の種類: ${name}`, () => {
+      const s = setup();
+      s.api.faults.createProject.push(fault);
+      const r1 = s.make().runUntilBlocked({ storeName: '店' }, 20);
+      expect(r1.error?.step).toBe('core.create');
+      if (!unknown) {
+        // P1
+        expect(r1.error?.confirm).toBeUndefined();
+        const inst = s.make();
+        inst.retry('core.create');
+        inst.runUntilBlocked({}, 20);
+        expect(staffProjects(s)).toHaveLength(1);
+        return;
+      }
+      // P2
+      expect(r1.error?.confirm).toBeTruthy();
+      expect(r1.error?.fix).toContain('script.google.com/home');
+      // P3: 確認の明示がない再実行では作成しない
+      const before = staffProjects(s).length;
+      const inst1 = s.make();
+      inst1.retry('core.create');
+      const r2 = inst1.runUntilBlocked({}, 20);
+      expect(r2.error?.step).toBe('core.create');
+      expect(r2.error?.confirm).toBeTruthy();
+      expect(staffProjects(s)).toHaveLength(before);
+      // P4: 一覧で確認し、作成されていたものはゴミ箱へ移動してから、確認を明示して再実行
+      for (const [id] of staffProjects(s)) s.api.projects.delete(id);
+      const inst2 = s.make();
+      inst2.retry('core.create', true);
+      inst2.runUntilBlocked({}, 20);
+      expect(staffProjects(s)).toHaveLength(1);
+    });
+  }
+
+  it('作成の失敗の種類: 作成の要求の前に中断した（目印だけが残った）場合も、確認の明示なしでは作成せず、案内を出す', () => {
+    const s = setup();
+    s.make().runUntilBlocked({ storeName: '店' }, 1); // 店舗名の保存など、作成の前で止める
+    // 作成の要求の直前で中断した状態（目印だけがあり、案内はまだ出していない）
+    s.store.reg!.core = { title: `Shiftly-Staff (${s.store.reg!.envId})`, creatingAt: new Date().toISOString() };
+    const r = s.make().runUntilBlocked({ storeName: '店' }, 20);
+    expect(r.error?.step).toBe('core.create');
+    expect(r.error?.confirm).toBeTruthy();
+    expect(staffProjects(s)).toHaveLength(0);
+  });
+
+  // ---- Codex 監査19（次の版の前）: デプロイの応答に版の番号がない場合 ----
+  it('デプロイの作成の応答に版の番号がなくても、照会で実際の版を確かめて記録する', () => {
+    const s = setup();
+    s.api.faults.omitDeployVersion = 'response';
+    expect(s.make().runUntilBlocked({ storeName: '店' }, 20).error).toBeNull();
+    const ref = s.store.reg!.core;
+    expect(ref.versionNumber).toBeDefined();
+    expect(s.api.projects.get(ref.scriptId!)!.deployments.get(ref.deploymentId!)).toBe(ref.versionNumber);
+  });
+
+  it('デプロイの版を応答・照会のどちらでも確かめられない場合は、記録せずに止める', () => {
+    const s = setup();
+    s.api.faults.omitDeployVersion = 'all';
+    const r = s.make().runUntilBlocked({ storeName: '店' }, 20);
+    expect(r.error?.step).toBe('core.deploy');
+    expect(r.error?.message).toContain('版を確認できません');
+    expect(s.store.reg!.core.versionNumber).toBeUndefined();
   });
 });

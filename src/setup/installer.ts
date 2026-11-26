@@ -50,6 +50,8 @@ export interface ProjectRef {
   title?: string;
   /** 作成 API の呼び出し開始時刻（応答を受け取る前に保存。応答喪失時に重複作成しないための目印） */
   creatingAt?: string;
+  /** 作成の結果が分からないことと、一覧での確認を案内済みか（案内の後の「再実行」でだけ目印を外す。Codex 監査19 #2） */
+  creatingPrompted?: boolean;
   /** Web アプリのデプロイの作成の目印（呼び出しの前に保存。応答喪失・中断の後の再開で、既存のデプロイを照合する。Codex 監査17 #3） */
   deployingAt?: string;
   /** 作成を要求したデプロイの説明（照合に使う） */
@@ -156,7 +158,7 @@ export interface StepResult {
   state: PublicState;
   /** 利用者の操作待ち（権限承認など） */
   waitingFor: null | { step: StepId; instructions: string[]; openUrl?: string };
-  error: null | { step: StepId; message: string; fix: string };
+  error: null | { step: StepId; message: string; fix: string; confirm?: string };
 }
 
 export interface PublicState {
@@ -180,9 +182,21 @@ export class InstallerError extends Error {
     readonly step: StepId,
     message: string,
     readonly fix: string,
+    /** 再実行の前に利用者が確認すべきこと（画面は確認のチェックがあるまで「再実行」を押せない） */
+    readonly confirm?: string,
   ) {
     super(message);
   }
+}
+
+/**
+ * 外部の作成の要求が失敗したとき、作成されたかどうかが分からないか（Codex 監査19 #2）。
+ * Google が要求を拒否したこと（4xx）が分かる場合だけ「作成されていない」とし、それ以外（通信の例外・タイムアウト・5xx）は
+ * 作成されたかどうか分からないとして扱う（応答だけが失われた可能性がある）
+ */
+export function createOutcomeUnknown(e: unknown): boolean {
+  if (!(e instanceof AppsScriptApiError)) return true;
+  return e.status === 0 || e.status === 408 || e.status >= 500;
 }
 
 const editorUrl = (id?: string) => (id ? `https://script.google.com/home/projects/${encodeURIComponent(id)}/edit` : null);
@@ -262,7 +276,7 @@ export class Installer {
     } catch (e) {
       const err = e instanceof InstallerError ? e : toInstallerError(next.id, e);
       if (this.reg) this.mark(next.id, 'error', err.message);
-      return { state: this.state(), waitingFor: null, error: { step: err.step, message: err.message, fix: err.fix } };
+      return { state: this.state(), waitingFor: null, error: { step: err.step, message: err.message, fix: err.fix, ...(err.confirm ? { confirm: err.confirm } : {}) } };
     }
   }
 
@@ -410,19 +424,37 @@ export class Installer {
       this.reg![which] = {};
     }
     const step: StepId = which === 'core' ? 'core.create' : 'admin.create';
+    const unknownResult = (t: string) => {
+      // 作成されたかどうか分からない。自動では作り直さず、一覧での確認を案内する（案内したことを記録し、その後の「再実行」でだけ目印を外す）
+      this.reg![which] = { ...this.reg![which], creatingPrompted: true };
+      this.persist();
+      return new InstallerError(
+        step,
+        `「${t}」の作成結果を確認できませんでした（作成されたかどうか分かりません）`,
+        `Apps Script のプロジェクト一覧（https://script.google.com/home）に「${t}」があるか確認してください。ある場合はゴミ箱に移動してから「再実行」を押してください（同じプロジェクトが二重に作られるのを防ぐため、自動では作り直しません）`,
+        `プロジェクト一覧で「${t}」がないこと（またはゴミ箱に移動したこと）を確認しました`,
+      );
+    };
     if (this.reg![which].creatingAt) {
       // 前回の作成要求の結果が不明（作成済みで応答だけ失われた可能性）。自動では作り直さない
       // 前回の要求時の名称で案内する（v1.2 で開始したセットアップの再開では旧名称の Shiftly-Staff）
-      title = this.reg![which].title ?? title;
-      throw new InstallerError(
-        step,
-        `前回の「${title}」の作成結果を確認できませんでした`,
-        `Apps Script のプロジェクト一覧（https://script.google.com/home）に「${title}」があるか確認してください。ある場合はゴミ箱に移動してから「再実行」を押してください（同じプロジェクトが二重に作られるのを防ぐため、自動では作り直しません）`,
-      );
+      throw unknownResult(this.reg![which].title ?? title);
     }
     this.reg![which] = { title, creatingAt: this.d.now() };
     this.persist();
-    const p = this.d.api.createProject(title);
+    let p: { scriptId: string };
+    try {
+      p = this.d.api.createProject(title);
+    } catch (e) {
+      // Google が要求を拒否した（作成されていない）ことが分かる場合は、目印を外して通常の失敗として扱う（再実行で作成できる）
+      if (!createOutcomeUnknown(e)) {
+        this.reg![which] = { title };
+        this.persist();
+        throw e;
+      }
+      // 作成されたかどうか分からない場合は、最初の失敗から確認を案内する（Codex 監査19 #2）
+      throw unknownResult(title);
+    }
     // 作成直後に保存（以後の再実行は既存 ID を使う）
     this.reg![which] = { scriptId: p.scriptId, title };
     this.persist();
@@ -460,9 +492,17 @@ export class Installer {
     const dep: Deployment = existing
       ? this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, v.versionNumber, `Shiftly ${this.d.release.version}`)
       : this.createDeploymentOnce(which, v.versionNumber);
-    // 実際のデプロイの版が、今回作成した版と一致することを確認する（記録と実際の版をずらさない。Codex 監査18）
-    const actual = dep.deploymentConfig?.versionNumber;
-    if (actual !== undefined && actual !== v.versionNumber)
+    // 実際のデプロイの版が、今回作成した版と一致することを確認する（記録と実際の版をずらさない。Codex 監査18）。
+    // 応答に版の番号がない場合は個別に取得して確かめ、確かめられなければ記録せずに止める（Codex 監査19 次の版の前）
+    let actual = dep.deploymentConfig?.versionNumber;
+    if (actual === undefined) actual = this.d.api.getDeployment(ref.scriptId!, dep.deploymentId)?.deploymentConfig?.versionNumber;
+    if (actual === undefined)
+      throw new InstallerError(
+        `${which}.deploy` as StepId,
+        'デプロイの版を確認できませんでした',
+        '時間をおいて「再実行」を押してください。解消しない場合は、Apps Script の「デプロイを管理」で状態を確認してください',
+      );
+    if (actual !== v.versionNumber)
       throw new InstallerError(
         `${which}.deploy` as StepId,
         `デプロイの版（v${actual}）が、今回作成した版（v${v.versionNumber}）と一致しません`,
@@ -535,12 +575,19 @@ export class Installer {
   }
 
   /** 失敗した工程の状態を解除して再実行可能にする */
-  retry(step: StepId) {
+  retry(step: StepId, confirmedNoDuplicate = false) {
     if (this.reg?.steps[step]?.status === 'error') {
       delete this.reg.steps[step];
-      // 作成工程の再実行は、管理者が重複がないことを確認した上での明示的な操作として、作成中の目印を解除する
-      if (step === 'core.create' && !this.reg.core.scriptId) delete this.reg.core.creatingAt;
-      if (step === 'admin.create' && !this.reg.admin.scriptId) delete this.reg.admin.creatingAt;
+      // 作成工程の再実行は、確認を案内した後（creatingPrompted）で、管理者が重複がないことを確認したと明示した場合
+      // （confirmedNoDuplicate。画面の確認のチェック）に限り、作成中の目印を解除する。それ以外の再実行では目印を残し、
+      // 次の実行で確認を案内する（サーバー側で確認の明示を検証する。Codex 監査19 #2）
+      for (const [s, which] of [['core.create', 'core'], ['admin.create', 'admin']] as const) {
+        const ref = this.reg[which];
+        if (step === s && !ref.scriptId && ref.creatingAt && ref.creatingPrompted && confirmedNoDuplicate) {
+          delete ref.creatingAt;
+          delete ref.creatingPrompted;
+        }
+      }
       this.persist();
     }
   }

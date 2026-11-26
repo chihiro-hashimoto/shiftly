@@ -184,3 +184,84 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(enr.rowCount).toBeGreaterThan(100);
   });
 });
+
+/**
+ * 外部の作成の一回性（不変条件 S1、D-025）: Drive の検索・内容の取得に失敗したときに「存在しない」と見なして作り直さない。
+ * 失敗の種類（作成の応答の喪失・検索の失敗・内容の取得の失敗）を列挙し、どの組み合わせでも作成物が 1 つだけであることを確かめる
+ */
+describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の作成の一回性（GAS エミュレーション）', () => {
+  const count = (emu: GasEmulator, key: string, value: string) => [...emu.files.values()].filter((f) => !f.trashed && f.appProperties?.[key] === value).length;
+
+  // Core の初期化（shiftlyAuthorize）で作るもの。どれか 1 つの作成の応答を失い、再実行の最初の検索も失敗する
+  for (const target of ['root', '00_System', '01_Database', 'database'] as const) {
+    it(`Core の初期化: 「${target}」の作成の応答を失い、再実行の検索も失敗しても、二重に作らない`, () => {
+      const emu = new GasEmulator();
+      const code = randomBytes(32).toString('hex');
+      const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_s1', storeName: 'S1店', adminPairingHash: sha(code), setupPairingHash: sha(code + 's') } });
+      let lose = 1;
+      emu.driveFaults.loseCreate = (_n, ap) => ap?.shiftly === target && lose-- > 0;
+      expect(() => core.shiftlyAuthorize()).toThrow();
+      expect(count(emu, 'shiftly', target)).toBe(1); // 作成は完了している（応答だけを失った）
+      // 再実行: その作成物を探す検索が 1 回失敗する → 作らずに止める
+      let fail = 1;
+      emu.driveFaults.loseCreate = undefined;
+      emu.driveFaults.listFail = (q) => q.includes(`value='${target}'`) && fail-- > 0;
+      expect(() => core.shiftlyAuthorize()).toThrow();
+      expect(count(emu, 'shiftly', target)).toBe(1);
+      // 次の再実行で既存を見つけて使う
+      emu.driveFaults.listFail = undefined;
+      expect(core.shiftlyAuthorize().ok).toBe(true);
+      for (const k of ['root', '00_System', '01_Database', 'database']) expect(count(emu, 'shiftly', k)).toBe(1);
+    });
+  }
+
+  const release = { version: '1.3.0', core: [], admin: [], hashes: {} };
+  const registry = (steps: Record<string, unknown> = {}) => ({
+    schema: 1,
+    envId: 'env_reg',
+    ownerEmail: 'owner@example.invalid',
+    storeName: '記録店',
+    appVersion: null,
+    createdAt: '2026-11-01T00:00:00.000Z',
+    updatedAt: '2026-11-01T00:00:00.000Z',
+    steps,
+    core: { title: 'Shiftly-Staff (env_reg)', scriptId: 'scr_core' },
+    admin: { title: 'Shiftly-Admin (env_reg)' },
+    adminPairingHash: sha('a'),
+    setupPairingHash: sha('s'),
+    update: null,
+  });
+  const putRegistryFile = (emu: GasEmulator, reg: unknown) => {
+    emu.files.set('regfile', { name: 'Shiftly Setup Registry.json', mimeType: 'application/json', parents: [], data: Buffer.from(JSON.stringify(reg)), appProperties: { shiftlySetup: 'registry', envId: 'env_reg' } });
+  };
+  const api = (setup: ReturnType<GasEmulator['load']>, action: string, args?: unknown) => JSON.parse(setup.setupApi(JSON.stringify({ action, args })));
+
+  for (const fault of ['検索の失敗', '内容の取得の失敗'] as const) {
+    it(`Setup の読み込み: 記録ファイルの${fault}を、新しい環境と取り違えない`, () => {
+      const emu = new GasEmulator();
+      putRegistryFile(emu, registry());
+      const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+      if (fault === '検索の失敗') emu.driveFaults.listFail = (q) => q.includes('shiftlySetup');
+      else emu.driveFaults.mediaStatus = 500;
+      const res = api(setup, 'state');
+      expect(res.ok).toBe(false); // 新しい環境（envId なし）として返さない
+      emu.driveFaults = {};
+      const again = api(setup, 'state');
+      expect(again.ok).toBe(true);
+      expect(again.data.envId).toBe('env_reg');
+    });
+  }
+
+  it('Setup の保存: 記録ファイルの検索に失敗しても、記録ファイルを二重に作らない', () => {
+    const emu = new GasEmulator();
+    const reg = registry({ 'admin.create': { status: 'error', at: '2026-11-01T00:00:00.000Z' } });
+    putRegistryFile(emu, reg);
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY', JSON.stringify(reg));
+    emu.userProps.setProperty('SHIFTLY_SETUP_SECRETS', JSON.stringify({ adminPairingCode: 'a', setupPairingCode: 's', setupKey: null }));
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    emu.driveFaults.listFail = (q) => q.includes('shiftlySetup');
+    const res = api(setup, 'retry', { step: 'admin.create' });
+    expect(res.ok).toBe(false);
+    expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+  });
+});

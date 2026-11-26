@@ -76,6 +76,11 @@ export class GasEmulator {
   now = Date.now();
   /** 新規シートの行数（Google Sheets の既定は 1000 行。テストでは行の自動拡張を少ない件数で確認するため変更可能） */
   defaultRows = 1000;
+  /**
+   * Drive の失敗の注入（テスト専用）。listFail: 該当する検索を例外にする。loseCreate: 作成は行われたが応答を失った（例外）とする。
+   * mediaStatus: ファイルの内容の取得（alt=media）の応答コードを置き換える
+   */
+  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number } = {};
 
   private newId(p: string) {
     return `${p}${++this.seq}`;
@@ -205,6 +210,7 @@ export class GasEmulator {
           const id = self.newId('f');
           self.files.set(id, { name: res.name, mimeType: res.mimeType, parents: res.parents ?? [], data: b ? b._data : null, appProperties: res.appProperties });
           if (res.mimeType === 'application/vnd.google-apps.spreadsheet') self.spreadsheets.set(id, { sheets: [{ title: 'Sheet1', sheetId: 0, rowCount: 1000, rows: [] }], props: {} });
+          if (self.driveFaults.loseCreate?.(res.name, res.appProperties)) throw new Error('Drive: 応答を受け取れませんでした（作成は完了）');
           return { id, webViewLink: `https://drive.example/${id}` };
         },
         copy(res: { name: string; parents: string[] }, srcId: string) {
@@ -216,6 +222,7 @@ export class GasEmulator {
           return { id, size: '1234' };
         },
         list(q: { q: string }) {
+          if (self.driveFaults.listFail?.(q.q)) throw new Error('Drive: 検索に失敗しました（一時的なエラー）');
           const parent = /'([^']+)' in parents/.exec(q.q)?.[1];
           const name = /name = '([^']+)'/.exec(q.q)?.[1];
           const ap = /appProperties has \{ key='([^']+)' and value='([^']+)' \}/.exec(q.q);
@@ -266,7 +273,7 @@ export class GasEmulator {
         fetch: (url: string) => {
           const id = /files\/([^?]+)\?alt=media/.exec(url)?.[1];
           const f = id ? self.files.get(id) : null;
-          return { getResponseCode: () => (f?.data ? 200 : 404), getContent: () => (f?.data ? toSigned(f.data) : []), getContentText: () => f?.data?.toString('utf8') ?? '' };
+          return { getResponseCode: () => (f?.data ? (self.driveFaults.mediaStatus ?? 200) : 404), getContent: () => (f?.data ? toSigned(f.data) : []), getContentText: () => f?.data?.toString('utf8') ?? '' };
         },
       },
       HtmlService: { createHtmlOutputFromFile: (n: string) => output(`html:${n}`), XFrameOptionsMode: { DEFAULT: 'DEFAULT' } },

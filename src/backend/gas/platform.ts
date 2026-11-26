@@ -193,13 +193,11 @@ export function provisionStorage(storeLabel: string): { rootId: string; dbId: st
   const props = PropertiesService.getScriptProperties();
   const FOLDER = 'application/vnd.google-apps.folder';
   // 途中失敗からの再実行でも重複作成しないよう、1 つ作るごとに ID を保存し、既存は appProperties で再検出する
+  // 検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる（作成済みのフォルダ・DB を見落として二重に作らない。
+  // 外部の作成の一回性 S1、D-025。再実行で検索できれば既存を使う）
   const findOne = (q: string): string | null => {
-    try {
-      const r = Drive.Files.list({ q: `${q} and trashed = false`, fields: 'files(id)', pageSize: 2 });
-      return r.files?.[0]?.id ?? null;
-    } catch {
-      return null;
-    }
+    const r = Drive.Files.list({ q: `${q} and trashed = false`, fields: 'files(id)', pageSize: 2 });
+    return r.files?.[0]?.id ?? null;
   };
   let created = false;
   let rootId = props.getProperty(PROP.rootFolder) ?? findOne("appProperties has { key='shiftly' and value='root' }");

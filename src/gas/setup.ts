@@ -49,13 +49,14 @@ function postJson(url: string, body: unknown) {
   }
 }
 
+/**
+ * Drive 上のレジストリファイルを探す。検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる
+ * （既存の環境を新規と取り違えてプロジェクトを二重に作る・レジストリファイルを二重に作ることを防ぐ。S1、D-025）。
+ * setupApi がエラーとして画面に返し、利用者は再読み込み・再実行する
+ */
 function findRegistryFile(): string | null {
-  try {
-    const r = Drive.Files.list({ q: "appProperties has { key='shiftlySetup' and value='registry' } and trashed = false", fields: 'files(id)', pageSize: 5 });
-    return r.files?.[0]?.id ?? null;
-  } catch {
-    return null;
-  }
+  const r = Drive.Files.list({ q: "appProperties has { key='shiftlySetup' and value='registry' } and trashed = false", fields: 'files(id)', pageSize: 5 });
+  return r.files?.[0]?.id ?? null;
 }
 
 function deps(): InstallerDeps {
@@ -72,7 +73,9 @@ function deps(): InstallerDeps {
         const id = findRegistryFile();
         if (id) {
           const res = UrlFetchApp.fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, { headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` }, muteHttpExceptions: true });
-          if (res.getResponseCode() === 200) reg = res.getContentText();
+          // ファイルがあるのに読めない場合は新規の環境として扱わない（二重作成の防止。S1）
+          if (res.getResponseCode() !== 200) throw new Error(`Setup の記録ファイルを読み込めませんでした（HTTP ${res.getResponseCode()}）。時間をおいて再読み込みしてください`);
+          reg = res.getContentText();
         }
       }
       return { reg: reg ? (JSON.parse(reg) as Registry) : null, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
@@ -114,7 +117,7 @@ export function setupApi(reqJson: string): string {
       case 'run':
         return ok(inst.runUntilBlocked({ storeName: typeof a.storeName === 'string' ? a.storeName : undefined }, 4));
       case 'retry':
-        inst.retry(String(a.step) as never);
+        inst.retry(String(a.step) as never, a.confirmedNoDuplicate === true);
         return ok(inst.runUntilBlocked({ storeName: typeof a.storeName === 'string' ? a.storeName : undefined }, 4));
       case 'checkUpdate':
         return ok(inst.checkUpdate());
