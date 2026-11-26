@@ -55,17 +55,22 @@ function ensurePaired(): string {
   }
   const r = postCore({ kind: 'pair', role: 'admin', pairingCode: SHIFTLY_ADMIN_BOOTSTRAP.pairingCode, clientKey: pending });
   let key: string | null = null;
+  let checkCode: string | null = null;
   if (r.ok) key = (r.data as { key: string }).key;
   else if (r.error?.code === 'CONFLICT') {
     // 登録済み: 前回の応答が失われた可能性。保存済みの鍵で署名した呼び出しが通れば、その鍵が登録されている
     const env = signOwnerEnvelope(createGasPlatform(), fromHex(pending), JSON.stringify({ op: 'settings.get', requestId: undefined }), 'admin');
-    if (postCore({ kind: 'owner', envelope: env }).ok) key = pending;
+    const chk = postCore({ kind: 'owner', envelope: env });
+    if (chk.ok) key = pending;
+    else checkCode = chk.error?.code ?? 'unknown';
   }
   if (!key)
     throw new Error(
-      r.error?.code === 'CONFLICT'
-        ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Staff（旧名称 Shiftly-Kiosk）のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
-        : `Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`,
+      r.error?.code !== 'CONFLICT'
+        ? `Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`
+        : checkCode === 'UNAUTHENTICATED'
+          ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Staff（旧名称 Shiftly-Kiosk）のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
+          : `登録済みの接続を確認できませんでした（${checkCode}）。時間をおいて、もう一度 shiftlyAuthorize を実行してください`,
     );
   props.setProperty(KEY_PROP, key);
   props.deleteProperty(PENDING_KEY_PROP);

@@ -23,6 +23,8 @@ declare const Drive: any;
 const REG_KEY = 'SHIFTLY_SETUP_REGISTRY';
 const SEC_KEY = 'SHIFTLY_SETUP_SECRETS';
 const REG_FILE = 'Shiftly Setup Registry.json';
+/** Drive 上のレジストリファイルの ID（作成・使用したもの。以後はこの ID で更新する） */
+const REG_FILE_ID_KEY = 'SHIFTLY_SETUP_REGISTRY_FILE_ID';
 
 export function doGet() {
   return HtmlService.createHtmlOutputFromFile('setup').setTitle('Shiftly Setup').addMetaTag('viewport', 'width=device-width, initial-scale=1').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
@@ -50,13 +52,40 @@ function postJson(url: string, body: unknown) {
 }
 
 /**
- * Drive 上のレジストリファイルを探す。検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる
+ * Drive 上のレジストリファイル（Setup の記録）を探す。検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる
  * （既存の環境を新規と取り違えてプロジェクトを二重に作る・レジストリファイルを二重に作ることを防ぐ。S1、D-025）。
  * setupApi がエラーとして画面に返し、利用者は再読み込み・再実行する
  */
-function findRegistryFile(): string | null {
-  const r = Drive.Files.list({ q: "appProperties has { key='shiftlySetup' and value='registry' } and trashed = false", fields: 'files(id)', pageSize: 5 });
-  return r.files?.[0]?.id ?? null;
+function findRegistryFiles(): string[] {
+  const r = Drive.Files.list({ q: "appProperties has { key='shiftlySetup' and value='registry' } and trashed = false", fields: 'files(id)', pageSize: 20 });
+  return (r.files ?? []).map((f: { id: string }) => f.id);
+}
+
+/** レジストリファイルの内容を読む。読めない場合は新規の環境として扱わずに止める（二重作成の防止。S1） */
+function readRegistryFile(id: string): { id: string; text: string; reg: Registry } {
+  const res = UrlFetchApp.fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, { headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` }, muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error(`Setup の記録ファイルを読み込めませんでした（HTTP ${res.getResponseCode()}）。時間をおいて再読み込みしてください`);
+  const text = res.getContentText();
+  let reg: Registry;
+  try {
+    reg = JSON.parse(text) as Registry;
+  } catch {
+    throw new Error('Setup の記録ファイルの内容を読み取れませんでした。Google ドライブの「Shiftly Setup Registry.json」を確認してください');
+  }
+  return { id, text, reg };
+}
+
+/**
+ * Drive 上のレジストリファイルから、最新の記録を選ぶ（独立した点検 S1-3）。
+ * Drive の検索への反映の遅れなどで同じ環境の記録ファイルが複数ある場合は、最後に保存したもの（updatedAt が最新）を使う。
+ * 別々の環境を指す記録ファイルがある場合は、どちらで再開すべきか分からないため止める
+ */
+function latestRegistryFile(): { id: string; text: string; reg: Registry } | null {
+  const files = findRegistryFiles().map(readRegistryFile);
+  if (!files.length) return null;
+  if (new Set(files.map((f) => f.reg.envId)).size > 1)
+    throw new Error('Google ドライブに、別々の環境を指す Setup の記録ファイル（Shiftly Setup Registry.json）が複数あります。使わない環境の記録ファイルをゴミ箱に移動してから、再読み込みしてください');
+  return files.reduce((a, b) => (String(b.reg.updatedAt ?? '') > String(a.reg.updatedAt ?? '') ? b : a));
 }
 
 function deps(): InstallerDeps {
@@ -69,13 +98,11 @@ function deps(): InstallerDeps {
       let reg = up.getProperty(REG_KEY);
       const sec = up.getProperty(SEC_KEY);
       if (!reg) {
-        // UserProperties が空でも Drive のレジストリファイルから既存環境を再検出
-        const id = findRegistryFile();
-        if (id) {
-          const res = UrlFetchApp.fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, { headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` }, muteHttpExceptions: true });
-          // ファイルがあるのに読めない場合は新規の環境として扱わない（二重作成の防止。S1）
-          if (res.getResponseCode() !== 200) throw new Error(`Setup の記録ファイルを読み込めませんでした（HTTP ${res.getResponseCode()}）。時間をおいて再読み込みしてください`);
-          reg = res.getContentText();
+        // UserProperties が空でも Drive のレジストリファイルから既存環境を再検出（複数あれば最新の記録。以後はそのファイルを ID で更新する）
+        const f = latestRegistryFile();
+        if (f) {
+          reg = f.text;
+          up.setProperty(REG_FILE_ID_KEY, f.id);
         }
       }
       return { reg: reg ? (JSON.parse(reg) as Registry) : null, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
@@ -84,9 +111,23 @@ function deps(): InstallerDeps {
       up.setProperty(REG_KEY, JSON.stringify(reg));
       up.setProperty(SEC_KEY, JSON.stringify(sec));
       const blob = Utilities.newBlob(JSON.stringify(reg, null, 2), 'application/json', REG_FILE);
-      const id = findRegistryFile();
+      // 作成・使用した記録ファイルの ID を保存し、以後は ID で更新する（作成の直後に検索へ反映されず、保存のたびに
+      // 新しいファイルを作ることを防ぐ。独立した点検 S1-3）
+      const known = up.getProperty(REG_FILE_ID_KEY);
+      if (known) {
+        try {
+          Drive.Files.update({}, known, blob);
+          return;
+        } catch (e) {
+          // 更新できない（削除された等）: 次の保存で検索し直す。今回は止める（迷ったら止める）
+          up.deleteProperty(REG_FILE_ID_KEY);
+          throw e;
+        }
+      }
+      const id = findRegistryFiles()[0] ?? null;
       if (id) Drive.Files.update({}, id, blob);
-      else Drive.Files.create({ name: REG_FILE, mimeType: 'application/json', appProperties: { shiftlySetup: 'registry', envId: reg.envId } }, blob);
+      const saved = id ?? (Drive.Files.create({ name: REG_FILE, mimeType: 'application/json', appProperties: { shiftlySetup: 'registry', envId: reg.envId } }, blob, { fields: 'id' }).id as string);
+      up.setProperty(REG_FILE_ID_KEY, saved);
     },
     userEmail: () => {
       try {

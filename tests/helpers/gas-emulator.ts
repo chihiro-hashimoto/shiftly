@@ -78,9 +78,9 @@ export class GasEmulator {
   defaultRows = 1000;
   /**
    * Drive の失敗の注入（テスト専用）。listFail: 該当する検索を例外にする。loseCreate: 作成は行われたが応答を失った（例外）とする。
-   * mediaStatus: ファイルの内容の取得（alt=media）の応答コードを置き換える
+   * mediaStatus: ファイルの内容の取得（alt=media）の応答コードを置き換える。listHide: 該当する検索が、まだ反映されていないかのように 0 件を返す
    */
-  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number } = {};
+  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean } = {};
 
   private newId(p: string) {
     return `${p}${++this.seq}`;
@@ -223,6 +223,7 @@ export class GasEmulator {
         },
         list(q: { q: string }) {
           if (self.driveFaults.listFail?.(q.q)) throw new Error('Drive: 検索に失敗しました（一時的なエラー）');
+          if (self.driveFaults.listHide?.(q.q)) return { files: [] };
           const parent = /'([^']+)' in parents/.exec(q.q)?.[1];
           const name = /name = '([^']+)'/.exec(q.q)?.[1];
           const ap = /appProperties has \{ key='([^']+)' and value='([^']+)' \}/.exec(q.q);

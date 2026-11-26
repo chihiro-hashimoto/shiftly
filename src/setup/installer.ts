@@ -56,6 +56,10 @@ export interface ProjectRef {
   deployingAt?: string;
   /** 作成を要求したデプロイの説明（照合に使う） */
   deployingDescription?: string;
+  /** デプロイの作成の結果が分からないことと、「デプロイを管理」での確認を案内済みか（独立した点検 S1-1） */
+  deployingPrompted?: boolean;
+  /** 案内の後、管理者がデプロイがないことを確認したと明示したか（一覧で見つからない場合に、同じ説明で作成してよい） */
+  deployingConfirmed?: boolean;
 }
 
 /** Staff・Admin の版の組 */
@@ -390,12 +394,23 @@ export class Installer {
         const pending = this.sec!.pendingSetupKey;
         const r = d.postCore(this.reg!.core.url!, { kind: 'pair', role: 'setup', pairingCode: this.sec!.setupPairingCode, clientKey: pending });
         let key: string | null = r.ok ? (r.data as { key: string }).key : null;
-        if (!r.ok && r.error?.code === 'CONFLICT' && d.callCoreAsSetup(this.reg!.core.url!, pending, { op: 'system.info' }).ok) key = pending;
+        // 登録済み（CONFLICT）: 前回の応答が失われた可能性。保存済みの鍵で署名した呼び出しが通れば、その鍵が登録されている。
+        // 鍵が拒否された（UNAUTHENTICATED）場合だけ「別の鍵で登録済み」としてリセットを案内し、一時的な失敗では再実行を案内する（独立した点検 補足3）
+        let checkCode: string | null = null;
+        if (!r.ok && r.error?.code === 'CONFLICT') {
+          const info = d.callCoreAsSetup(this.reg!.core.url!, pending, { op: 'system.info' });
+          if (info.ok) key = pending;
+          else checkCode = info.error?.code ?? 'unknown';
+        }
         if (!key)
           throw new InstallerError(
             step,
-            `更新用の接続設定に失敗しました（${r.error?.code ?? 'unknown'}）`,
-            r.error?.code === 'CONFLICT' ? '管理画面「システム・更新」で「更新用接続のリセット」を実行してから再実行してください' : 'Shiftly-Staff の初期化が完了しているか確認し、再実行してください',
+            `更新用の接続設定に失敗しました（${r.error?.code ?? 'unknown'}${checkCode ? ` / 確認: ${checkCode}` : ''}）`,
+            r.error?.code !== 'CONFLICT'
+              ? 'Shiftly-Staff の初期化が完了しているか確認し、再実行してください'
+              : checkCode === 'UNAUTHENTICATED'
+                ? '管理画面「システム・更新」で「更新用接続のリセット」を実行してから再実行してください'
+                : '登録済みの接続を確認できませんでした。時間をおいて「再実行」を押してください',
           );
         this.sec!.setupKey = key;
         delete this.sec!.pendingSetupKey;
@@ -521,6 +536,8 @@ export class Installer {
       versionNumber: v.versionNumber,
       deployingAt: undefined,
       deployingDescription: undefined,
+      deployingPrompted: undefined,
+      deployingConfirmed: undefined,
     };
     // 更新中は、今回配備した版を記録する（再開・完了の判定、ロールバックの判定に使う。Codex 監査13）
     if (upd) this.reg!.update = { ...upd, deployed: { ...(upd.deployed ?? {}), [which]: v.versionNumber } };
@@ -528,24 +545,43 @@ export class Installer {
   }
 
   /**
-   * Web アプリのデプロイを 1 つだけ作る（Codex 監査17 #3）。
-   * 作成の要求の前に目印を保存し、前回の作成の結果が不明（目印が残っている）なら、デプロイの一覧で照合する:
-   * 作成を要求した説明の Web アプリのデプロイが 1 つならそれを使い、0 なら作成し、2 つ以上なら作成を止めて確認を案内する
+   * Web アプリのデプロイを 1 つだけ作る（Codex 監査17 #3、D-025 S1）。
+   * 作成の要求の前に目印（日時と説明）を保存する。前回の作成の結果が不明（目印が残っている）なら、デプロイの一覧で説明を照合する:
+   * 1 つならそれを使い、2 つ以上なら作成を止めて確認を案内する。0 なら（一覧への反映の遅れで見えていない可能性があるため）
+   * 「デプロイを管理」での確認を案内し、管理者が確認を明示した場合（retry の confirmedNoDuplicate）だけ、同じ説明で作成する（独立した点検 S1-1）。
+   * 作成の失敗は、Google の拒否（4xx）が分かる場合だけ「作成されていない」として目印を外し、それ以外は結果が分からないとして確認を案内する
    */
   private createDeploymentOnce(which: 'core' | 'admin', versionNumber: number): Deployment {
     const ref = this.reg![which];
     const step: StepId = which === 'core' ? 'core.deploy' : 'admin.deploy';
     const name = which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin';
-    if (ref.deployingAt) {
+    const unknownResult = (desc: string) => {
+      this.reg![which] = { ...this.reg![which], deployingPrompted: true, deployingConfirmed: undefined };
+      this.persist();
+      return new InstallerError(
+        step,
+        `「${name}」の Web アプリのデプロイの作成結果を確認できませんでした（作成されたかどうか分かりません）`,
+        `Apps Script のエディタで「${name}」を開き、「デプロイ」→「デプロイを管理」で、説明が「${desc}」のデプロイがあるか確認してください。ない場合は、確認のチェックを付けて「再実行」を押してください。ある場合は、チェックを付けずに数分おいてから画面を再読み込みし、続きを実行してください（一覧に反映されると、そのデプロイを使います。同じデプロイが二重に作られるのを防ぐため、自動では作り直しません）`,
+        `「デプロイを管理」で、説明が「${desc}」のデプロイがないことを確認しました`,
+      );
+    };
+    let description: string;
+    if (ref.deployingAt && !ref.deployingDescription) {
+      // 目印だけで説明の記録がない（照合できない）: 確認の明示があるまで作らない
+      if (!ref.deployingConfirmed) throw unknownResult(`Shiftly ${this.d.release.version} (${this.reg!.envId} ${which}`);
+      description = `Shiftly ${this.d.release.version} (${this.reg!.envId} ${which} ${this.d.now()})`;
+      this.reg![which] = { ...ref, deployingDescription: description };
+      this.persist();
+    } else if (ref.deployingAt && ref.deployingDescription) {
       const desc = ref.deployingDescription;
       // 説明で照合する（一覧の応答に Web アプリの URL が含まれない場合に備え、使うデプロイは個別に取得し直す。実環境での一覧の応答の内容は未検証）
-      const found = this.d.api.listDeployments(ref.scriptId!).filter((d) => !!desc && d.deploymentConfig?.description === desc);
+      const found = this.d.api.listDeployments(ref.scriptId!).filter((d) => d.deploymentConfig?.description === desc);
       if (found.length === 1) {
         // 見つかったデプロイを使う。今回作成した版へ切り替え、実際の版と記録をそろえる（Codex 監査18: 再利用した配備の版と記録のずれ）
         const id = found[0]!.deploymentId;
-        this.reg![which] = { ...ref, deploymentId: id, deployingAt: undefined, deployingDescription: undefined };
+        this.reg![which] = { ...ref, deploymentId: id, deployingAt: undefined, deployingDescription: undefined, deployingPrompted: undefined, deployingConfirmed: undefined };
         this.persist();
-        return this.d.api.updateDeployment(ref.scriptId!, id, versionNumber, desc!);
+        return this.d.api.updateDeployment(ref.scriptId!, id, versionNumber, desc);
       }
       if (found.length > 1)
         throw new InstallerError(
@@ -553,12 +589,27 @@ export class Installer {
           `「${name}」の Web アプリのデプロイが複数見つかりました（前回の作成の結果を確認できなかったため）`,
           `Apps Script のエディタで「${name}」を開き、「デプロイ」→「デプロイを管理」で、説明が「${desc}」のデプロイを 1 つだけ残して、ほかをアーカイブしてから「再実行」を押してください（管理されていない URL が残るのを防ぐため、自動では選びません）`,
         );
+      // 一覧で見つからない: 確認の明示があるまで作らない（同じ説明を使い続け、遅れて一覧に現れたデプロイとも照合できるようにする）
+      if (!ref.deployingConfirmed) throw unknownResult(desc);
+      description = desc;
+    } else {
+      description = `Shiftly ${this.d.release.version} (${this.reg!.envId} ${which} ${this.d.now()})`;
+      this.reg![which] = { ...ref, deployingAt: this.d.now(), deployingDescription: description, deployingPrompted: undefined, deployingConfirmed: undefined };
+      this.persist();
     }
-    const description = `Shiftly ${this.d.release.version} (${this.reg!.envId} ${which} ${this.d.now()})`;
-    this.reg![which] = { ...ref, deployingAt: this.d.now(), deployingDescription: description };
-    this.persist();
-    const dep = this.d.api.createDeployment(ref.scriptId!, versionNumber, description);
-    this.reg![which] = { ...this.reg![which], deploymentId: dep.deploymentId, deployingAt: undefined, deployingDescription: undefined };
+    let dep: Deployment;
+    try {
+      dep = this.d.api.createDeployment(ref.scriptId!, versionNumber, description);
+    } catch (e) {
+      // Google が要求を拒否した（作成されていない）ことが分かる場合は、目印を外して通常の失敗として扱う（再実行で作成できる）
+      if (!createOutcomeUnknown(e)) {
+        this.reg![which] = { ...this.reg![which], deployingAt: undefined, deployingDescription: undefined, deployingPrompted: undefined, deployingConfirmed: undefined };
+        this.persist();
+        throw e;
+      }
+      throw unknownResult(description);
+    }
+    this.reg![which] = { ...this.reg![which], deploymentId: dep.deploymentId, deployingAt: undefined, deployingDescription: undefined, deployingPrompted: undefined, deployingConfirmed: undefined };
     this.persist();
     return dep;
   }
@@ -587,6 +638,11 @@ export class Installer {
           delete ref.creatingAt;
           delete ref.creatingPrompted;
         }
+      }
+      // デプロイの作成も同じ（独立した点検 S1-1）。目印と説明は残し、一覧で見つからない場合に同じ説明で作成してよいことだけを記録する
+      for (const [s, which] of [['core.deploy', 'core'], ['admin.deploy', 'admin']] as const) {
+        const ref = this.reg[which];
+        if (step === s && ref.deployingAt && ref.deployingPrompted && confirmedNoDuplicate) ref.deployingConfirmed = true;
       }
       this.persist();
     }

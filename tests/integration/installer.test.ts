@@ -29,8 +29,12 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     putContent: 0,
     scriptFail: new Map<string, number>(),
     loseCreateDeployment: 0,
-    createProject: [] as Array<{ status: number; created: boolean } | 'throw'>,
+    createProject: [] as Array<{ status: number; created: boolean } | 'throw' | 'noid'>,
     omitDeployVersion: '' as '' | 'response' | 'all',
+    // createDeployment: デプロイの作成の失敗の注入（先頭から順に使う）。noid=作成済みで成功（2xx）だが応答に ID がない
+    createDeployment: [] as Array<{ status: number; created: boolean } | 'throw' | 'noid'>,
+    // listLag: デプロイの一覧が、作成済みのデプロイをまだ返さない回数（一覧への反映の遅れ）
+    listLag: 0,
   };
   const descriptions = new Map<string, string>(); // deploymentId → 説明
   const http: Http = (method, url, body) => {
@@ -41,6 +45,10 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     if (method === 'POST' && !id && faults.createProject.length) {
       const f = faults.createProject.shift()!;
       if (f === 'throw') throw new Error('Exception: Address unavailable: https://script.googleapis.com/v1/projects');
+      if (f === 'noid') {
+        projects.set(`script_${++n}`, { title: (body as { title: string }).title, files: [], versions: 0, deployments: new Map() });
+        return { status: 200, body: '{}' };
+      }
       if (f.created) projects.set(`script_${++n}`, { title: (body as { title: string }).title, files: [], versions: 0, deployments: new Map() });
       return { status: f.status, body: JSON.stringify({ error: { message: `HTTP ${f.status}` } }) };
     }
@@ -83,6 +91,18 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
     const strip = (d: ReturnType<typeof depFull>) => ({ ...d, deploymentConfig: { description: d.deploymentConfig.description } });
     const dep = (did: string, v: number) => (faults.omitDeployVersion ? strip(depFull(did, v)) : depFull(did, v));
     const depGet = (did: string, v: number) => (faults.omitDeployVersion === 'all' ? strip(depFull(did, v)) : depFull(did, v));
+    if (method === 'POST' && sub === 'deployments' && faults.createDeployment.length) {
+      const f = faults.createDeployment.shift()!;
+      if (f === 'throw') throw new Error('Exception: Address unavailable: https://script.googleapis.com/v1/projects/x/deployments');
+      const created = f === 'noid' || f.created;
+      if (created) {
+        const did = `dep_${id}_${p.deployments.size + 1}`;
+        p.deployments.set(did, (body as { versionNumber: number }).versionNumber);
+        descriptions.set(did, (body as { description?: string }).description ?? '');
+      }
+      if (f === 'noid') return { status: 200, body: '{}' };
+      return { status: f.status, body: JSON.stringify({ error: { message: `HTTP ${f.status}` } }) };
+    }
     if (method === 'POST' && sub === 'deployments') {
       const did = `dep_${id}_${p.deployments.size + 1}`;
       p.deployments.set(did, (body as { versionNumber: number }).versionNumber);
@@ -95,6 +115,10 @@ function fakeScriptApi(opts: { apiDisabled?: boolean; failCreateOnce?: boolean; 
       return { status: 200, body: JSON.stringify(dep(did, (body as { versionNumber: number }).versionNumber)) };
     }
     if (method === 'GET' && sub === 'deployments' && !depId) {
+      if (faults.listLag > 0) {
+        faults.listLag--;
+        return { status: 200, body: '{}' };
+      }
       return { status: 200, body: JSON.stringify({ deployments: [...p.deployments.entries()].map(([did, v]) => dep(did, v)) }) };
     }
     if (method === 'GET' && sub === 'deployments' && depId) {
@@ -259,6 +283,40 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.state.complete).toBe(true);
     expect(s.store.secrets!.setupKey).toMatch(/^[0-9a-f]{64}$/);
     expect(s.store.secrets!.pendingSetupKey).toBeUndefined();
+  });
+
+  // 独立した点検 補足3: 登録済み（CONFLICT）の後の確認の失敗の種類で案内を分ける（鍵が拒否された場合だけリセットを案内する）
+  const pairUntilConflict = () => {
+    const s = setup({ dropSetupPairResponseOnce: true });
+    s.make().runUntilBlocked({ storeName: 'テスト店' }, 20);
+    s.core.authorize();
+    s.make().runUntilBlocked({}, 20);
+    const adminBs = [...s.api.projects.values()].find((p) => p.title.startsWith('Shiftly-Admin'))!.files.find((f) => f.name === 'bootstrap')!;
+    s.core.post({ kind: 'pair', role: 'admin', pairingCode: JSON.parse(adminBs.source.replace('var SHIFTLY_ADMIN_BOOTSTRAP = ', '').replace(/;\n$/, '')).pairingCode });
+    expect(s.make().runUntilBlocked({}, 20).error?.step).toBe('setup.pair'); // 1 回目: 応答喪失（Core 側では登録済み）
+    return s;
+  };
+  it('ペアリングの確認: 登録済みの鍵の確認が一時的に失敗した場合は、リセットを案内せず再実行を案内し、再実行で完了する', () => {
+    const s = pairUntilConflict();
+    s.dropOps.add('system.info'); // 確認の呼び出しの応答が失われる（一時的な失敗）
+    const inst = s.make();
+    inst.retry('setup.pair');
+    const r = inst.runUntilBlocked({}, 20);
+    expect(r.error?.step).toBe('setup.pair');
+    expect(r.error?.fix).not.toContain('リセット');
+    expect(r.error?.fix).toContain('時間をおいて');
+    const inst2 = s.make();
+    inst2.retry('setup.pair');
+    expect(inst2.runUntilBlocked({}, 20).state.complete).toBe(true);
+  });
+  it('ペアリングの確認: 保存済みの鍵が拒否された（別の鍵で登録済み）場合だけ、リセットを案内する', () => {
+    const s = pairUntilConflict();
+    s.store.secrets = { ...s.store.secrets!, pendingSetupKey: 'f'.repeat(64) }; // 登録されていない鍵
+    const inst = s.make();
+    inst.retry('setup.pair');
+    const r = inst.runUntilBlocked({}, 20);
+    expect(r.error?.step).toBe('setup.pair');
+    expect(r.error?.fix).toContain('更新用接続のリセット');
   });
 
   it('再実行・中断再開で重複生成しない（既存環境の再検出）', () => {
@@ -1260,7 +1318,7 @@ describe('Shiftly Setup（自動インストーラー）', () => {
    *   P4 P2 の後、一覧で確認・整理したうえで確認を明示した再実行では、同名のプロジェクトはちょうど 1 つになる
    */
   const staffProjects = (s: ReturnType<typeof setup>) => [...s.api.projects.entries()].filter(([, p]) => p.title.startsWith('Shiftly-Staff'));
-  const CREATE_FAILURES: Array<{ name: string; fault: { status: number; created: boolean } | 'throw'; unknown: boolean }> = [
+  const CREATE_FAILURES: Array<{ name: string; fault: { status: number; created: boolean } | 'throw' | 'noid'; unknown: boolean }> = [
     { name: '400（不正な要求）', fault: { status: 400, created: false }, unknown: false },
     { name: '403（権限なし）', fault: { status: 403, created: false }, unknown: false },
     { name: '429（利用上限）', fault: { status: 429, created: false }, unknown: false },
@@ -1268,6 +1326,7 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     { name: '503（一時的に利用不可）', fault: { status: 503, created: false }, unknown: true },
     { name: '504（作成済みで応答だけ喪失）', fault: { status: 504, created: true }, unknown: true },
     { name: '通信の例外（作成されていない）', fault: 'throw', unknown: true },
+    { name: '成功（2xx）だが応答に ID がない（作成済み。独立した点検 S1-2）', fault: 'noid', unknown: true },
   ];
   for (const { name, fault, unknown } of CREATE_FAILURES) {
     it(`作成の失敗の種類: ${name}`, () => {
@@ -1313,6 +1372,94 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(r.error?.step).toBe('core.create');
     expect(r.error?.confirm).toBeTruthy();
     expect(staffProjects(s)).toHaveLength(0);
+  });
+
+  // ---- 独立した点検 S1-1・S1-2: デプロイの作成の失敗の種類ごとの扱い（プロジェクトと同じ不変条件 D1〜D4） ----
+  /*
+   * 不変条件:
+   *   D1 Google が要求を拒否したこと（4xx）が分かる失敗は「作成されていない」。確認の案内を出さず、確認なしの再実行で 1 つだけ作成する
+   *   D2 作成されたかどうか分からない失敗（通信の例外・5xx・応答の喪失・ID のない成功応答）は、最初の失敗から確認の案内（confirm）を出す
+   *   D3 D2 の後、作成されていて一覧に現れれば、確認なしの再実行でそれを使う（作らない）。一覧に現れなければ、確認の明示なしでは作らない
+   *   D4 D2 の後、確認を明示した再実行では、最初の要求と同じ説明で 1 つだけ作成する
+   */
+  const coreDeps = (s: ReturnType<typeof setup>) => s.api.projects.get(s.store.reg!.core.scriptId!)!.deployments;
+  const DEPLOY_FAILURES: Array<{ name: string; fault: { status: number; created: boolean } | 'throw' | 'noid'; unknown: boolean; created: boolean }> = [
+    { name: '400（不正な要求）', fault: { status: 400, created: false }, unknown: false, created: false },
+    { name: '403（権限なし）', fault: { status: 403, created: false }, unknown: false, created: false },
+    { name: '429（利用上限）', fault: { status: 429, created: false }, unknown: false, created: false },
+    { name: '500（内部エラー）', fault: { status: 500, created: false }, unknown: true, created: false },
+    { name: '503（一時的に利用不可）', fault: { status: 503, created: false }, unknown: true, created: false },
+    { name: '504（作成済みで応答だけ喪失）', fault: { status: 504, created: true }, unknown: true, created: true },
+    { name: '通信の例外（作成されていない）', fault: 'throw', unknown: true, created: false },
+    { name: '成功（2xx）だが応答に ID がない（作成済み）', fault: 'noid', unknown: true, created: true },
+  ];
+  for (const { name, fault, unknown, created } of DEPLOY_FAILURES) {
+    it(`デプロイの作成の失敗の種類: ${name}`, () => {
+      const s = setup();
+      s.api.faults.createDeployment.push(fault);
+      const r1 = s.make().runUntilBlocked({ storeName: '店' }, 20);
+      expect(r1.error?.step).toBe('core.deploy');
+      if (!unknown) {
+        // D1
+        expect(r1.error?.confirm).toBeUndefined();
+        const inst = s.make();
+        inst.retry('core.deploy');
+        expect(inst.runUntilBlocked({}, 20).error).toBeNull();
+        expect(coreDeps(s).size).toBe(1);
+        return;
+      }
+      // D2
+      expect(r1.error?.confirm).toBeTruthy();
+      expect(r1.error?.fix).toContain('デプロイを管理');
+      const desc = s.store.reg!.core.deployingDescription!;
+      expect(desc).toBeTruthy();
+      if (created) {
+        // D3（作成済み）: 確認なしの再実行で、一覧で見つけて使う
+        const r2 = s.make().runUntilBlocked({}, 20);
+        expect(r2.error).toBeNull();
+        expect(coreDeps(s).size).toBe(1);
+        expect(coreDeps(s).has(s.store.reg!.core.deploymentId!)).toBe(true);
+        return;
+      }
+      // D3（作成されていない）: 確認の明示がない再実行（「再実行」・画面の再読み込みからの続行の両方）では作らない
+      const inst1 = s.make();
+      inst1.retry('core.deploy');
+      const r2 = inst1.runUntilBlocked({}, 20);
+      expect(r2.error?.step).toBe('core.deploy');
+      expect(r2.error?.confirm).toBeTruthy();
+      expect(s.make().runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+      expect(coreDeps(s).size).toBe(0);
+      // D4: 確認を明示した再実行で、同じ説明で 1 つだけ作る
+      const inst2 = s.make();
+      inst2.retry('core.deploy', true);
+      expect(inst2.runUntilBlocked({}, 20).error).toBeNull();
+      expect(coreDeps(s).size).toBe(1);
+      expect(s.api.descriptions.get(s.store.reg!.core.deploymentId!)).toBe(desc);
+    });
+  }
+
+  it('デプロイの作成: 作成済みだが一覧への反映が遅れている間は、確認の明示なしに作らず、反映された後にそれを使う', () => {
+    const s = setup();
+    s.api.faults.createDeployment.push({ status: 504, created: true });
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.api.faults.listLag = 1;
+    const r2 = s.make().runUntilBlocked({}, 20);
+    expect(r2.error?.confirm).toBeTruthy();
+    expect(coreDeps(s).size).toBe(1);
+    const r3 = s.make().runUntilBlocked({}, 20);
+    expect(r3.error).toBeNull();
+    expect(coreDeps(s).size).toBe(1);
+  });
+
+  it('デプロイの作成: 目印だけが残り説明の記録がない場合も、確認の明示なしでは作らない', () => {
+    const s = setup();
+    s.api.faults.createDeployment.push({ status: 400, created: false });
+    s.make().runUntilBlocked({ storeName: '店' }, 20); // core.deploy の手前まで進める（400 は目印を外す）
+    s.store.reg!.core = { ...s.store.reg!.core, deployingAt: new Date().toISOString(), deployingDescription: undefined };
+    const r = s.make().runUntilBlocked({}, 20);
+    expect(r.error?.step).toBe('core.deploy');
+    expect(r.error?.confirm).toBeTruthy();
+    expect(coreDeps(s).size).toBe(0);
   });
 
   // ---- Codex 監査19（次の版の前）: デプロイの応答に版の番号がない場合 ----

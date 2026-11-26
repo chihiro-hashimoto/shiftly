@@ -252,6 +252,41 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
     });
   }
 
+  it('独立した点検 S1-3: 作成した記録ファイルが検索に反映されていなくても、同じ実行の中の保存で二重に作らない', () => {
+    const emu = new GasEmulator();
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    emu.driveFaults.listHide = (q) => q.includes('shiftlySetup'); // 作成直後で検索にまだ出ない
+    // 初回の実行（アカウントの確認・店舗名の保存・作成の失敗の記録など、1 回の実行の中で何度も保存する）
+    api(setup, 'run', { storeName: '反映待ち店' });
+    expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+    // 別の実行（再読み込み）でも、保存済みの ID で更新する
+    api(setup, 'run', { storeName: '反映待ち店' });
+    expect(count(emu, 'shiftlySetup', 'registry')).toBe(1);
+  });
+
+  it('独立した点検 S1-3: 同じ環境の記録ファイルが複数ある場合は、最後に保存した記録（updatedAt が最新）で再開する', () => {
+    const emu = new GasEmulator();
+    const old = registry();
+    const latest = { ...registry(), updatedAt: '2026-11-02T00:00:00.000Z', core: { title: 'Shiftly-Staff (env_reg)', scriptId: 'scr_latest' } };
+    // 古い記録（scriptId なし）を先に、新しい記録を後に置く（検索の結果の先頭は古いほう）
+    emu.files.set('regA', { name: 'Shiftly Setup Registry.json', mimeType: 'application/json', parents: [], data: Buffer.from(JSON.stringify({ ...old, core: { title: 'Shiftly-Staff (env_reg)' } })), appProperties: { shiftlySetup: 'registry', envId: 'env_reg' } });
+    emu.files.set('regB', { name: 'Shiftly Setup Registry.json', mimeType: 'application/json', parents: [], data: Buffer.from(JSON.stringify(latest)), appProperties: { shiftlySetup: 'registry', envId: 'env_reg' } });
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    const st = api(setup, 'state');
+    expect(st.ok).toBe(true);
+    expect(st.data.coreEditorUrl).toContain('scr_latest');
+  });
+
+  it('独立した点検 S1-3: 別々の環境を指す記録ファイルが複数ある場合は、どちらでも再開せずに止める', () => {
+    const emu = new GasEmulator();
+    putRegistryFile(emu, registry());
+    emu.files.set('regOther', { name: 'Shiftly Setup Registry.json', mimeType: 'application/json', parents: [], data: Buffer.from(JSON.stringify({ ...registry(), envId: 'env_other' })), appProperties: { shiftlySetup: 'registry', envId: 'env_other' } });
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    const st = api(setup, 'state');
+    expect(st.ok).toBe(false);
+    expect(st.error.message).toContain('複数');
+  });
+
   it('Setup の保存: 記録ファイルの検索に失敗しても、記録ファイルを二重に作らない', () => {
     const emu = new GasEmulator();
     const reg = registry({ 'admin.create': { status: 'error', at: '2026-11-01T00:00:00.000Z' } });

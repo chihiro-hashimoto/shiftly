@@ -27,6 +27,12 @@ export class AppsScriptApiError extends Error {
   }
 }
 
+/**
+ * 成功（2xx）の応答に、作成したものの ID（版の番号）がない。作成されたかどうかは分からないものとして扱う
+ * （AppsScriptApiError ではないため、Installer の createOutcomeUnknown は「結果が分からない」と判定する。D-025 S1。独立した点検 S1-2）
+ */
+export class AppsScriptMalformedResponse extends Error {}
+
 const BASE = 'https://script.googleapis.com/v1';
 
 export class AppsScriptApi {
@@ -53,7 +59,9 @@ export class AppsScriptApi {
   }
 
   createProject(title: string): { scriptId: string } {
-    return this.req('POST', '/projects', { title });
+    const r = this.req<{ scriptId?: unknown }>('POST', '/projects', { title });
+    if (typeof r.scriptId !== 'string' || !r.scriptId) throw new AppsScriptMalformedResponse('プロジェクトの作成の応答に ID がありません');
+    return { ...r, scriptId: r.scriptId };
   }
   getProject(scriptId: string): { scriptId: string; title: string } | null {
     try {
@@ -70,15 +78,21 @@ export class AppsScriptApi {
     return this.req('GET', `/projects/${encodeURIComponent(scriptId)}/content${versionNumber ? `?versionNumber=${versionNumber}` : ''}`);
   }
   createVersion(scriptId: string, description: string): { versionNumber: number } {
-    return this.req('POST', `/projects/${encodeURIComponent(scriptId)}/versions`, { description });
+    const r = this.req<{ versionNumber?: unknown }>('POST', `/projects/${encodeURIComponent(scriptId)}/versions`, { description });
+    if (typeof r.versionNumber !== 'number' || !Number.isSafeInteger(r.versionNumber) || r.versionNumber < 1) throw new AppsScriptMalformedResponse('版の作成の応答に版の番号がありません');
+    return { versionNumber: r.versionNumber };
   }
   createDeployment(scriptId: string, versionNumber: number, description: string): Deployment {
-    return this.req('POST', `/projects/${encodeURIComponent(scriptId)}/deployments`, { versionNumber, manifestFileName: 'appsscript', description });
+    const r = this.req<Partial<Deployment>>('POST', `/projects/${encodeURIComponent(scriptId)}/deployments`, { versionNumber, manifestFileName: 'appsscript', description });
+    if (typeof r.deploymentId !== 'string' || !r.deploymentId) throw new AppsScriptMalformedResponse('デプロイの作成の応答に ID がありません');
+    return r as Deployment;
   }
   updateDeployment(scriptId: string, deploymentId: string, versionNumber: number, description: string): Deployment {
-    return this.req('PUT', `/projects/${encodeURIComponent(scriptId)}/deployments/${encodeURIComponent(deploymentId)}`, {
+    const r = this.req<Partial<Deployment>>('PUT', `/projects/${encodeURIComponent(scriptId)}/deployments/${encodeURIComponent(deploymentId)}`, {
       deploymentConfig: { versionNumber, manifestFileName: 'appsscript', description },
     });
+    // 切替の対象の ID は分かっているため、応答に ID がなければ要求した ID を使う
+    return { ...r, deploymentId: typeof r.deploymentId === 'string' && r.deploymentId ? r.deploymentId : deploymentId } as Deployment;
   }
   /** デプロイの一覧（作成の応答が失われた場合の照合に使う。Codex 監査17 #3） */
   listDeployments(scriptId: string): Deployment[] {
