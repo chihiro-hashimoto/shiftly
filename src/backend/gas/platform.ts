@@ -138,9 +138,28 @@ class GasFiles implements FileStore, DatabaseControl {
     const prev = this.currentId();
     // 旧 DB は削除せず名前と目印を変更して保持（ロールバック可能）。DB の目印（shiftly=database）は常に稼働中の 1 つだけにする
     // （保管先の点検で、置き換え済みの DB・候補を DB と数えない。D-026 S1）。途中で止まった場合は 0 件になり、点検で検出される
-    Drive.Files.update({ name: `Shiftly Database (replaced ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'replaced_database' } }, prev);
-    Drive.Files.update({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'database' } }, candidateId);
-    PropertiesService.getScriptProperties().setProperty(PROP.dbId, candidateId);
+    const prevName = (Drive.Files.get(prev, { fields: 'name' }) as { name?: string }).name ?? 'Shiftly Database';
+    try {
+      Drive.Files.update({ name: `Shiftly Database (replaced ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'replaced_database' } }, prev);
+      Drive.Files.update({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'database' } }, candidateId);
+      PropertiesService.getScriptProperties().setProperty(PROP.dbId, candidateId);
+    } catch (e) {
+      // 切替の途中で失敗した: 稼働中の DB がまだ旧 DB なら、旧 DB の名前と目印を元に戻し、候補の目印も候補に戻す
+      // （稼働中の DB が「置き換え済み」と表示されて誤って整理されること・点検が失敗し続けることを防ぐ。再点検 #2）
+      if (this.currentId() === prev) {
+        try {
+          Drive.Files.update({ name: prevName, appProperties: { shiftly: 'database' } }, prev);
+        } catch {
+          /* 戻せない場合も保管先の点検で検出される */
+        }
+        try {
+          Drive.Files.update({ appProperties: { shiftly: 'restore_candidate' } }, candidateId);
+        } catch {
+          /* 候補はこの後破棄する */
+        }
+      }
+      throw e;
+    }
     return { previousId: prev };
   }
   discard(candidateId: string) {

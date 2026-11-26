@@ -229,4 +229,3 @@ export function advanceEpoch(p: Platform): number {
   if (currentEpoch(p) !== next) throw new Error('復元世代を保存できませんでした');
   return next;
 }
-

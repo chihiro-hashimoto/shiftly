@@ -3,7 +3,7 @@
  * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ・復元
  */
 import { defineOps } from '../api';
-import { actorId, advanceEpoch, audit, has, isGoogleOwner, isOwner, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
+import { actorId, advanceEpoch, audit, EPOCH_KEY, has, isGoogleOwner, isOwner, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { AttendanceCorrection, BackupHistory, Budget, Credential, Employee, OvertimeRequest, NotificationRow, PayrollPeriod, PayrollResult, PaySlip, Shift, WorkSession } from '../../shared/types';
@@ -673,6 +673,17 @@ defineOps([
           /* 破棄できない場合も稼働中の DB には影響しない */
         }
         throw e;
+      }
+      // 切替の後にも世代を進める（D-026。再点検 #1）: 世代を進めた後・切替の前に旧 DB を読んだ画面（切替の前の世代を固定）も、
+      // 古い画面として拒否する。進められない場合は世代の記録を消し、初期化（shiftlyAuthorize）で作り直すまで画面からの更新を止める（安全側）
+      try {
+        advanceEpoch(ctx.p);
+      } catch {
+        try {
+          ctx.p.secrets.delete(EPOCH_KEY);
+        } catch {
+          /* 記録を消せない場合も、切替は完了している */
+        }
       }
       ctx.uow.adapter.reset?.();
       const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });

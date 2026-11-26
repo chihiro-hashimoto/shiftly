@@ -1849,6 +1849,25 @@ describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-02
     expect(depsOf(s, 'core').size).toBe(1);
   });
 
+  it('再点検 #3: 記録しているデプロイが照会で見つかった後の別の理由の失敗では、関連付けを受け付けない', () => {
+    const s = setup();
+    s.api.faults.omitDeployVersion = 'all'; // デプロイを作成・記録したが、版を確かめられずに止まった状態
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    s.api.faults.omitDeployVersion = '';
+    s.api.faults.getDeployment404 = 1; // 一時的な 404 →「見つからない」の案内
+    const i1 = s.make();
+    i1.retry('core.deploy');
+    expect(i1.runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+    // 照会が回復して見つかったが、切替が別の理由（5xx）で失敗した
+    s.api.faults.scriptFail.set(ref(s, 'core').scriptId!, 2);
+    const i2 = s.make();
+    i2.retry('core.deploy');
+    const r = i2.runUntilBlocked({}, 20);
+    expect(r.error?.step).toBe('core.deploy');
+    expect(r.error?.confirm).toBeUndefined();
+    expect(s.make().attach('core.deploy', ref(s, 'core').deploymentId!).ok).toBe(false);
+  });
+
   it('関連付け: 別の環境・名前のプロジェクトや、Shiftly のセットアップが作っていないデプロイは関連付けない', () => {
     const s = setup();
     s.api.faults.createProject.push({ status: 504, created: true });

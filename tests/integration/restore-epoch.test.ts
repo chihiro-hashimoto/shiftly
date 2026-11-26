@@ -374,3 +374,66 @@ describe('退勤の打刻に付けた休憩の申告（D-026 の独立した点�
     expect(code(h.staff('attendance.punch', { type: 'clock_out', breakDeclaration: decl }))).toBe('OK');
   });
 });
+
+describe('DB の切替の途中で読んだ画面（D-026 の再点検 #1）', () => {
+  for (const when of ['読み取りの全体が、世代を進めた後・切替の前に収まる', '読み取りが切替をまたぐ'] as const) {
+    it(`${when}場合も、その画面からの保存は復元の後に拒否する`, () => {
+      const h = new Harness();
+      h.setupStore();
+      h.ownerOk('settings.update', { storeName: 'バックアップ時点' });
+      const bk = h.ownerOk('backup.run', { kind: 'manual' });
+      h.ownerOk('settings.update', { storeName: '復元前の最新' });
+      const db = h.env.platform.database;
+      const activate = db.activate.bind(db);
+      let seen: any = null;
+      db.activate = (id: string) => {
+        if (when === '読み取りが切替をまたぐ') {
+          // 読み取りの途中で切替が行われる: 読み取りの処理（adapter の読み込み）の中で切替を実行する
+          const ad = h.env.adapter as unknown as { read: (...a: unknown[]) => unknown };
+          const read = ad.read.bind(ad);
+          let r: { previousId: string } | null = null;
+          ad.read = (...a: unknown[]) => {
+            if (!r) r = activate(id);
+            return read(...a);
+          };
+          seen = h.owner('settings.get');
+          ad.read = read;
+          return r ?? activate(id);
+        }
+        seen = h.owner('settings.get'); // 別の画面が、切替の前（世代は進んだ後）に旧 DB を読む
+        return activate(id);
+      };
+      h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+      db.activate = activate;
+      expect(seen.ok).toBe(true);
+      expect(h.ownerOk('settings.get').storeName).toBe('バックアップ時点');
+      expect(code(h.owner('settings.update', { storeName: '復元前の最新' }, { epoch: seen.epoch }))).toBe('STALE_VIEW');
+      expect(h.ownerOk('settings.get').storeName).toBe('バックアップ時点');
+    });
+  }
+
+  it('切替の後に世代を進められない場合は、世代の記録を消して画面からの更新を止める（初期化で作り直す）', () => {
+    const h = new Harness();
+    h.setupStore();
+    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    const db = h.env.platform.database;
+    const activate = db.activate.bind(db);
+    const secrets = h.env.platform.secrets;
+    const set = secrets.set.bind(secrets);
+    db.activate = (id: string) => {
+      const r = activate(id);
+      secrets.set = (k: string, v: string) => {
+        if (k === EPOCH_KEY) throw new Error('保存に失敗しました（模擬）');
+        set(k, v);
+      };
+      return r;
+    };
+    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    db.activate = activate;
+    secrets.set = set;
+    expect(h.currentEpoch()).toBeNull();
+    expect(code(h.owner('settings.update', { storeName: 'x' }, { epoch: 1 }))).toBe('EPOCH_UNAVAILABLE');
+    h.ownerOk('system.initialize', { storeName: 'テスト店舗', envId: 'env_test' });
+    expect(code(h.owner('settings.update', { storeName: 'x' }))).toBe('OK');
+  });
+});

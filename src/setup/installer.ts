@@ -305,6 +305,17 @@ export class Installer {
       return { state: this.state(), waitingFor: waiting, error: null };
     } catch (e) {
       const err = e instanceof InstallerError ? e : toInstallerError(next.id, e);
+      // 確認を求めない別の理由の失敗では、その工程の「案内済み」「確認済み」を外す（関連付け・確認の明示は、直近の失敗が
+      // 確認を求めた場合だけ有効にする。D-026 の再点検 #3）
+      if (this.reg && !err.confirm) {
+        const which = next.id.startsWith('core.') ? 'core' : next.id.startsWith('admin.') ? 'admin' : null;
+        if (which && (next.id.endsWith('.create') || next.id.endsWith('.deploy'))) {
+          const flags = next.id.endsWith('.create')
+            ? { creatingPrompted: undefined, projectMissingPrompted: undefined, projectMissingConfirmed: undefined }
+            : { deployingPrompted: undefined, deployingConfirmed: undefined, deploymentMissingPrompted: undefined, deploymentMissingConfirmed: undefined };
+          this.reg[which] = { ...this.reg[which], ...flags };
+        }
+      }
       if (this.reg) this.mark(next.id, 'error', err.message);
       return { state: this.state(), waitingFor: null, error: { step: err.step, message: err.message, fix: err.fix, ...(err.confirm ? { confirm: err.confirm } : {}) } };
     }
@@ -622,6 +633,11 @@ export class Installer {
     const ref = this.reg![which];
     const v = this.d.api.createVersion(ref.scriptId!, `Shiftly ${this.d.release.version}`);
     let existing = ref.deploymentId ? this.d.api.getDeployment(ref.scriptId!, ref.deploymentId) : null;
+    if (existing && (ref.deploymentMissingPrompted || ref.deploymentMissingConfirmed)) {
+      // 照会で見つかった: 「見つからない」の案内は解消した（ほかの理由の失敗で、関連付けを受け付ける状態を残さない。再点検 #3）
+      this.reg![which] = { ...ref, deploymentMissingPrompted: undefined, deploymentMissingConfirmed: undefined };
+      this.persist();
+    }
     if (ref.deploymentId && !existing) {
       // 記録しているデプロイが照会で見つからない（一時的な照会の失敗の可能性がある）。確認の明示があるまで新しく作らない（Codex 監査22 #4、D-025 S1）
       const name = which === 'core' ? 'Shiftly-Staff' : 'Shiftly-Admin';

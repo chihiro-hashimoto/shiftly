@@ -252,7 +252,8 @@ export class GasEmulator {
           return { ids };
         },
         get(id: string) {
-          return { parents: self.files.get(id)?.parents ?? [] };
+          const f = self.files.get(id);
+          return { parents: f?.parents ?? [], name: f?.name, appProperties: f?.appProperties };
         },
         update(res: { trashed?: boolean; name?: string; appProperties?: Record<string, string> }, id: string, b?: ReturnType<typeof blob>) {
           if (self.driveFaults.updateFail?.(id)) throw new Error('Drive: 更新に失敗しました（一時的なエラー）');

@@ -555,6 +555,31 @@ describe.skipIf(!built || !existsSync('dist/gas/admin/Code.js'))('R1: GAS のア
     expect(sc.data.ok).toBe(true);
   });
 
+  // 切替の失敗の地点を列挙する（再点検 #2）。どの地点でも、稼働中の DB の名前・目印は元のまま、保管先の点検は ok、候補は残らない
+  for (const point of ['旧 DB の名前・目印の変更', '候補の目印の変更', 'DB の ID の保存'] as const) {
+    it(`DB の切替の失敗（${point}）: 稼働中の DB の名前・目印を元に戻し、保管先の点検は ok のまま、候補を残さない`, () => {
+      const { coreEmu, api, epoch } = stack();
+      const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: epoch() });
+      const dbBefore = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')!;
+      const nameBefore = coreEmu.files.get(dbBefore)!.name;
+      let once = 1;
+      if (point === '旧 DB の名前・目印の変更') coreEmu.driveFaults.updateFail = (id) => id === dbBefore && once-- > 0;
+      else if (point === '候補の目印の変更') coreEmu.driveFaults.updateFail = (id) => coreEmu.files.get(id)?.appProperties?.shiftly === 'restore_candidate' && once-- > 0;
+      else coreEmu.scriptProps.failSet = (k) => k === 'SHIFTLY_DB_ID' && once-- > 0;
+      const r = api({ op: 'backup.restore', args: { backupId: bk.data.id, confirmText: '復元する' } });
+      coreEmu.driveFaults = {};
+      coreEmu.scriptProps.failSet = undefined;
+      expect(r.ok).toBe(false);
+      expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).toBe(dbBefore);
+      expect(coreEmu.files.get(dbBefore)!.name).toBe(nameBefore);
+      expect(coreEmu.files.get(dbBefore)!.appProperties?.shiftly).toBe('database');
+      expect([...coreEmu.files.values()].filter((f) => !f.trashed && f.appProperties?.shiftly === 'restore_candidate')).toHaveLength(0);
+      const sc = api({ op: 'system.storageCheck' });
+      expect(sc.data.issues).toEqual([]);
+      expect(sc.data.ok).toBe(true);
+    });
+  }
+
   it('DB の切替に失敗した場合は、復元の候補を破棄し、稼働中の DB は変えない（世代は進んでいてもよい）', () => {
     const { coreEmu, api, epoch } = stack();
     const e0 = epoch();
