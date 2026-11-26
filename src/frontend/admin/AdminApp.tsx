@@ -7,11 +7,29 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Client, type Transport } from '../api/transport';
 import { ClientContext, ToastProvider } from '../components/ui';
+import { StaleViewGuard } from '../components/stale';
 import { Wordmark } from '../components/brand';
 import { PAGES } from './registry';
 import './admin.css';
 
-export function AdminApp({
+type AdminAppProps = Parameters<typeof AdminAppInner>[0];
+
+/**
+ * 管理画面の外側（D-026）。復元より前に読み込んだ画面と分かったら案内を出し、「読み込み直す」で画面全体を作り直す
+ * （ページの状態・入力中の内容・クライアントの固定した世代を破棄する）。店舗 iPad の管理者モード（embedded）では、
+ * スタッフ画面の外側が同じ案内を出して全体を作り直すため、ここでは出さない
+ */
+export function AdminApp(props: AdminAppProps) {
+  const [gen, setGen] = useState(0);
+  return (
+    <>
+      {!props.embedded && <StaleViewGuard onReset={() => setGen((g) => g + 1)} />}
+      <AdminAppInner key={gen} {...props} />
+    </>
+  );
+}
+
+function AdminAppInner({
   transport,
   sampleNotice,
   client: external,

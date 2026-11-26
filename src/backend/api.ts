@@ -12,15 +12,31 @@
 import type { Platform } from './platform';
 import { UnitOfWork, ConflictError, type TableAdapter } from './store';
 import { ApiError, E } from './errors';
-import { audit, type Ctx, type Principal } from './context';
+import { audit, currentEpoch, type Ctx, type Principal } from './context';
+import { EPOCH_EXEMPT } from './epoch-exemptions';
 import { authenticateAdminSession, authenticateDevice, authenticateSession, touchDevice } from './auth';
 import type { PermissionKey, RequestIdempotency } from '../shared/types';
 import { prevMonthKey, toLocalDate } from '../shared/time';
 
 export type AuthKind = 'public' | 'device' | 'session' | 'owner' | 'staff_or_owner' | 'admin';
 
+/**
+ * 操作の分類（D-026。必須。新しい操作は分類を決めないと型検査で失敗する）
+ * - read: 読み取り（データを変えない）
+ * - edit: 画面上のデータに基づく業務更新。共通の入口で、画面がデータを取得した時点の復元世代（epoch）を照合する。
+ *         世代が古い・ない場合は拒否する（復元前に開いた画面からの保存を通さない。R1）
+ * - punch: サーバー時刻に基づく打刻（画面のデータで既存のデータを書き換えない）
+ * - auth: 認証・端末登録・セッション・資格情報の管理（新しい値を設定する操作で、画面の古いデータを書き戻さない）
+ * - system: 復元・バックアップ・初期化・更新・メンテナンス（Google 所有者・Setup の操作。それぞれの処理で状態を確認する）
+ * - output: 出力（現在のデータを読み出してファイルを作る。出力の履歴だけを追記する）
+ * - internal: 定期実行・内部処理（現在のデータから通知などを作る）
+ */
+export type OpKind = 'read' | 'edit' | 'punch' | 'auth' | 'system' | 'output' | 'internal';
+
 export interface OpDef {
   name: string;
+  /** 操作の分類（D-026） */
+  kind: OpKind;
   auth: AuthKind;
   /** staff_or_owner / session で要求する権限（いずれか） */
   perms?: PermissionKey[];
@@ -48,15 +64,23 @@ export interface ApiRequest {
   session?: string;
   /** 管理者セッション（v1.3。スタッフのセッションとは別のトークン） */
   adminSession?: string;
+  /** 画面がデータを取得した時点の復元世代（D-026。kind: 'edit' の操作で必須） */
+  epoch?: number;
 }
 
-export type ApiResponse = { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
+/** epoch: 現在の復元世代（記録がない場合は null）。画面はアプリの読み込み後に最初に受け取った世代を固定して、以後の要求に付ける */
+export type ApiResponse = { ok: true; data: unknown; epoch?: number | null } | { ok: false; error: { code: string; message: string }; epoch?: number | null };
 
 const registry = new Map<string, OpDef>();
 
 export function defineOps(defs: OpDef[]) {
   for (const d of defs) {
     if (registry.has(d.name)) throw new Error(`op 重複: ${d.name}`);
+    // 分類と更新の有無の整合（読み取りはデータを変えない／読み取り以外は更新系としてロック内で実行する）
+    if ((d.kind === 'read') === d.mutating) throw new Error(`op の分類と mutating が一致しません: ${d.name}`);
+    // 世代の照合を適用しない更新系の操作は、理由の登録を必須にする（D-026。登録漏れ・理由のない除外を防ぐ）
+    if (d.mutating && d.kind !== 'edit' && !EPOCH_EXEMPT[d.name]) throw new Error(`世代の照合を適用しない理由が登録されていません: ${d.name}`);
+    if (d.kind === 'edit' && EPOCH_EXEMPT[d.name]) throw new Error(`画面からの業務更新は世代の照合から除外できません: ${d.name}`);
     registry.set(d.name, d);
   }
 }
@@ -107,6 +131,14 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
       ctx.principal = resolvePrincipal(ctx, def, r, trusted);
       authorize(ctx, def);
       if (!def.allowInMaintenance && isMaintenance(ctx) && ctx.principal.kind !== 'owner' && ctx.principal.kind !== 'system') throw E.maintenance();
+      // 画面からの業務更新は、画面がデータを取得した時点の復元世代を照合する（D-026。ロックの内側で照合し、復元と競合しない）。
+      // 世代がない・古い要求は拒否する。世代の記録がない・壊れている場合も、古い要求を受け入れないよう更新を止める
+      if (def.kind === 'edit') {
+        const cur = currentEpoch(p);
+        if (cur === null) throw new ApiError('EPOCH_UNAVAILABLE', 'データの世代情報を確認できないため、更新を停止しています。Google 所有者が Shiftly-Staff のエディタで shiftlyAuthorize を実行してください', 409);
+        if (typeof r.epoch !== 'number' || r.epoch !== cur)
+          throw new ApiError('STALE_VIEW', '画面の情報が、データの復元より前に読み込んだものです。画面を読み込み直し、最新の内容を確認してから、もう一度操作してください', 409);
+      }
       // 管理者モードでの更新操作は監査ログに記録（内容は記録しない。各操作の個別の監査ログに加えて記録）
       if (ctx.principal.kind === 'admin' && def.mutating) audit(ctx, 'admin.op', 'op', def.name, '管理者モードでの操作');
 
@@ -141,13 +173,22 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
     // 更新系で端末認証が必要な操作は、ロック取得前に読み取りのみで認証する（未認証リクエストでロックを占有させない）
     if (def.mutating && !trusted && def.auth !== 'public') preAuthenticate(be, def, r);
     const data = def.mutating ? p.withLock(15000, run) : run();
-    return { ok: true, data };
+    return { ok: true, data, epoch: safeEpoch(p) };
   } catch (e) {
-    if (e instanceof ApiError) return { ok: false, error: { code: e.code, message: e.message } };
-    if (e instanceof ConflictError) return { ok: false, error: { code: 'CONFLICT', message: e.message } };
+    if (e instanceof ApiError) return { ok: false, error: { code: e.code, message: e.message }, epoch: safeEpoch(p) };
+    if (e instanceof ConflictError) return { ok: false, error: { code: 'CONFLICT', message: e.message }, epoch: safeEpoch(p) };
     // 内部エラーの詳細（スタック・個人情報）は応答に含めない
     p.log('error', 'unhandled', { op: opName, err: e instanceof Error ? e.message.slice(0, 200) : 'unknown' });
     return { ok: false, error: { code: 'INTERNAL', message: '処理中にエラーが発生しました。時間をおいて再度お試しください' } };
+  }
+}
+
+/** 応答に付ける現在の復元世代（読み取れない場合は null） */
+function safeEpoch(p: Platform): number | null {
+  try {
+    return currentEpoch(p);
+  } catch {
+    return null;
   }
 }
 

@@ -43,6 +43,7 @@ function readEmployeeArgs(a: v.Args, partial: boolean) {
 defineOps([
   {
     name: 'employees.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: MANAGER_VIEW_PERMS,
     mutating: false,
@@ -68,6 +69,7 @@ defineOps([
   },
   {
     name: 'employees.create',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['staff_manage'],
     sensitive: true,
@@ -100,6 +102,7 @@ defineOps([
   },
   {
     name: 'employees.update',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['staff_manage'],
     sensitive: true,
@@ -118,6 +121,7 @@ defineOps([
   },
   {
     name: 'employees.retire',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['staff_manage'],
     sensitive: true,
@@ -136,6 +140,7 @@ defineOps([
   },
   {
     name: 'employees.reactivate',
+    kind: 'edit',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,
@@ -150,6 +155,7 @@ defineOps([
   // ------------------------------------------------------------ 権限（管理者専用）
   {
     name: 'permissions.catalog',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -157,6 +163,7 @@ defineOps([
   },
   {
     name: 'permissions.set',
+    kind: 'edit',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -180,6 +187,7 @@ defineOps([
   // ------------------------------------------------------------ 認証情報（管理者専用）
   {
     name: 'credentials.setPin',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -200,6 +208,7 @@ defineOps([
   {
     // v1.3: PIN の解除（PIN 未設定に戻す）。以後は本人未確認のログインとなり、給与・明細・勤怠詳細は表示されない
     name: 'credentials.clearPin',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -215,6 +224,7 @@ defineOps([
   },
   {
     name: 'credentials.setStepUp',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -233,6 +243,7 @@ defineOps([
   },
   {
     name: 'credentials.unlock',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,
@@ -248,6 +259,7 @@ defineOps([
   // ------------------------------------------------------------ 雇用条件
   {
     name: 'employment.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -259,6 +271,7 @@ defineOps([
   },
   {
     name: 'employment.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,

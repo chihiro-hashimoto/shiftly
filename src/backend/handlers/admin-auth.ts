@@ -35,6 +35,7 @@ defineOps([
   {
     // 店舗端末から管理者パスワードで管理者モードに入る（登録済み端末のみ）
     name: 'adminAuth.login',
+    kind: 'auth',
     auth: 'device',
     mutating: true,
     secretResponse: true,
@@ -49,6 +50,7 @@ defineOps([
   },
   {
     name: 'adminAuth.me',
+    kind: 'read',
     auth: 'admin',
     mutating: false,
     handler: (ctx) => {
@@ -60,6 +62,7 @@ defineOps([
   {
     // 管理者モードの終了（サーバー側でセッションを失効）
     name: 'adminAuth.logout',
+    kind: 'auth',
     auth: 'admin',
     mutating: true,
     allowInMaintenance: true,
@@ -73,6 +76,7 @@ defineOps([
   {
     // 重要操作（給与確定・権限変更・バックアップ復元等）の前の再認証（5分間有効）
     name: 'adminAuth.reauth',
+    kind: 'auth',
     auth: 'admin',
     mutating: true,
     handler: (ctx, raw) => {
@@ -84,6 +88,7 @@ defineOps([
   {
     // 管理者本人による変更（現在のパスワードが必要）。変更後は全管理者セッションを失効
     name: 'adminAuth.changePassword',
+    kind: 'auth',
     auth: 'admin',
     mutating: true,
     handler: (ctx, raw) => {
@@ -103,6 +108,7 @@ defineOps([
   // ------------------------------------------------------------ Google 所有者のみ
   {
     name: 'adminAuth.status',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -126,6 +132,7 @@ defineOps([
   {
     // 初期設定・再設定（忘れた場合）。Google 所有者本人のみ（管理者パスワードの管理者からは不可）
     name: 'adminAuth.setPassword',
+    kind: 'auth',
     auth: 'owner',
     mutating: true,
     handler: (ctx, raw) => {
@@ -140,6 +147,7 @@ defineOps([
   },
   {
     name: 'adminAuth.unlock',
+    kind: 'auth',
     auth: 'owner',
     mutating: true,
     handler: (ctx) => {
@@ -152,6 +160,7 @@ defineOps([
   {
     // 全管理者セッションの強制終了（端末紛失・交代時など）
     name: 'adminAuth.revokeSessions',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,

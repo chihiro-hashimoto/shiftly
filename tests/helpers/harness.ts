@@ -1,6 +1,7 @@
 /** 統合・セキュリティテスト用ハーネス（メモリ上のモック環境で Core API を直接呼ぶ） */
 import { handleRequest, type ApiResponse } from '../../src/backend/index';
 import { createMockEnv, type MockEnv } from '../../src/backend/mock';
+import { currentEpoch } from '../../src/backend/context';
 import { localDateTime } from '../../src/shared/time';
 
 export class Harness {
@@ -23,18 +24,28 @@ export class Harness {
   rid() {
     return `req_${(++this.seq).toString().padStart(8, '0')}`;
   }
-  owner(op: string, args?: unknown): ApiResponse {
-    return handleRequest(this.be, { op, args, requestId: this.rid() }, 'owner');
+  /**
+   * 復元世代（D-026）: 既定では「最新の画面」として現在の世代を付ける。古い画面を模すテストは epoch で世代を指定する（null は付けない）
+   */
+  currentEpoch(): number | null {
+    return currentEpoch(this.env.platform);
+  }
+  private epochOf(o: { epoch?: number | null }) {
+    const e = o.epoch === undefined ? this.currentEpoch() : o.epoch;
+    return e === null ? {} : { epoch: e };
+  }
+  owner(op: string, args?: unknown, o: { epoch?: number | null } = {}): ApiResponse {
+    return handleRequest(this.be, { op, args, requestId: this.rid(), ...this.epochOf(o) }, 'owner');
   }
   ownerOk<T = any>(op: string, args?: unknown): T {
     const r = this.owner(op, args);
     if (!r.ok) throw new Error(`${op} failed: ${r.error.code} ${r.error.message}`);
     return r.data as T;
   }
-  staff(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string } = {}): ApiResponse {
-    return handleRequest(this.be, { op, args, requestId: o.requestId ?? this.rid(), device: o.device ?? this.device, session: o.session ?? this.session });
+  staff(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string; adminSession?: string; epoch?: number | null } = {}): ApiResponse {
+    return handleRequest(this.be, { op, args, requestId: o.requestId ?? this.rid(), device: o.device ?? this.device, session: o.session ?? this.session, ...(o.adminSession ? { adminSession: o.adminSession } : {}), ...this.epochOf(o) });
   }
-  staffOk<T = any>(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string } = {}): T {
+  staffOk<T = any>(op: string, args?: unknown, o: { device?: string; session?: string; requestId?: string; adminSession?: string; epoch?: number | null } = {}): T {
     const r = this.staff(op, args, o);
     if (!r.ok) throw new Error(`${op} failed: ${r.error.code} ${r.error.message}`);
     return r.data as T;

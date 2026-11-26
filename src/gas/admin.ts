@@ -80,9 +80,9 @@ function ensurePaired(): string {
 /** 管理者画面からの API 呼び出し（google.script.run） */
 export function adminApi(reqJson: string): string {
   try {
-    const parsed = JSON.parse(reqJson) as { op?: unknown; args?: unknown; requestId?: unknown };
-    // ブラウザ由来のフィールドは op / args / requestId のみ転送
-    const body = JSON.stringify({ op: parsed.op, args: parsed.args, requestId: parsed.requestId });
+    const parsed = JSON.parse(reqJson) as { op?: unknown; args?: unknown; requestId?: unknown; epoch?: unknown };
+    // ブラウザ由来のフィールドは op / args / requestId / epoch（画面がデータを取得した時点の復元世代。D-026）のみ転送
+    const body = JSON.stringify({ op: parsed.op, args: parsed.args, requestId: parsed.requestId, ...(typeof parsed.epoch === 'number' ? { epoch: parsed.epoch } : {}) });
     const key = fromHex(ensurePaired());
     const env = signOwnerEnvelope(createGasPlatform(), key, body, 'admin');
     return JSON.stringify(postCore({ kind: 'owner', envelope: env }));

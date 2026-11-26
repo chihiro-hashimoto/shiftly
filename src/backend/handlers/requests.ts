@@ -475,6 +475,7 @@ defineOps([
   {
     // 退勤時の休憩確認に使う予定休憩（公開シフトの情報のみ。本人未確認でも可）
     name: 'attendance.clockOutContext',
+    kind: 'read',
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],
@@ -501,6 +502,7 @@ defineOps([
   {
     // 自分の勤怠の詳細（登録シフト・元の打刻・修正後・休憩・シフト外の候補・申請状況）。本人確認済みのみ
     name: 'attendance.myDetails',
+    kind: 'read',
     auth: 'session',
     perms: ['attendance_view_self'],
     mutating: false,
@@ -512,6 +514,7 @@ defineOps([
   {
     // 本人による勤怠修正（出勤・退勤・打刻漏れ）。本人未確認・確定済み期間は承認待ち
     name: 'attendance.selfCorrect',
+    kind: 'edit',
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],
@@ -526,6 +529,7 @@ defineOps([
   {
     // 休憩の取得状況の申告（予定どおり・取れなかった・短い/長い/時間帯が違う/追加）
     name: 'breaks.declare',
+    kind: 'edit',
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],
@@ -548,6 +552,7 @@ defineOps([
   },
   {
     name: 'overtime.request',
+    kind: 'edit',
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],
@@ -560,6 +565,7 @@ defineOps([
   },
   {
     name: 'overtime.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['attendance_view_self'],
     mutating: false,
@@ -576,6 +582,7 @@ defineOps([
   {
     // 自分の申請の取消（申請中・差戻しのみ）
     name: 'overtime.cancel',
+    kind: 'edit',
     auth: 'session',
     perms: ['attendance_view_self'],
     mutating: true,
@@ -594,6 +601,7 @@ defineOps([
   {
     // 差戻しされた申請の修正・再申請
     name: 'overtime.resubmit',
+    kind: 'edit',
     auth: 'session',
     perms: ['attendance_view_self'],
     mutating: true,
@@ -625,6 +633,7 @@ defineOps([
   // ============================================================ 管理者
   {
     name: 'overtime.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all', 'attendance_edit'],
     mutating: false,
@@ -646,6 +655,7 @@ defineOps([
   {
     // 承認・一部承認・差戻し・却下・取消（管理者の確認）
     name: 'overtime.review',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -740,6 +750,7 @@ defineOps([
   {
     // シフト外の勤務候補（未申請を含む）と確認状況
     name: 'offshift.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all', 'attendance_edit'],
     mutating: false,
@@ -766,6 +777,7 @@ defineOps([
   {
     // 管理者による実労働の確認・登録（申請がなくても可）。items で一括
     name: 'offshift.confirm',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -825,6 +837,7 @@ defineOps([
   {
     // スタッフの勤怠詳細（管理者）
     name: 'attendance.staffDetails',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all', 'attendance_edit'],
     mutating: false,
@@ -839,6 +852,7 @@ defineOps([
   {
     // 確認が必要な本人修正・休憩申告
     name: 'attendance.reviewList',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all', 'attendance_edit'],
     mutating: false,
@@ -876,6 +890,7 @@ defineOps([
   },
   {
     name: 'attendance.review',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -892,6 +907,7 @@ defineOps([
   {
     // 管理者による休憩の登録（予定どおり取得・未取得・実際の休憩）
     name: 'breaks.adminDeclare',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -913,6 +929,7 @@ defineOps([
   {
     // 管理者による勤怠修正（勤務単位: 出勤・退勤）。本人修正と同じ検証で、管理者の修正として反映
     name: 'attendance.adminCorrectSession',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -928,6 +945,7 @@ defineOps([
   {
     // ダッシュボード・通知用の件数
     name: 'requests.summary',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all', 'attendance_edit'],
     mutating: false,

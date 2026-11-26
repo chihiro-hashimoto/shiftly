@@ -39,7 +39,9 @@ function adminLogin(h: Harness) {
 }
 
 function asAdmin(h: Harness, token: string, op: string, args?: unknown) {
-  return handleRequest(h.be, { op, args, requestId: h.rid(), device: h.device, adminSession: token });
+  // 最新の画面として現在の復元世代を付ける（D-026。世代の照合のテストは restore-epoch.test.ts）
+  const epoch = h.currentEpoch();
+  return handleRequest(h.be, { op, args, requestId: h.rid(), device: h.device, adminSession: token, ...(epoch !== null ? { epoch } : {}) });
 }
 
 // ======================================================================== §9.2

@@ -3,7 +3,7 @@
  * F01 初期設定 / F02 店舗端末 / F03 認証 / F25 監査ログ / F27 店舗設定 / F35 DB更新
  */
 import { defineOps } from '../api';
-import { audit, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
+import { advanceEpoch, audit, currentEpoch, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
 import { E } from '../errors';
 import * as v from '../validate';
 import { createEnrollment, enrollDevice, ensureSecrets, login, logout, revokeAdminSessions, revokeSessionsWhere, setCredential, stepUp, verifyCredential } from '../auth';
@@ -19,6 +19,8 @@ import { APP_VERSION } from '../version';
 
 export function initialize(ctx: Ctx, args: { storeName: string; envId: string }) {
   ensureSecrets(ctx.p);
+  // 復元世代がなければ発行する（D-026。記録が失われた場合も、過去の世代と重ならない値で作り直す）
+  if (currentEpoch(ctx.p) === null) advanceEpoch(ctx.p);
   const existing = ctx.uow.list<StoreSettings>('store_settings');
   if (existing.length === 0) {
     ctx.uow.insert<StoreSettings>('store_settings', { ...DEFAULT_SETTINGS, storeName: args.storeName } as never, 'set');
@@ -124,6 +126,7 @@ function bootstrapHandler(ctx: Ctx) {
 defineOps([
   {
     name: 'system.status',
+    kind: 'read',
     auth: 'public',
     mutating: false,
     allowInMaintenance: true,
@@ -143,6 +146,7 @@ defineOps([
   },
   {
     name: 'system.initialize',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -153,6 +157,7 @@ defineOps([
   },
   {
     name: 'system.info',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -171,6 +176,7 @@ defineOps([
   },
   {
     name: 'system.setMaintenance',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -187,6 +193,7 @@ defineOps([
   },
   {
     name: 'system.integrityCheck',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -195,6 +202,7 @@ defineOps([
   },
   {
     name: 'settings.get',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -202,6 +210,7 @@ defineOps([
   },
   {
     name: 'settings.update',
+    kind: 'edit',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,
@@ -218,6 +227,7 @@ defineOps([
   },
   {
     name: 'settings.confirmPayrollRules',
+    kind: 'edit',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -240,6 +250,7 @@ defineOps([
   // ------------------------------------------------------------ 端末
   {
     name: 'devices.list',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -247,6 +258,7 @@ defineOps([
   },
   {
     name: 'devices.createEnrollment',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -255,6 +267,7 @@ defineOps([
   },
   {
     name: 'devices.revoke',
+    kind: 'auth',
     auth: 'owner',
     adminAllowed: true,
     reauth: true,
@@ -272,6 +285,7 @@ defineOps([
   },
   {
     name: 'devices.rename',
+    kind: 'edit',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,
@@ -286,6 +300,7 @@ defineOps([
   },
   {
     name: 'staff.enroll',
+    kind: 'auth',
     auth: 'public',
     mutating: true,
     secretResponse: true,
@@ -293,6 +308,7 @@ defineOps([
   },
   {
     name: 'staff.bootstrap',
+    kind: 'read',
     auth: 'device',
     mutating: false,
     handler: (ctx) => bootstrapHandler(ctx),
@@ -301,6 +317,7 @@ defineOps([
   // （内部の API 識別子のみ。端末登録 kiosk.enroll は公開操作を増やさないため互換名を残さない。docs/decisions.md D-014）
   {
     name: 'kiosk.bootstrap',
+    kind: 'read',
     auth: 'device',
     mutating: false,
     handler: (ctx) => bootstrapHandler(ctx),
@@ -308,6 +325,7 @@ defineOps([
   // ------------------------------------------------------------ スタッフ認証
   {
     name: 'auth.login',
+    kind: 'auth',
     auth: 'device',
     mutating: true,
     secretResponse: true,
@@ -336,6 +354,7 @@ defineOps([
   },
   {
     name: 'auth.logout',
+    kind: 'auth',
     auth: 'session',
     allowUnverified: true,
     mutating: true,
@@ -347,6 +366,7 @@ defineOps([
   },
   {
     name: 'auth.me',
+    kind: 'read',
     auth: 'session',
     allowUnverified: true,
     mutating: false,
@@ -371,6 +391,7 @@ defineOps([
   },
   {
     name: 'auth.stepUp',
+    kind: 'auth',
     auth: 'session',
     mutating: true,
     handler: (ctx, raw) => {
@@ -381,6 +402,7 @@ defineOps([
   },
   {
     name: 'auth.changePin',
+    kind: 'auth',
     auth: 'session',
     mutating: true,
     handler: (ctx, raw) => {
@@ -401,6 +423,7 @@ defineOps([
   // ------------------------------------------------------------ 監査ログ
   {
     name: 'audit.list',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,

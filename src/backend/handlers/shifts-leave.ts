@@ -46,6 +46,7 @@ function overlaps(a: Pick<Shift, 'date' | 'start' | 'end'>, b: Pick<Shift, 'date
 defineOps([
   {
     name: 'shifts.published',
+    kind: 'read',
     auth: 'session',
     // 公開シフトは店舗内で共有される情報のため、本人未確認（PIN 未設定）でも閲覧可
     allowUnverified: true,
@@ -63,6 +64,7 @@ defineOps([
   },
   {
     name: 'shifts.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['shift_edit', 'shift_publish'],
     mutating: false,
@@ -73,6 +75,7 @@ defineOps([
   },
   {
     name: 'shifts.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['shift_edit'],
     mutating: true,
@@ -104,6 +107,7 @@ defineOps([
   },
   {
     name: 'shifts.delete',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['shift_edit'],
     mutating: true,
@@ -122,6 +126,7 @@ defineOps([
   },
   {
     name: 'shifts.copyWeek',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['shift_edit'],
     mutating: true,
@@ -157,6 +162,7 @@ defineOps([
   },
   {
     name: 'shifts.publish',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['shift_publish'],
     mutating: true,
@@ -181,6 +187,7 @@ defineOps([
   },
   {
     name: 'shiftPatterns.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['shift_edit'],
     mutating: false,
@@ -188,6 +195,7 @@ defineOps([
   },
   {
     name: 'shiftPatterns.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['shift_edit'],
     mutating: true,
@@ -209,6 +217,7 @@ defineOps([
   },
   {
     name: 'shifts.history',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['shift_edit', 'shift_publish'],
     mutating: false,
@@ -220,6 +229,7 @@ defineOps([
   // ------------------------------------------------------------ 有給
   {
     name: 'leave.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['leave_view_self'],
     mutating: false,
@@ -227,6 +237,7 @@ defineOps([
   },
   {
     name: 'leave.overview',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['leave_manage'],
     sensitive: true,
@@ -235,6 +246,7 @@ defineOps([
   },
   {
     name: 'leave.detail',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['leave_manage'],
     sensitive: true,
@@ -251,6 +263,7 @@ defineOps([
   },
   {
     name: 'leave.grant',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['leave_manage'],
     sensitive: true,
@@ -275,6 +288,7 @@ defineOps([
   },
   {
     name: 'leave.take',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['leave_manage'],
     sensitive: true,
@@ -302,6 +316,7 @@ defineOps([
   },
   {
     name: 'leave.adjust',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['leave_manage'],
     sensitive: true,

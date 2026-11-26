@@ -36,3 +36,31 @@ test('管理者は勤怠を修正でき、修正履歴に理由が残る', async
   await page.getByRole('button', { name: '保存' }).click();
   await expect(page.getByText('E2E: 打刻漏れの補正')).toBeVisible();
 });
+
+test('D-026: 復元の後は「画面を読み込み直してください」を表示し、読み込み直すと最新の世代で操作できる', async ({ page, isMobile }) => {
+  await page.goto('/preview.html?view=admin');
+  await expect(page.getByRole('heading', { name: 'ダッシュボード', level: 1 })).toBeVisible();
+  const open = async (name: string) => {
+    if (isMobile) {
+      const menu = page.getByRole('button', { name: 'メニュー' });
+      if (await menu.isVisible()) await menu.click();
+    }
+    await page.getByRole('navigation', { name: '管理メニュー' }).getByRole('button', { name, exact: true }).click();
+    await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible();
+  };
+  await open('バックアップ');
+  await page.getByRole('button', { name: '今すぐバックアップ' }).click();
+  await page.getByRole('button', { name: 'このバックアップから復元' }).first().click();
+  await page.getByPlaceholder('復元する').fill('復元する');
+  await page.getByRole('button', { name: '復元を実行' }).click();
+  // 復元の応答（新しい世代）を受け取った画面は、古い画面として読み込み直しを案内する
+  const dialog = page.getByRole('alertdialog', { name: '画面を読み込み直してください' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: '読み込み直す' }).click();
+  await expect(dialog).toHaveCount(0);
+  // 画面全体を作り直す（開いていたページは URL の指定どおり表示する）。最新の世代で読み込んだ画面では案内は出ない
+  await expect(page.getByRole('heading', { name: 'バックアップ', level: 1 })).toBeVisible();
+  await open('店舗設定');
+  await page.waitForTimeout(400);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+});

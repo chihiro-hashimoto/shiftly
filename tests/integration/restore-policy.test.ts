@@ -88,12 +88,13 @@ describe('復元の表ごとの扱い（RESTORE_POLICY）', () => {
     const { h, a } = setup();
     const bk = h.ownerOk('backup.run', { kind: 'manual' });
     h.setNow('2026-11-02', '11:00');
-    const req = { op: 'shifts.upsert', args: { employeeId: a, date: '2026-11-11', start: '09:00', end: '17:00', breakMinutes: 60 }, requestId: 'req_fixed_after_backup_01' };
+    const req = { op: 'shifts.upsert', args: { employeeId: a, date: '2026-11-11', start: '09:00', end: '17:00', breakMinutes: 60 }, requestId: 'req_fixed_after_backup_01', epoch: h.currentEpoch()! };
     expect(handleRequest(h.be, req, 'owner').ok).toBe(true);
     restore(h, bk.id);
     const shiftsAfterRestore = uowOf(h).list<{ date: string }>('shifts').filter((x) => x.date === '2026-11-11').length;
     expect(shiftsAfterRestore).toBe(0); // シフト（入力）はバックアップの時点に戻る
-    handleRequest(h.be, req, 'owner'); // 再送
+    // 再送（冪等性キーの確認のため、復元後の世代を付ける。復元前の世代のままの再送は世代の照合で拒否される。D-026）
+    handleRequest(h.be, { ...req, epoch: h.currentEpoch()! }, 'owner');
     expect(uowOf(h).list<{ date: string }>('shifts').filter((x) => x.date === '2026-11-11')).toHaveLength(0);
   });
 });

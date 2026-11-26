@@ -3,7 +3,7 @@
  * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ・復元
  */
 import { defineOps } from '../api';
-import { actorId, audit, has, isGoogleOwner, isOwner, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
+import { actorId, advanceEpoch, audit, has, isGoogleOwner, isOwner, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
 import type { AttendanceCorrection, BackupHistory, Budget, Credential, Employee, OvertimeRequest, NotificationRow, PayrollPeriod, PayrollResult, PaySlip, Shift, WorkSession } from '../../shared/types';
@@ -60,6 +60,7 @@ function payrollRows(ctx: Ctx, p: PayrollPeriod) {
 defineOps([
   {
     name: 'export.attendance',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['export_attendance'],
     sensitive: true,
@@ -84,6 +85,7 @@ defineOps([
   },
   {
     name: 'export.payroll',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['export_payroll'],
     sensitive: true,
@@ -111,6 +113,7 @@ defineOps([
   },
   {
     name: 'export.shifts',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['shift_edit', 'export_attendance'],
     mutating: true,
@@ -129,6 +132,7 @@ defineOps([
   },
   {
     name: 'export.wageLedger',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['export_payroll'],
     sensitive: true,
@@ -180,6 +184,7 @@ function costFor(ctx: Ctx, e: Employee, from: LocalDate, to: LocalDate, sessions
 defineOps([
   {
     name: 'analytics.laborCost',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['labor_cost_view'],
     sensitive: true,
@@ -280,6 +285,7 @@ defineOps([
   },
   {
     name: 'budgets.get',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['budget_manage', 'labor_cost_view'],
     mutating: false,
@@ -290,6 +296,7 @@ defineOps([
   },
   {
     name: 'budgets.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['budget_manage'],
     mutating: true,
@@ -393,6 +400,7 @@ function visibleTo(ctx: Ctx, n: NotificationRow): boolean {
 defineOps([
   {
     name: 'notifications.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['notifications_view'],
     mutating: false,
@@ -407,6 +415,7 @@ defineOps([
   },
   {
     name: 'notifications.update',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['notifications_view'],
     mutating: true,
@@ -420,6 +429,7 @@ defineOps([
   },
   {
     name: 'notifications.scan',
+    kind: 'internal',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,
@@ -518,6 +528,7 @@ export const RESTORE_POLICY: Record<TableName, { policy: RestorePolicy; key?: Ro
 defineOps([
   {
     name: 'backup.run',
+    kind: 'system',
     auth: 'owner',
     adminAllowed: true,
     mutating: true,
@@ -526,6 +537,7 @@ defineOps([
   },
   {
     name: 'backup.list',
+    kind: 'read',
     auth: 'owner',
     adminAllowed: true,
     mutating: false,
@@ -534,6 +546,7 @@ defineOps([
   },
   {
     name: 'backup.restore',
+    kind: 'system',
     // 復元は稼働中の DB を切り替える復旧の操作のため、Google 所有者（Shiftly-Admin）に限定する。店舗 iPad の管理者モードでは実行できない
     // （requirements.md: Google 所有者は構築・更新・復旧。D-015。Codex 監査18 #2）
     auth: 'owner',
@@ -645,7 +658,10 @@ defineOps([
         }
         throw e;
       }
-      // 7) 切替（候補は検証済み）。切替後は新 DB に対して読み書きする
+      // 7) 切替（候補は検証済み）。切替の直前に復元世代を進める（D-026）。世代を進めた後に切替が失敗しても、
+      //    復元前に開いた画面の古い世代は以後すべて拒否される（安全側）。切替は世代を進めた後にだけ行うため、
+      //    新しい DB が古い世代の要求を受け入れることはない。復元と通常の更新はロックで排他する
+      advanceEpoch(ctx.p);
       const sw = ctx.p.database.activate(cand.candidateId);
       ctx.uow.adapter.reset?.();
       const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });

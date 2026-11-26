@@ -9,6 +9,11 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { GasEmulator } from '../helpers/gas-emulator';
 
 const built = existsSync('dist/gas/core/Code.js');
+/** 最新の画面として現在の復元世代を付ける（D-026。Script Properties に保存された世代） */
+const epochOf = (emu: GasEmulator) => {
+  const v = emu.scriptProps.getProperty('SHIFTLY_RESTORE_EPOCH');
+  return v === null ? {} : { epoch: Number(v) };
+};
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 function ownerEnvelope(keyHex: string, body: unknown, role: 'admin' | 'setup' = 'admin') {
@@ -28,7 +33,7 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     emu.activeUser = 'owner@example.invalid';
     core.shiftlyAuthorize();
     const key = post({ kind: 'pair', role: 'admin', pairingCode: adminCode }).data.key as string;
-    const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}` }));
+    const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}`, ...epochOf(emu) }));
     expect(owner('settings.update', { storeName: '旧店舗' }).ok).toBe(true);
     // v1.2 の状態を再現: store_settings のグリッド・ヘッダー・行を 32 列に、スキーマ版を 1 に
     const ss = emu.spreadsheets.get(emu.scriptProps.getProperty('SHIFTLY_DB_ID')!)!;
@@ -77,7 +82,7 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     expect(post({ kind: 'pair', role: 'admin', pairingCode: adminCode }).ok).toBe(false);
 
     const owner = (op: string, args?: unknown) => {
-      const r = post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}` }));
+      const r = post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}`, ...epochOf(emu) }));
       if (!r.ok) throw new Error(`${op}: ${r.error.message}`);
       return r.data;
     };
@@ -175,7 +180,7 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     const post = (body: unknown) => JSON.parse(core.doPost({ postData: { contents: JSON.stringify(body) } }).content);
     core.shiftlyAuthorize();
     const key = post({ kind: 'pair', role: 'admin', pairingCode: code }).data.key as string;
-    const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}` }));
+    const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}`, ...epochOf(emu) }));
     // 1 操作で登録コード 1 行・ジャーナル 1 行が増える。グリッド（100 行）を超えるまで実行
     for (let i = 0; i < 150; i++) expect(owner('devices.createEnrollment', { deviceName: `d${i}` }).ok).toBe(true);
     const dbId = emu.scriptProps.getProperty('SHIFTLY_DB_ID')!;

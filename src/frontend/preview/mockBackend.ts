@@ -4,6 +4,7 @@
  * - データはメモリ上のみ。再読み込みで初期状態に戻る（端末へ保存しない）
  */
 import { handleRequest } from '../../backend/index';
+import { currentEpoch } from '../../backend/context';
 import { createMockEnv, type MockEnv } from '../../backend/mock';
 import type { ApiResult, Transport } from '../api/transport';
 import { addDays, localDateTime, toIsoJst, toLocalDate } from '../../shared/time';
@@ -28,10 +29,13 @@ function delay<T>(v: T): Promise<T> {
 export function startPreviewBackend(): PreviewBackend {
   const env = createMockEnv({ autoClock: true, kind: 'mock' });
   const be = { p: env.platform, adapter: () => env.adapter };
-  const owner: Transport = { mode: 'admin', call: (req) => delay(handleRequest(be, { op: req.op, args: req.args, requestId: req.requestId }, 'owner') as ApiResult) };
+  // Shiftly-Admin（src/gas/admin.ts）と同じく、ブラウザ由来のフィールドは op / args / requestId / epoch だけを渡す
+  const owner: Transport = { mode: 'admin', call: (req) => delay(handleRequest(be, { op: req.op, args: req.args, requestId: req.requestId, ...(typeof req.epoch === 'number' ? { epoch: req.epoch } : {}) }, 'owner') as ApiResult) };
   const staffT: Transport = { mode: 'staff', call: (req) => delay(handleRequest(be, req) as ApiResult) };
   const o = <T = unknown>(op: string, args?: unknown): T => {
-    const r = handleRequest(be, { op, args, requestId: `seed${Math.random().toString(16).slice(2, 12)}` }, 'owner');
+    // デモデータの投入（最新の画面と同じく、現在の復元世代を付ける）
+    const epoch = currentEpoch(env.platform);
+    const r = handleRequest(be, { op, args, requestId: `seed${Math.random().toString(16).slice(2, 12)}`, ...(epoch !== null ? { epoch } : {}) }, 'owner');
     if (!r.ok) throw new Error(`${op}: ${r.error.message}`);
     return r.data as T;
   };

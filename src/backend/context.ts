@@ -209,3 +209,24 @@ export function setMeta(ctx: Ctx, key: string, value: string) {
   if (row) ctx.uow.update('system_metadata', { ...row, value });
   else ctx.uow.insert('system_metadata', { key, value } as never, 'meta');
 }
+
+/**
+ * 復元世代（restore epoch。D-026）。画面がデータを取得した時点の世代を、画面からの業務更新（kind: 'edit'）で照合する。
+ * 業務 DB・バックアップとは別の保存場所（Script Properties。モックでは SecretStore）に置くため、DB の復元で巻き戻らない。
+ * 値は「前回の世代 + 1」と「現在時刻（ミリ秒）」の大きいほう。記録が失われて作り直した場合も、過去に発行した世代と重ならない
+ */
+export const EPOCH_KEY = 'SHIFTLY_RESTORE_EPOCH';
+export function currentEpoch(p: Platform): number | null {
+  const raw = p.secrets.get(EPOCH_KEY);
+  if (raw === null) return null;
+  const n = Number(raw);
+  return /^[1-9][0-9]{0,15}$/.test(raw) && Number.isSafeInteger(n) ? n : null;
+}
+/** 次の世代を発行して保存する（復元の切替の直前・初期化で記録がない場合）。保存できたことを読み直して確かめる */
+export function advanceEpoch(p: Platform): number {
+  const next = Math.max((currentEpoch(p) ?? 0) + 1, p.now());
+  p.secrets.set(EPOCH_KEY, String(next));
+  if (currentEpoch(p) !== next) throw new Error('復元世代を保存できませんでした');
+  return next;
+}
+

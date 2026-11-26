@@ -7,6 +7,7 @@
  * - 無操作・タブ非表示・ページ復元（bfcache）・再読み込みで個人セッション・管理者モードを終了し、表示中の情報を破棄
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { StaleViewGuard } from '../components/stale';
 import { ApiError, Client, newRequestId, type Transport } from '../api/transport';
 import { ClientContext, useClient, Empty, ErrorBox, Field, Loading, Minutes, Modal, ToastProvider, Yen, useLoad, useToast, AnomalyBadges, todayJst, shiftDate, timeOf, WEEKDAYS } from '../components/ui';
 import { LogoMark, Wordmark } from '../components/brand';
@@ -85,7 +86,21 @@ class AdminModeClient extends Client {
   }
 }
 
-export function StaffApp({ transport, injectedDeviceToken, sampleNotice }: { transport: Transport; injectedDeviceToken?: string; sampleNotice?: string }) {
+/**
+ * スタッフ画面（店舗 iPad）の外側（D-026）。復元より前に読み込んだ画面と分かったら案内を出し、「読み込み直す」で
+ * 画面全体（管理者モードを含む。ログイン中の状態・入力中の内容・クライアントの固定した世代）を作り直す
+ */
+export function StaffApp(props: { transport: Transport; injectedDeviceToken?: string; sampleNotice?: string }) {
+  const [gen, setGen] = useState(0);
+  return (
+    <>
+      <StaleViewGuard onReset={() => setGen((g) => g + 1)} />
+      <StaffAppInner key={gen} {...props} />
+    </>
+  );
+}
+
+function StaffAppInner({ transport, injectedDeviceToken, sampleNotice }: { transport: Transport; injectedDeviceToken?: string; sampleNotice?: string }) {
   const client = useMemo(() => new StaffClient(transport), [transport]);
   const [device, setDevice] = useState<string>(() => injectedDeviceToken ?? readDeviceToken());
   client.device = device;

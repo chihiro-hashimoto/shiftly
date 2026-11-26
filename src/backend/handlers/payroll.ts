@@ -221,6 +221,7 @@ function payslipData(ctx: Ctx, slip: PaySlip): PayslipData {
 defineOps([
   {
     name: 'payroll.periods',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all', 'payroll_confirm', 'pay_conditions_edit', 'payslip_view_others', 'export_payroll'],
     sensitive: true,
@@ -244,6 +245,7 @@ defineOps([
   },
   {
     name: 'payroll.openPeriod',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm', 'pay_conditions_edit'],
     sensitive: true,
@@ -255,6 +257,7 @@ defineOps([
   },
   {
     name: 'payroll.compute',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all', 'payroll_confirm'],
     sensitive: true,
@@ -291,6 +294,7 @@ defineOps([
   },
   {
     name: 'payroll.submitReview',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm'],
     sensitive: true,
@@ -305,6 +309,7 @@ defineOps([
   },
   {
     name: 'payroll.confirm',
+    kind: 'edit',
     auth: 'staff_or_owner',
     reauth: true,
     perms: ['payroll_confirm'],
@@ -327,6 +332,7 @@ defineOps([
   {
     // 復元後の確認のための比較（確定済みの総支給額と、現在の条件で計算し直した額。Codex 監査17 #1）
     name: 'payroll.restoreLockReview',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm'],
     sensitive: true,
@@ -340,6 +346,7 @@ defineOps([
   {
     // 復元後の確認の完了（Codex 監査9 #1）。給与条件が確定時と一致する、または訂正の必要がないことを管理者が確認した後に解除する
     name: 'payroll.releaseRestoreLock',
+    kind: 'edit',
     auth: 'staff_or_owner',
     reauth: true,
     perms: ['payroll_confirm'],
@@ -382,6 +389,7 @@ defineOps([
   },
   {
     name: 'payroll.correct',
+    kind: 'edit',
     auth: 'staff_or_owner',
     reauth: true,
     perms: ['payroll_confirm'],
@@ -402,6 +410,7 @@ defineOps([
   },
   {
     name: 'payroll.results',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all', 'payroll_confirm'],
     sensitive: true,
@@ -418,6 +427,7 @@ defineOps([
   },
   {
     name: 'payroll.resultDetail',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all'],
     sensitive: true,
@@ -430,6 +440,7 @@ defineOps([
   },
   {
     name: 'payroll.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['payroll_view_self'],
     mutating: false,
@@ -459,6 +470,7 @@ defineOps([
   // ------------------------------------------------------------ 明細
   {
     name: 'payslips.issue',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm'],
     sensitive: true,
@@ -486,6 +498,7 @@ defineOps([
   },
   {
     name: 'payslips.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payslip_view_others'],
     sensitive: true,
@@ -498,6 +511,7 @@ defineOps([
   },
   {
     name: 'payslips.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['payslip_view_self'],
     mutating: false,
@@ -513,6 +527,7 @@ defineOps([
   },
   {
     name: 'payslips.view',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payslip_view_self', 'payslip_view_others'],
     mutating: false,
@@ -535,6 +550,7 @@ defineOps([
   },
   {
     name: 'payslips.pdf',
+    kind: 'read',
     auth: 'owner',
     mutating: false,
     handler: (ctx, raw) => {

@@ -17,6 +17,7 @@ import { APP_VERSION } from '../version';
 defineOps([
   {
     name: 'system.prepareUpdate',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -43,6 +44,7 @@ defineOps([
   },
   {
     name: 'system.migrate',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -65,6 +67,7 @@ defineOps([
   },
   {
     name: 'system.finishUpdate',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -87,6 +90,7 @@ defineOps([
   },
   {
     name: 'system.resetSetupPairing',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -100,6 +104,7 @@ defineOps([
   },
   {
     name: 'system.dailyJob',
+    kind: 'internal',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: false,

@@ -41,6 +41,7 @@ export function sessionView(s: WorkSession, now: number) {
 defineOps([
   {
     name: 'attendance.punch',
+    kind: 'punch',
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],
@@ -92,6 +93,7 @@ defineOps([
   },
   {
     name: 'attendance.lookup',
+    kind: 'read',
     auth: 'session',
     allowUnverified: true,
     perms: ['punch_self'],
@@ -106,6 +108,7 @@ defineOps([
   },
   {
     name: 'attendance.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['attendance_view_self'],
     mutating: false,
@@ -124,6 +127,7 @@ defineOps([
   },
   {
     name: 'attendance.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all'],
     mutating: false,
@@ -142,6 +146,7 @@ defineOps([
   },
   {
     name: 'attendance.today',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all'],
     mutating: false,
@@ -156,6 +161,7 @@ defineOps([
   },
   {
     name: 'attendance.detail',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all', 'attendance_edit'],
     mutating: false,
@@ -176,6 +182,7 @@ defineOps([
   },
   {
     name: 'attendance.correct',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -239,6 +246,7 @@ defineOps([
   },
   {
     name: 'attendance.addBreak',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['attendance_edit'],
     sensitive: true,
@@ -262,6 +270,7 @@ defineOps([
   },
   {
     name: 'attendance.compareShifts',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['attendance_view_all'],
     mutating: false,
