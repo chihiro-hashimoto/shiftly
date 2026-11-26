@@ -1104,4 +1104,29 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(deployedPair()).toEqual(prev);
     expect(maintenance(s)).toBe(false);
   });
+
+  // ---- Codex 監査15 ----
+  it('Codex 監査15: 前の組へ戻す手動ロールバックがメンテナンスの開始の失敗（切替の前）で中止された場合、戻し先を残さず、その後の更新を止めない', () => {
+    const { s, reg, deployedPair, cur } = afterGoodUpdate();
+    const orig = s.deps.callCoreAsSetup;
+    let failed = false;
+    s.deps.callCoreAsSetup = (url, key, req) => {
+      const r = req as { op: string; args?: { on?: boolean } };
+      if (!failed && r.op === 'system.setMaintenance' && r.args?.on === true) {
+        failed = true;
+        return { ok: false, error: { code: 'CONFLICT', message: '一時的に処理できません' } } as never;
+      }
+      return orig(url, key, req);
+    };
+    const msg = s.make().rollbackCode();
+    expect(msg).toContain('メンテナンスを開始できなかった');
+    expect(deployedPair()).toEqual(cur);
+    expect(maintenance(s)).toBe(false);
+    expect(reg().pendingRollback ?? null).toBeNull();
+    // 障害の解消後、そのまま更新できる
+    s.deps.release = release('0.4.0');
+    expect(s.make().applyUpdate({ approveDestructive: false }).ok).toBe(true);
+    const latest = [reg().core, reg().admin].map((x) => s.api.projects.get(x.scriptId!)!.versions);
+    expect(deployedPair()).toEqual(latest);
+  });
 });

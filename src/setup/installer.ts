@@ -841,15 +841,16 @@ export class Installer {
         kind = 'older';
       }
     }
-    if (kind === 'older') {
-      // 切替の前に戻し先の組を保存する（片方だけ切り替わった後の再試行で、同じ組へ戻すため）
-      reg.pendingRollback = { ...target };
-      this.persist();
-    }
     // 配備を切り替える前に、現在の Core で書き込みを止める（旧版と DB の組み合わせを確認するまで営業を再開しない。Codex 監査4）
     const on = this.callCore('system.setMaintenance', { on: true });
     if (!on.ok) return `メンテナンスを開始できなかったため、ロールバックを中止しました（${on.error?.message ?? ''}）。現在のバージョンのまま稼働しています`;
     out.push('メンテナンスを開始しました');
+    if (kind === 'older' && !reg.pendingRollback) {
+      // メンテナンスの開始を確認した後、最初の切替の直前に戻し先の組を保存する（片方だけ切り替わった後の再試行で、同じ組へ戻すため）。
+      // 切替の前に中止した場合は保存しない（何も変わっていないのに更新を止めない。Codex 監査15）。再試行中は保存済みの組を保持する
+      reg.pendingRollback = { ...target };
+      this.persist();
+    }
     for (const [which, prev] of [['core', target.core], ['admin', target.admin]] as const) {
       const ref = reg[which];
       try {
