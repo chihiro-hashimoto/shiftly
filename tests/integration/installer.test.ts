@@ -1693,6 +1693,24 @@ describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-02
 
     describe(`${which === 'core' ? 'Staff' : 'Admin'} のデプロイ`, () => {
       const dstep = `${which}.deploy` as const;
+      it('作成の要求の前の記録（目印）の保存に失敗: 作成を要求しない。以後も確認の明示まで作らず、確認の後に 1 つだけ作る', () => {
+        const s = setup();
+        if (which === 'admin') advanceTo(s, 'core');
+        failSaves(s, (r) => !!r[which].deployingAt, 1);
+        if (which === 'admin') s.core.authorize();
+        const r1 = run(s, which === 'core' ? { storeName: '店' } : {});
+        expect(r1.error?.step).toBe(dstep);
+        expect(depsOf(s, which).size).toBe(0);
+        const r2 = run(s);
+        expect(depsOf(s, which).size).toBe(0);
+        if (r2.error?.confirm) {
+          const i = s.make();
+          i.retry(dstep, true);
+          i.runUntilBlocked({}, 20);
+        }
+        expect(finish(s).state.complete).toBe(true);
+        expect(depsOf(s, which).size).toBe(1);
+      });
       for (const saveFails of [1, 3] as const) {
         it(`作成は成功したが、ID の記録の保存に失敗（${saveFails} 回）: 一覧で照合して使い、二重に作らない`, () => {
           const s = setup();
@@ -1723,6 +1741,72 @@ describe('S1: 作成物 × 失敗の地点 × 再実行の組み合わせ（D-02
         expect(depsOf(s, which).size).toBe(1);
         expect(ref(s, which).deploymentId).toBe(created);
       });
+    });
+  }
+
+  // Admin のプロジェクト・デプロイでも、作成の失敗の種類を Staff と同じく回す（Staff は「作成の失敗の種類」「デプロイの作成の失敗の種類」）
+  const KINDS: Array<{ name: string; fault: { status: number; created: boolean } | 'throw' | 'noid'; unknown: boolean; created: boolean }> = [
+    { name: '400', fault: { status: 400, created: false }, unknown: false, created: false },
+    { name: '403', fault: { status: 403, created: false }, unknown: false, created: false },
+    { name: '429', fault: { status: 429, created: false }, unknown: false, created: false },
+    { name: '500', fault: { status: 500, created: false }, unknown: true, created: false },
+    { name: '503', fault: { status: 503, created: false }, unknown: true, created: false },
+    { name: '504（作成済み）', fault: { status: 504, created: true }, unknown: true, created: true },
+    { name: '通信の例外', fault: 'throw', unknown: true, created: false },
+    { name: '2xx で ID なし（作成済み）', fault: 'noid', unknown: true, created: true },
+  ];
+  for (const k of KINDS) {
+    it(`Admin のプロジェクトの作成の失敗: ${k.name}`, () => {
+      const s = setup();
+      advanceTo(s, 'core');
+      s.api.faults.createProject.push(k.fault);
+      s.core.authorize();
+      const r1 = run(s);
+      expect(r1.error?.step).toBe('admin.create');
+      expect(!!r1.error?.confirm).toBe(k.unknown);
+      if (k.unknown) {
+        const i = s.make();
+        i.retry('admin.create'); // 確認の明示なし
+        expect(i.runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+        expect(projectsOf(s, 'admin')).toHaveLength(k.created ? 1 : 0);
+        if (k.created) expect(s.make().attach('admin.create', projectsOf(s, 'admin')[0]![0]).ok).toBe(true);
+        else {
+          const j = s.make();
+          j.retry('admin.create', true);
+          j.runUntilBlocked({}, 20);
+        }
+      } else {
+        const i = s.make();
+        i.retry('admin.create');
+        i.runUntilBlocked({}, 20);
+      }
+      expect(finish(s).state.complete).toBe(true);
+      expect(projectsOf(s, 'admin')).toHaveLength(1);
+    });
+    it(`Admin のデプロイの作成の失敗: ${k.name}`, () => {
+      const s = setup();
+      advanceTo(s, 'core');
+      s.api.faults.createDeployment.push(k.fault);
+      s.core.authorize();
+      const r1 = run(s);
+      expect(r1.error?.step).toBe('admin.deploy');
+      expect(!!r1.error?.confirm).toBe(k.unknown);
+      if (k.unknown && !k.created) {
+        const i = s.make();
+        i.retry('admin.deploy');
+        expect(i.runUntilBlocked({}, 20).error?.confirm).toBeTruthy();
+        expect(depsOf(s, 'admin').size).toBe(0);
+        const j = s.make();
+        j.retry('admin.deploy', true);
+        j.runUntilBlocked({}, 20);
+      } else if (!k.unknown) {
+        const i = s.make();
+        i.retry('admin.deploy');
+        i.runUntilBlocked({}, 20);
+      }
+      // 作成済み（結果不明）の場合は、確認なしの再実行で一覧の照合により使う
+      expect(finish(s).state.complete).toBe(true);
+      expect(depsOf(s, 'admin').size).toBe(1);
     });
   }
 

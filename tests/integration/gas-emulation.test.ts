@@ -365,7 +365,8 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Drive の�
  */
 describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Core の保管先・Setup の記録ファイルの状態管理（D-026）', () => {
   const count = (emu: GasEmulator, key: string, value: string) => [...emu.files.values()].filter((f) => !f.trashed && f.appProperties?.[key] === value).length;
-  const ITEMS = ['root', '00_System', '01_Database', '02_Payslips', '03_Exports', 'database', 'environment'] as const;
+  // Core の構成物の全体（ルート・全サブフォルダ FOLDER_KEYS・DB・環境情報ファイル）
+  const ITEMS = ['root', '00_System', '01_Database', '02_Payslips', '03_Exports', '04_Audit', '05_Backup', 'database', 'environment'] as const;
   const PROP_OF: Record<string, string> = { root: 'SHIFTLY_ROOT_FOLDER', database: 'SHIFTLY_DB_ID', environment: 'SHIFTLY_ENV_FILE_ID' };
   const load = () => {
     const emu = new GasEmulator();
