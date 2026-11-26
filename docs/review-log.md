@@ -4,6 +4,12 @@
 > - R-1 は Codex とは別の、Claude エージェント（アプリケーションセキュリティ担当）による読み取り専用レビュー
 > - 用語: v1.3 で「店長」→「管理者」、「Kiosk」→「Staff」に統一した。以下の過去の記録（C-1・R-1）と原文（docs/reviews/codex-audit-1.md）は、記録の改変を避けるため当時の用語のまま残す
 
+## C-20（2026-11-26）Codex 独立監査 20 回目（C-19 の対応・ループの分析・独立した点検の後の全体のマージ可否。ユーザーの承認により実施）
+
+- 実行: C-2 と同じ（`codex exec --sandbox read-only`）。対象コミット `ab1775743783ba0728bdc3dc4a5ab35049719157`。プロンプト: docs/reviews/codex-audit-20-prompt.md ／ 記録: docs/reviews/codex-audit-20.md
+- **判定なしで中断**（OpenAI 側の内容の判定「cybersecurity risk」で処理が打ち切られ、最終報告なし）。再実行するかはユーザーの判断待ち
+- 中断までのログで、Codex は版の作成の応答を失った後の再実行で版が 1 つ増えることを確かめていた（評価は未出力）。開発側の見解は codex-audit-20.md
+
 ## C-19（2026-11-26）Codex 独立監査 19 回目（C-18 の修正後の全体のマージ可否の判定。ユーザーの承認により実施）
 
 - 実行: C-2 と同じ（`codex exec --sandbox read-only`）。対象コミット `37649e8511c3d5d78c71b33456521481925f1626`（統合状態の全体）。プロンプト: docs/reviews/codex-audit-19-prompt.md ／ 原文: docs/reviews/codex-audit-19.md
