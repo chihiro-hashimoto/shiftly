@@ -460,7 +460,15 @@ export class Installer {
     const dep: Deployment = existing
       ? this.d.api.updateDeployment(ref.scriptId!, ref.deploymentId!, v.versionNumber, `Shiftly ${this.d.release.version}`)
       : this.createDeploymentOnce(which, v.versionNumber);
-    const url = webAppUrl(dep);
+    // 実際のデプロイの版が、今回作成した版と一致することを確認する（記録と実際の版をずらさない。Codex 監査18）
+    const actual = dep.deploymentConfig?.versionNumber;
+    if (actual !== undefined && actual !== v.versionNumber)
+      throw new InstallerError(
+        `${which}.deploy` as StepId,
+        `デプロイの版（v${actual}）が、今回作成した版（v${v.versionNumber}）と一致しません`,
+        '時間をおいて「再実行」を押してください。解消しない場合は、Apps Script の「デプロイを管理」で状態を確認してください',
+      );
+    const url = webAppUrl(dep) ?? webAppUrl(this.d.api.getDeployment(ref.scriptId!, dep.deploymentId) ?? dep);
     if (!url) throw new InstallerError(`${which}.deploy` as StepId, 'Web アプリの URL を取得できませんでした', 'マニフェストの webapp 設定を確認してください（導入手順書）');
     // 更新中の再配備（中断からの再開）では、ロールバック先を更新開始前の版のまま保持する（Codex 監査5）
     const upd = this.reg!.update;
@@ -493,10 +501,11 @@ export class Installer {
       // 説明で照合する（一覧の応答に Web アプリの URL が含まれない場合に備え、使うデプロイは個別に取得し直す。実環境での一覧の応答の内容は未検証）
       const found = this.d.api.listDeployments(ref.scriptId!).filter((d) => !!desc && d.deploymentConfig?.description === desc);
       if (found.length === 1) {
-        const full = this.d.api.getDeployment(ref.scriptId!, found[0]!.deploymentId) ?? found[0]!;
-        this.reg![which] = { ...ref, deploymentId: full.deploymentId, deployingAt: undefined, deployingDescription: undefined };
+        // 見つかったデプロイを使う。今回作成した版へ切り替え、実際の版と記録をそろえる（Codex 監査18: 再利用した配備の版と記録のずれ）
+        const id = found[0]!.deploymentId;
+        this.reg![which] = { ...ref, deploymentId: id, deployingAt: undefined, deployingDescription: undefined };
         this.persist();
-        return full;
+        return this.d.api.updateDeployment(ref.scriptId!, id, versionNumber, desc!);
       }
       if (found.length > 1)
         throw new InstallerError(

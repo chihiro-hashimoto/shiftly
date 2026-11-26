@@ -480,8 +480,9 @@ defineOps([
   },
   {
     name: 'backup.restore',
+    // 復元は稼働中の DB を切り替える復旧の操作のため、Google 所有者（Shiftly-Admin）に限定する。店舗 iPad の管理者モードでは実行できない
+    // （requirements.md: Google 所有者は構築・更新・復旧。D-015。Codex 監査18 #2）
     auth: 'owner',
-    adminAllowed: true,
     reauth: true,
     mutating: true,
     allowInMaintenance: true,

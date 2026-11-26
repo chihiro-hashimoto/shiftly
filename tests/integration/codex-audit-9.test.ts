@@ -49,13 +49,15 @@ describe('Codex 監査9 #1: 復元で引き継いだ確定済みの給与は、�
   });
 
   it('管理者が確認内容を記録して「復元後の確認を完了」すると、停止を解除する（確認の文言・内容がなければ解除しない）', () => {
-    const { h, p } = scenario();
+    const { h, a, p } = scenario();
     // 入力は C-10 で自由記述（note）から定型の確認項目に変更（監査ログに個人情報を残さないため）。アサーションは変更していない
     const checked = { checkedWageRules: true, checkedAllowances: true, checkedDeductions: true };
     expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, ...checked, confirmText: 'はい' }))).toBe('INVALID_INPUT');
     expect(code(h.owner('payroll.releaseRestoreLock', { periodId: p.id, ...checked, checkedDeductions: false, confirmText: '確認しました' }))).toBe('INVALID_INPUT');
-    // C-17 で、確定時と現在の条件で総支給額が異なる場合（この例は 7,000 円と 6,000 円）は差額の確認も必須になったため、入力に追加（アサーションは変更していない）
-    h.ownerOk('payroll.releaseRestoreLock', { periodId: p.id, ...checked, acknowledgedDifferences: true, confirmText: '確認しました' });
+    // C-18 で、確定時と現在の条件で総支給額が異なる間（この例は 7,000 円と 6,000 円）は解除できなくなったため、
+    // 解除の前に時給ルールを確定時の 1,400 円に戻す手順を追加（アサーションは変更していない）
+    h.ownerOk('payconf.upsertWageRule', { employeeId: a, kind: 'base', hourlyRate: 1400, effectiveFrom: '2026-11-01', priority: 1 });
+    h.ownerOk('payroll.releaseRestoreLock', { periodId: p.id, ...checked, confirmText: '確認しました' });
     expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeNull();
     expect(code(h.owner('payslips.issue', { periodId: p.id }))).toBe('OK');
   });

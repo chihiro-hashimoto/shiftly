@@ -286,11 +286,12 @@ defineOps([
       // 月給制のスタッフの確定済みの給与がある期間は、月給設定（固定残業代・所定労働時間を含む）の確認も必須（Codex 監査17 #1）
       if (review.hasMonthly && !v.bool(a, 'checkedSalaryRules'))
         throw E.invalid('月給制のスタッフがいるため、月給設定（基本給・固定残業代・所定労働時間を含む）が確定時と一致することも確認してください');
-      // 確定済みの総支給額と、現在の条件で計算し直した額が異なるスタッフがいる場合は、差額を確認したことの明示が必要（Codex 監査17 #1）
-      if (review.differences > 0 && !v.bool(a, 'acknowledgedDifferences'))
+      // 解除できるのは、この場で計算し直した総支給額が、確定済みの額とすべてのスタッフで一致する場合だけ（Codex 監査17 #1・監査18 #1）。
+      // 差がある場合は、給与条件を確定時に合わせてから解除し、必要な変更はその後の通常の訂正で行う（画面で見た比較の古さに左右されない）
+      if (review.differences > 0)
         throw new ApiError(
           'RESTORE_DIFFERENCES',
-          `確定済みの給与と、現在の給与条件で計算し直した額が異なるスタッフが ${review.differences} 名います。差額を確認し、給与条件を確定時に合わせるか、差額が正しいことを確かめてから完了してください`,
+          `確定済みの給与と、現在の給与条件で計算し直した額が異なるスタッフが ${review.differences} 名います。差がある間は解除できません。給与条件を確定時に合わせてから「復元後の確認を完了」し、変更が必要な場合はその後に通常の訂正を行ってください`,
           409,
         );
       delete locks[p.id];
@@ -301,7 +302,7 @@ defineOps([
         'payroll.releaseRestoreLock',
         'payroll_period',
         p.id,
-        `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認項目=時給ルール・手当・控除${review.hasMonthly ? '・月給設定' : ''}（すべて一致を確認） 差額の確認=${review.differences}名`,
+        `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認項目=時給ルール・手当・控除${review.hasMonthly ? '・月給設定' : ''}（確定時と一致を確認） 再計算との照合=差額なし（${review.rows.length}名）`,
       );
       return { periodId: p.id, released: true };
     },

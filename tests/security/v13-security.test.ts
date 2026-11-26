@@ -25,6 +25,14 @@ describe('管理者モード（管理者パスワード）の権限境界', () =
     expect(ownerOnly.map((o) => o.name)).toEqual(expect.arrayContaining(['adminAuth.setPassword', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.initialize']));
     for (const op of ownerOnly) expect(code(handleRequest(h.be, { op: op.name, args: {}, requestId: h.rid(), device: h.device, adminSession: t })), op.name).toBe('FORBIDDEN');
   });
+  it('Codex 監査18 #2: バックアップからの復元は Google 所有者に限定し、管理者モード（再認証の直後でも）では拒否する', () => {
+    const { h } = setup();
+    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    const t = h.staffOk('adminAuth.login', { password: ADMIN_PW }, { session: '' }).adminSessionToken;
+    const r = handleRequest(h.be, { op: 'backup.restore', args: { backupId: bk.id, confirmText: '復元する' }, requestId: h.rid(), device: h.device, adminSession: t });
+    expect(code(r)).toBe('FORBIDDEN');
+    expect(listOps().find((o) => o.name === 'backup.restore')?.adminAllowed).toBeFalsy();
+  });
   it('スタッフ本人用の操作（session）は管理者モードでは全件拒否', () => {
     const { h } = setup();
     const t = h.staffOk('adminAuth.login', { password: ADMIN_PW }, { session: '' }).adminSessionToken;

@@ -1203,6 +1203,17 @@ describe('Shiftly Setup（自動インストーラー）', () => {
     expect(coreRef.deployingAt).toBeUndefined();
   });
 
+  it('Codex 監査18（次の版の前）: 応答を失ったデプロイを再利用した場合も、実際のデプロイの版と Setup の記録の版が一致する', () => {
+    const s = setup();
+    s.api.faults.loseCreateDeployment = 1;
+    s.make().runUntilBlocked({ storeName: '店' }, 20);
+    expect(s.make().runUntilBlocked({}, 20).error).toBeNull();
+    // この時点では Staff（core）までが配備済み（Admin は手動の承認の後に作られる）
+    const ref = s.store.reg!.core;
+    expect(ref.versionNumber).toBeDefined();
+    expect(s.api.projects.get(ref.scriptId!)!.deployments.get(ref.deploymentId!)).toBe(ref.versionNumber);
+  });
+
   it('Codex 監査17 #3: 照合で同じ説明のデプロイが複数見つかった場合は、自動で選ばずに作成を止めて確認を案内する', () => {
     const s = setup();
     s.api.faults.loseCreateDeployment = 1;

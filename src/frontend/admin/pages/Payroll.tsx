@@ -157,7 +157,7 @@ export function PayrollPage() {
               </span>
             </div>
             <Steps status={current.status} />
-            {current.restoreLock && <RestoreLockNotice periodId={current.id} lock={current.restoreLock} onReleased={periods.reload} />}
+            {current.restoreLock && <RestoreLockNotice key={current.id} periodId={current.id} lock={current.restoreLock} onReleased={periods.reload} />}
           </div>
         )}
       </Panel>
@@ -180,10 +180,11 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
       }>('payroll.restoreLockReview', { periodId }),
     [periodId],
   );
-  const [checks, setChecks] = useState({ wage: false, allowance: false, deduction: false, salary: false, differences: false });
+  const [checks, setChecks] = useState({ wage: false, allowance: false, deduction: false, salary: false });
   const [confirmText, setConfirmText] = useState('');
   const r = review.data;
-  const allChecked = !!r && checks.wage && checks.allowance && checks.deduction && (!r.hasMonthly || checks.salary) && (r.differences === 0 || checks.differences);
+  // 比較の読み込み中・失敗時・差があるときは解除できない（解除の可否はサーバーがその場で計算し直して判断する。Codex 監査18 #1）
+  const allChecked = !!r && !review.loading && !review.error && r.differences === 0 && checks.wage && checks.allowance && checks.deduction && (!r.hasMonthly || checks.salary);
   const release = async () => {
     const res = await run(
       () =>
@@ -193,7 +194,6 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
           checkedAllowances: checks.allowance,
           checkedDeductions: checks.deduction,
           checkedSalaryRules: checks.salary,
-          acknowledgedDifferences: checks.differences,
           confirmText,
         }),
       '復元後の確認を完了しました',
@@ -219,7 +219,8 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
           {r.differences > 0 ? (
             <div>
               <p className="small" style={{ margin: '4px 0' }}>
-                <strong>確定済みの総支給額と、現在の条件で計算し直した額が異なるスタッフが {r.differences} 名います。</strong>給与条件を確定時に合わせるか、差額が正しいことを確かめてください。
+                <strong>確定済みの総支給額と、現在の条件で計算し直した額が異なるスタッフが {r.differences} 名います。差がある間は解除できません。</strong>
+                給与条件（「スタッフ・権限」の時給ルール・月給設定、手当、控除）を確定時に合わせてから、「比較を更新」を押してください。変更が必要な場合は、解除した後に通常の訂正を行ってください。
               </p>
               <div className="table-wrap">
                 <table className="data">
@@ -259,12 +260,14 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
             {r.hasMonthly && check('salary', '月給設定（基本給・固定残業代・所定労働時間を含む）')}
             {check('allowance', '手当（通勤手当を含む）')}
             {check('deduction', '控除')}
-            {r.differences > 0 && check('differences', `上の差額（${r.differences} 名）を確認しました`)}
           </fieldset>
           <Field label="確認のため「確認しました」と入力">
             <input className="input" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} maxLength={20} style={{ maxWidth: 200 }} />
           </Field>
-          <div>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn btn-sm" disabled={busy || review.loading} onClick={() => review.reload()}>
+              比較を更新
+            </button>
             <button className="btn btn-sm btn-primary" disabled={busy || !allChecked || confirmText !== '確認しました'} onClick={() => void release()}>
               復元後の確認を完了
             </button>

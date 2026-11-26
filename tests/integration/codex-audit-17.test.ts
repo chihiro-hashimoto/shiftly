@@ -88,3 +88,25 @@ describe('Codex 監査17 #2: 復元で、バックアップの履歴の状態を
     expect(st()).toBe('pruned');
   });
 });
+
+describe('Codex 監査18 #1: 復元後の確認の解除は、サーバーがその場で計算し直して差がない場合だけ（確認の値では差を承認できない）', () => {
+  it('24 万円で確定 → 20 万円のバックアップを復元 → 月給設定の確認と差額の承認の値を送っても解除できず、訂正は停止したまま', () => {
+    const { h, a, p, acks } = monthlyScenario();
+    const all = { periodId: p.id, checkedWageRules: true, checkedAllowances: true, checkedDeductions: true, checkedSalaryRules: true, acknowledgedDifferences: true, confirmText: '確認しました' };
+    expect(code(h.owner('payroll.releaseRestoreLock', all))).toBe('RESTORE_DIFFERENCES');
+    expect(code(h.owner('payroll.correct', { periodId: p.id, employeeId: a, reason: '確認のための訂正', acknowledgements: acks }))).toBe('PAYROLL_BLOCKED');
+  });
+
+  it('比較を見た後に別の画面で給与条件を変えても、解除の時点の再計算で差があれば解除できない', () => {
+    const { h, a, p, rule } = monthlyScenario();
+    // いったん確定時の 24 万円に戻す → 比較は差なし
+    const s0 = h.ownerOk<any>('payconf.get', { employeeId: a }).salaryRules[0];
+    h.ownerOk('payconf.upsertSalaryRule', { ...rule, id: s0.id, monthlySalary: 240000 });
+    expect(h.ownerOk<any>('payroll.restoreLockReview', { periodId: p.id }).differences).toBe(0);
+    // 比較を見た後に、別の画面で 20 万円に変更 → 古い比較のまま解除しようとしても拒否
+    h.ownerOk('payconf.upsertSalaryRule', { ...rule, id: s0.id, monthlySalary: 200000 });
+    const all = { periodId: p.id, checkedWageRules: true, checkedAllowances: true, checkedDeductions: true, checkedSalaryRules: true, confirmText: '確認しました' };
+    expect(code(h.owner('payroll.releaseRestoreLock', all))).toBe('RESTORE_DIFFERENCES');
+    expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeTruthy();
+  });
+});

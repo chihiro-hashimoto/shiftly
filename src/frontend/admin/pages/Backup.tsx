@@ -49,6 +49,8 @@ function restorable(b: BackupHistory): boolean {
 
 export function BackupPage() {
   const client = useClient();
+  // 店舗 iPad の管理者モードでは復元できない（Google 所有者に限定。Codex 監査18 #2）
+  const isSharedDevice = client.transport.mode === 'staff';
   const { busy, run } = useAction();
   const list = useLoad(() => client.call<BackupHistory[]>('backup.list'), []);
   const st = useLoad(() => client.call<StoreSettings>('settings.get'), []);
@@ -117,6 +119,11 @@ export function BackupPage() {
         }
         pad={false}
       >
+        {isSharedDevice && (
+          <div className="callout small" style={{ margin: 12 }}>
+            バックアップからの復元は、稼働中のデータを切り替える操作のため、Google 所有者が管理画面（Shiftly-Admin）から行います。店舗の iPad の管理者モードでは復元できません。
+          </div>
+        )}
         {runError && (
           <div className="panel-body" style={{ paddingBottom: 0 }}>
             <ErrorBox message={runError} />
@@ -157,7 +164,7 @@ export function BackupPage() {
                     <td className="r num">v{b.schemaVersion}</td>
                     <td className="small" style={{ minWidth: 160, overflowWrap: 'anywhere' }}>{noteText(b) || <span className="muted">—</span>}</td>
                     <td className="r">
-                      {restorable(b) && (
+                      {restorable(b) && !isSharedDevice && (
                         <button className="btn btn-sm" onClick={() => setTarget(b)} disabled={busy}>
                           このバックアップから復元
                         </button>
