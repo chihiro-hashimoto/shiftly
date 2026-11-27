@@ -138,13 +138,6 @@ export class SheetsAdapter implements TableAdapter {
     this.ensureHeader(def, name);
   }
 
-  /** DB 移行（system.migrate）から: 既存シートの列幅とヘッダーを現在のスキーマに合わせる。シートがなければ何もしない */
-  ensureSchema(def: TableDef, partition: string | null) {
-    const name = sheetNameFor(def, partition);
-    if (!this.sheetTitles().has(name)) return;
-    this.ensureColumns(def, name);
-  }
-
   /** ヘッダーが古い（列が少ない）場合は末尾に列名を追加（後方互換のマイグレーション） */
   ensureHeader(def: TableDef, name: string) {
     const res = Sheets.Spreadsheets.Values.get(this.spreadsheetId(), `${q(name)}!1:1`);

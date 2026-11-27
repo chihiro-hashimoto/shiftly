@@ -151,6 +151,8 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
         ...(def.mutating ? [{ table: 'operation_journal' as const, partitions: uow.recentPartitions() }, { table: 'request_idempotency' as const, partitions: uow.recentPartitions() }] : []),
         ...(r.op.startsWith('attendance.') || r.op.startsWith('auth.') ? [{ table: 'attendance_events' as const, partitions: uow.recentPartitions() }, { table: 'attendance_corrections' as const }, { table: 'manual_breaks' as const }, { table: 'shifts' as const }] : []),
       ]);
+      // 保守作業の間は、途中で止まった書き込みの再適用（ジャーナル）も含めて DB に書かない（保守の開始・終了と初期化を除く。独立した点検 #6）
+      if (def.mutating && !MAINTENANCE_ALLOWED_OPS.has(def.name) && maintenanceActive(p)) throw E.maintenanceWork();
       if (def.mutating) {
         const rec = uow.recoverJournal();
         if (rec.replayed || rec.unrecoverable) p.log('warn', 'journal recovered', { replayed: rec.replayed, unrecoverable: rec.unrecoverable });

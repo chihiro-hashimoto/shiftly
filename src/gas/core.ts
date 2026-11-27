@@ -205,6 +205,14 @@ export function shiftlyMaintenanceFinish() {
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
   return report('保守作業の終了', handleRequest(be(), { op: 'maintenance.finish', args: { confirmText: '保守を終了する' } }, 'owner'));
 }
+/**
+ * 保守作業の開始のやり直し（開始が途中で止まった・保守の記録や開始時の記録を失った場合だけ）。今の DB を新しい基準にするため、
+ * 開始の後に DB を手で変更していない場合だけ実行する（変更した場合は先に開始時のバックアップの内容に戻す）。終了時は確定済みの給与をすべて照合の対象にする
+ */
+export function shiftlyMaintenanceRestart() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  return report('保守作業の開始のやり直し', handleRequest(be(), { op: 'maintenance.begin', args: { confirmText: '保守を開始し直す', restart: true } }, 'owner'));
+}
 export function shiftlyMaintenanceStatus() {
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
   return report('保守作業の状態', handleRequest(be(), { op: 'system.info' }, 'owner'));

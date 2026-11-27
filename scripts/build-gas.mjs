@@ -20,7 +20,7 @@ const m = versionTs.match(/APP_VERSION = '([^']+)'/);
 if (!m || m[1] !== pkg.version) throw new Error(`APP_VERSION (${m?.[1]}) と package.json (${pkg.version}) が一致しません`);
 
 const PROJECTS = {
-  core: { entry: 'src/gas/core.ts', global: 'ShiftlyCore', fns: ['doGet', 'doPost', 'staffApi', 'kioskApi', 'shiftlyAuthorize', 'shiftlyDailyJob', 'shiftlyResetAdminPairing', 'shiftlyConfirmStorageNotCreated', 'shiftlyMaintenanceBegin', 'shiftlyMaintenanceFinish', 'shiftlyMaintenanceStatus', 'shiftlyResetSetupPairing'], html: ['staff'], manifest: 'core.json' },
+  core: { entry: 'src/gas/core.ts', global: 'ShiftlyCore', fns: ['doGet', 'doPost', 'staffApi', 'kioskApi', 'shiftlyAuthorize', 'shiftlyDailyJob', 'shiftlyResetAdminPairing', 'shiftlyConfirmStorageNotCreated', 'shiftlyMaintenanceBegin', 'shiftlyMaintenanceFinish', 'shiftlyMaintenanceStatus', 'shiftlyMaintenanceRestart', 'shiftlyResetSetupPairing'], html: ['staff'], manifest: 'core.json' },
   admin: { entry: 'src/gas/admin.ts', global: 'ShiftlyAdmin', fns: ['doGet', 'adminApi', 'adminWhoAmI', 'shiftlyAuthorize'], html: ['admin'], manifest: 'admin.json' },
   setup: { entry: 'src/gas/setup.ts', global: 'ShiftlySetup', fns: ['doGet', 'setupApi'], html: ['setup'], manifest: 'setup-selfhosted.json' },
 };

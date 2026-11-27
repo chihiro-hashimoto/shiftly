@@ -22,7 +22,9 @@ export function initialize(ctx: Ctx, args: { storeName: string; envId: string })
   const existing = ctx.uow.list<StoreSettings>('store_settings');
   // 画面の世代は、初めての構築（DB に店舗設定も初期化の記録もない）でだけ発行する（D-027。Codex 監査24 A1）。
   // 既存の環境で記録が失われた・壊れた場合は作り直さない（業務の更新は止まったまま。Google 所有者の保守作業の終了で再発行する）
-  const firstEnvironment = existing.length === 0 && !metaValue(ctx, 'initializedAt');
+  // 店舗設定・初期化の記録・環境 ID・スタッフ・打刻のどれかがあれば既存の環境（手で一部の行を消されても、初めての構築と取り違えない。独立した点検 #7）
+  const firstEnvironment =
+    existing.length === 0 && !metaValue(ctx, 'initializedAt') && !metaValue(ctx, 'envId') && ctx.uow.list('employees').length === 0 && ctx.uow.list('attendance_events').length === 0;
   if (firstEnvironment && currentEpoch(ctx.p) === null) issueEpoch(ctx.p);
   if (existing.length === 0) {
     ctx.uow.insert<StoreSettings>('store_settings', { ...DEFAULT_SETTINGS, storeName: args.storeName } as never, 'set');

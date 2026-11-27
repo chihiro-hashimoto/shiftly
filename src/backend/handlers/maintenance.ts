@@ -21,7 +21,7 @@ import { defineOps } from '../api';
 import { audit, issueEpoch, MAINTENANCE_KEY, maintenanceState, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, type Ctx, type MaintenanceState, type PayrollRestoreLock } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
-import { SCHEMA_VERSION, TABLES, type TableName } from '../schema';
+import { partitionKeyOf, SCHEMA_VERSION, TABLES, type TableName } from '../schema';
 import { revokeAdminSessions, revokeSessionsWhere } from '../auth';
 import { integrityCheck } from './system';
 import { runBackup } from './ops';
@@ -80,19 +80,24 @@ export const MAINTENANCE_TABLES: Record<TableName, MaintenanceClass> = {
 };
 
 /**
- * アプリ自身が保守中にも追記する守る表（保守の開始・バックアップ・読み取りの拒否の記録など）。
+ * アプリ自身が保守中にも追記する守る表（監査ログ: 保守の開始・読み取りの拒否の記録など／バックアップの履歴: 開始時のバックアップ）。
  * 行の追加は「内容の変更」と数えない（削除・変更は守る表として止める）
  */
-const APP_APPENDED: ReadonlySet<TableName> = new Set<TableName>(['audit_logs']);
+const APP_APPENDED: ReadonlySet<TableName> = new Set<TableName>(['audit_logs', 'backup_history']);
 
 /** 保守の開始・終了で変えてはならない環境の記録（system_metadata のキー） */
 const FIXED_META = ['envId', 'initializedAt'] as const;
 
 interface Snapshot {
-  v: 1;
+  v: 2;
   takenAt: string;
-  /** 表 → 行の ID → 行の内容のハッシュ（system の表は含めない） */
-  tables: Partial<Record<TableName, Record<string, string>>>;
+  /**
+   * 表 → 「シート（パーティション）|行の ID」→ その位置にある行の内容のハッシュ（同じ位置・同じ ID の行が複数ある場合は複数）。
+   * system の表は含めない。位置を鍵に含めるため、行を別の月のシートへ移すと「削除」として検出する（独立した点検 #2）
+   */
+  tables: Partial<Record<TableName, Record<string, string[]>>>;
+  /** 開始時点で既にあった構造の問題（照合の終了時に、これ以外の新しい問題があれば再開しない） */
+  issues: string[];
   meta: { envId: string | null; initializedAt: string | null; payrollRestoreLocks: Record<string, PayrollRestoreLock> };
 }
 
@@ -101,21 +106,48 @@ function rowHash(ctx: Ctx, row: Record<string, unknown>): string {
   return ctx.p.sha256Hex(JSON.stringify(keys.map((k) => [k, row[k] ?? null]))).slice(0, 32);
 }
 
-function tableHashes(ctx: Ctx): Snapshot['tables'] {
-  const out: Snapshot['tables'] = {};
+/**
+ * 全表（system を除く）の内容を、シート（パーティション）ごとに読み、行の位置と内容のハッシュを記録する。あわせて構造の問題を調べる:
+ * - 同じ ID の行が複数ある（同じシート・別のシートのどちらでも。読み取りで先の行だけが使われ、改ざんが隠れる。独立した点検 #1）
+ * - 行のパーティション列の年月と、その行があるシートの年月が一致しない／シート名の年月の形式が正しくない（行の移動・シートの改名。独立した点検 #2）
+ */
+function tableHashes(ctx: Ctx): { tables: Snapshot['tables']; issues: string[] } {
+  const tables: Snapshot['tables'] = {};
+  const issues: string[] = [];
   for (const def of TABLES) {
     if (MAINTENANCE_TABLES[def.name] === 'system') continue;
-    const m: Record<string, string> = {};
-    for (const r of ctx.uow.list<Record<string, unknown>>(def.name)) m[String(r.id)] = rowHash(ctx, r);
-    out[def.name] = m;
+    const m: Record<string, string[]> = {};
+    const seen = new Map<string, number>();
+    const parts: Array<string | null> = def.partitionBy ? ctx.uow.adapter.partitions(def) : [null];
+    for (const part of parts) {
+      if (part !== null && !/^\d{4}-\d{2}$/.test(part)) issues.push(`${def.name}: 名前の形式が正しくないシート（${part}）`);
+      const rows = part === null ? ctx.uow.list<Record<string, unknown>>(def.name) : ctx.uow.list<Record<string, unknown>>(def.name, { partitions: [part] });
+      for (const r of rows) {
+        const id = String(r.id);
+        if (part !== null) {
+          let k: string | null;
+          try {
+            k = partitionKeyOf(def, r);
+          } catch {
+            k = null;
+          }
+          if (k !== part) issues.push(`${def.name}: 行（${id}）がシート（${part}）の年月と一致しません`);
+        }
+        const key = `${part ?? ''}|${id}`;
+        (m[key] ??= []).push(rowHash(ctx, r));
+        seen.set(id, (seen.get(id) ?? 0) + 1);
+      }
+    }
+    for (const [id, n] of seen) if (n > 1) issues.push(`${def.name}: 同じ ID の行が ${n} 行あります（${id}）`);
+    tables[def.name] = m;
   }
-  return out;
+  return { tables, issues };
 }
 
 function saveState(ctx: Ctx, s: MaintenanceState) {
   ctx.p.secrets.set(MAINTENANCE_KEY, JSON.stringify(s));
   const back = maintenanceState(ctx.p);
-  if (!back || back === 'broken' || back.startedAt !== s.startedAt || back.snapshotFileId !== s.snapshotFileId || back.backupId !== s.backupId)
+  if (!back || back === 'broken' || back.startedAt !== s.startedAt || back.snapshotFileId !== s.snapshotFileId || back.backupId !== s.backupId || !!back.baselineUncertain !== !!s.baselineUncertain)
     throw new Error('保守作業の記録を保存できませんでした');
 }
 
@@ -124,7 +156,7 @@ export interface MaintenanceDiff {
   violations: Array<{ table: TableName; deleted: string[]; modified: string[] }>;
   /** 内容が変わった表（追加・変更・削除。system の表を除く） */
   changedTables: TableName[];
-  /** 変えてはならない環境の記録が変わった */
+  /** 変えてはならない環境の記録が変わった・開始時になかった構造の問題（同じ ID の行・シートの年月の不一致） */
   metaIssues: string[];
 }
 
@@ -132,12 +164,13 @@ export function compareWithSnapshot(ctx: Ctx, snap: Snapshot): MaintenanceDiff {
   const now = tableHashes(ctx);
   const violations: MaintenanceDiff['violations'] = [];
   const changedTables: TableName[] = [];
+  const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
   for (const def of TABLES) {
     const cls = MAINTENANCE_TABLES[def.name];
     if (cls === 'system') continue;
     // 開始時の記録に表がない（記録が欠けている）場合は、照合できないため変更として扱い、守る表なら止める
     const before = snap.tables[def.name];
-    const after = now[def.name] ?? {};
+    const after = now.tables[def.name] ?? {};
     if (!before) {
       changedTables.push(def.name);
       if (cls === 'protected') violations.push({ table: def.name, deleted: ['（開始時の記録がありません）'], modified: [] });
@@ -145,16 +178,19 @@ export function compareWithSnapshot(ctx: Ctx, snap: Snapshot): MaintenanceDiff {
     }
     const deleted: string[] = [];
     const modified: string[] = [];
-    for (const [id, h] of Object.entries(before)) {
-      if (!(id in after)) deleted.push(id);
-      else if (after[id] !== h) modified.push(id);
+    for (const [key, hs] of Object.entries(before)) {
+      if (!(key in after)) deleted.push(key);
+      else if (!same(after[key]!, hs)) modified.push(key);
     }
-    const added = Object.keys(after).filter((id) => !(id in before));
+    const added = Object.keys(after).filter((key) => !(key in before));
     if (deleted.length || modified.length || (added.length && !APP_APPENDED.has(def.name))) changedTables.push(def.name);
     if (cls === 'protected' && (deleted.length || modified.length)) violations.push({ table: def.name, deleted, modified });
   }
   const metaIssues: string[] = [];
   for (const k of FIXED_META) if (metaValue(ctx, k) !== snap.meta[k]) metaIssues.push(`環境の記録（${k}）が保守の開始時と異なります`);
+  // 開始時になかった構造の問題は、表の分類にかかわらず再開しない（同じ ID の行・シートの年月の不一致は、業務の計算で一部の行が使われない・隠れる）
+  const baseline = new Set(snap.issues);
+  for (const i of now.issues) if (!baseline.has(i)) metaIssues.push(i);
   return { violations, changedTables, metaIssues };
 }
 
@@ -171,15 +207,19 @@ function fromAscii(b: Bytes): string {
 
 function readSnapshot(ctx: Ctx, fileId: string): Snapshot {
   const bytes = ctx.p.files.readFile(fileId);
-  if (!bytes) throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録（Google ドライブの 00_System の「Shiftly_maintenance_snapshot」）を読み込めないため、業務を再開できません（保守中のままです）。時間をおいて再実行してください', 409);
+  if (!bytes) throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録（Google ドライブの 00_System の「Shiftly_maintenance_snapshot」）を読み込めないため、業務を再開できません（保守中のままです）。時間をおいて再実行してください。記録を失った場合は shiftlyMaintenanceRestart（開始のやり直し。確定済みの給与はすべて照合の対象になります）を参照してください', 409);
   try {
     const s = JSON.parse(fromAscii(bytes)) as Snapshot;
-    if (s.v !== 1 || !s.tables || !s.meta) throw new Error('format');
+    if (s.v !== 2 || !s.tables || !s.meta || !Array.isArray(s.issues)) throw new Error('format');
     return s;
   } catch {
     throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録の内容を読み取れないため、業務を再開できません（保守中のままです）', 409);
   }
 }
+
+const BEGIN_NOTE = '業務の更新（打刻・修正・申請・給与・定期処理を含む）を停止しました。店舗に紙のタイムカードへの切替を連絡してください。作業の後に maintenance.finish（shiftlyMaintenanceFinish）を実行するまで再開しません';
+const beginBackupFailed = () =>
+  new ApiError('MAINTENANCE_BEGIN_FAILED', '保守作業の開始時のバックアップに失敗しました。業務の更新は止めたままです。Google ドライブの空き容量を確認し、もう一度 shiftlyMaintenanceBegin を実行してください（開始時の記録はそのまま使います）', 409);
 
 defineOps([
   {
@@ -190,35 +230,53 @@ defineOps([
     mutating: true,
     allowInMaintenance: true,
     handler: (ctx, raw) => {
-      if (v.str(v.obj(raw ?? {}), 'confirmText', { max: 20 }) !== '保守を開始する') throw E.invalid('確認のため「保守を開始する」と入力してください');
+      const a = v.obj(raw ?? {});
+      // restart: 開始が途中で止まった・保守の記録や開始時の記録を失った場合の開始のやり直し（独立した点検 #3・#5）。
+      // 今の DB を新しい基準にするため、開始の後の手作業を基準に含めてしまう可能性がある。所有者が「記録のない手作業をしていない」と
+      // 確認した場合だけ行い、終了時は内容の変更の有無にかかわらず、確定済みの給与がある期間をすべて停止して照合する（R2）
+      const restart = a.restart === true;
+      const want = restart ? '保守を開始し直す' : '保守を開始する';
+      if (v.str(a, 'confirmText', { max: 20 }) !== want) throw E.invalid(`確認のため「${want}」と入力してください`);
       const cur = maintenanceState(ctx.p);
-      if (cur && cur !== 'broken' && cur.snapshotFileId && cur.backupId) throw E.conflict(`保守作業はすでに開始しています（開始: ${cur.startedAt}）`);
-      // 1) 最初に保守の記録を保存する（以後、全員の更新系が止まる。途中で失敗しても保守中のまま＝安全側）
-      const state: MaintenanceState = { startedAt: nowIso(ctx), backupId: null, snapshotFileId: null };
-      saveState(ctx, state);
-      // 2) 開始時のバックアップ（Google ドライブの 05_Backup）。失敗したら保守中のまま止める（再実行できる）
-      const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
-      if (b.status !== 'ok') {
-        ctx.uow.flush();
-        throw new ApiError('MAINTENANCE_BEGIN_FAILED', '保守作業の開始時のバックアップに失敗しました。業務の更新は止めたままです。Google ドライブの空き容量を確認し、もう一度実行してください', 409);
+      if (!restart && cur) {
+        if (cur !== 'broken' && cur.snapshotFileId && cur.backupId) throw E.conflict(`保守作業はすでに開始しています（開始: ${cur.startedAt}）`);
+        if (cur !== 'broken' && cur.snapshotFileId) {
+          // 開始時の記録はある（バックアップだけが失敗した）: 記録はそのまま使い、バックアップだけをやり直す
+          const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
+          ctx.uow.flush();
+          if (b.status !== 'ok') throw beginBackupFailed();
+          saveState(ctx, { ...cur, backupId: b.id });
+          audit(ctx, 'maintenance.begin', 'system', null, '保守作業の開始（バックアップのやり直し）');
+          return { startedAt: cur.startedAt, backupId: b.id, note: BEGIN_NOTE };
+        }
+        throw new ApiError(
+          'MAINTENANCE_RESTART_REQUIRED',
+          '保守作業の開始が途中で止まっているため、開始時の記録がありません（業務の更新は止めたままです）。開始の後に DB を手で変更していない場合だけ、shiftlyMaintenanceRestart で開始し直してください（変更した場合は、先に開始時のバックアップの内容に戻してください）',
+          409,
+        );
       }
-      ctx.uow.flush();
-      // 3) 開始時の DB の全行の内容の記録（終了時の照合に使う）
-      const locks = payrollRestoreLocks(ctx);
+      // 1) 最初に保守の記録を保存する（以後、全員の更新系が止まる。途中で失敗しても保守中のまま＝安全側）
+      const state: MaintenanceState = { startedAt: nowIso(ctx), backupId: null, snapshotFileId: null, ...(restart && cur ? { baselineUncertain: true } : {}) };
+      saveState(ctx, state);
+      // 2) 開始時の DB の全行の内容の記録（終了時の照合の基準）を、バックアップより先に作る（バックアップの失敗のやり直しでも同じ基準を使う）
+      const h = tableHashes(ctx);
       const snap: Snapshot = {
-        v: 1,
+        v: 2,
         takenAt: state.startedAt,
-        tables: tableHashes(ctx),
-        meta: { envId: metaValue(ctx, 'envId'), initializedAt: metaValue(ctx, 'initializedAt'), payrollRestoreLocks: locks },
+        tables: h.tables,
+        issues: h.issues,
+        meta: { envId: metaValue(ctx, 'envId'), initializedAt: metaValue(ctx, 'initializedAt'), payrollRestoreLocks: payrollRestoreLocks(ctx) },
       };
       const f = ctx.p.files.createFile('00_System', `Shiftly_maintenance_snapshot_${state.startedAt.slice(0, 19).replace(/[:T]/g, '-')}.json`, 'application/json', utf8(JSON.stringify(snap)));
-      saveState(ctx, { ...state, backupId: b.id, snapshotFileId: f.fileId });
-      audit(ctx, 'maintenance.begin', 'system', null, '保守作業の開始（業務の更新を停止）');
-      return {
-        startedAt: state.startedAt,
-        backupId: b.id,
-        note: '業務の更新（打刻・修正・申請・給与・定期処理を含む）を停止しました。店舗に紙のタイムカードへの切替を連絡してください。作業の後に maintenance.finish（shiftlyMaintenanceFinish）を実行するまで再開しません',
-      };
+      const withSnap: MaintenanceState = { ...state, snapshotFileId: f.fileId };
+      saveState(ctx, withSnap);
+      // 3) 開始時のバックアップ（Google ドライブの 05_Backup）。失敗したら保守中のまま止める（再実行でバックアップだけをやり直す）
+      const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
+      ctx.uow.flush();
+      if (b.status !== 'ok') throw beginBackupFailed();
+      saveState(ctx, { ...withSnap, backupId: b.id });
+      audit(ctx, 'maintenance.begin', 'system', null, restart ? '保守作業の開始のやり直し（業務の更新を停止）' : '保守作業の開始（業務の更新を停止）');
+      return { startedAt: state.startedAt, backupId: b.id, baselineUncertain: !!state.baselineUncertain, note: BEGIN_NOTE };
     },
   },
   {
@@ -231,8 +289,9 @@ defineOps([
       if (v.str(v.obj(raw ?? {}), 'confirmText', { max: 20 }) !== '保守を終了する') throw E.invalid('確認のため「保守を終了する」と入力してください');
       const st = maintenanceState(ctx.p);
       if (st === null) throw E.conflict('保守作業は開始されていません');
-      if (st === 'broken' || !st.snapshotFileId || !st.backupId)
-        throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守作業の開始が完了していないため、業務を再開できません。shiftlyMaintenanceBegin をもう一度実行してから作業してください', 409);
+      if (st === 'broken' || !st.snapshotFileId)
+        throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守作業の開始時の記録がないため、業務を再開できません（保守中のままです）。開始の後に DB を手で変更していない場合だけ、shiftlyMaintenanceRestart で開始し直してください', 409);
+      if (!st.backupId) throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守作業の開始時のバックアップが完了していないため、業務を再開できません。shiftlyMaintenanceBegin をもう一度実行してください（開始時の記録はそのまま使います）', 409);
       // 1) DB の構造
       const check = integrityCheck(ctx);
       const sv = Number(metaValue(ctx, 'schemaVersion') ?? '0');
@@ -261,7 +320,8 @@ defineOps([
         /* 現在の記録が壊れている（手で編集された）: 保守の間に停止を追加する経路はないため、開始時の記録と、ここで加える停止を使う */
       }
       let locked = 0;
-      if (diff.changedTables.length) {
+      // 開始をやり直した（基準に手作業が含まれ得る）場合は、変更の有無にかかわらず停止して照合する
+      if (diff.changedTables.length || st.baselineUncertain) {
         const lock: PayrollRestoreLock = { restoredAt: nowIso(ctx), backupId: st.backupId };
         const periods = new Set<string>();
         for (const r of ctx.uow.list<PayrollResult>('payroll_results')) if (r.status === 'confirmed' || r.status === 'issued' || r.status === 'superseded') periods.add(r.periodId);

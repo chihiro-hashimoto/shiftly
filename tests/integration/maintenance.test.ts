@@ -189,13 +189,17 @@ describe('保守作業の開始・終了', () => {
     expect(code(h.owner('settings.update', { storeName: '再開後' }))).toBe('OK');
   });
 
-  it('保守の記録を読み取れない（手での編集など）場合も、全員の更新を止め、終了しない（開始のやり直しで記録を作り直す）', () => {
+  it('保守の記録を読み取れない（手での編集など）場合も、全員の更新を止め、終了しない。開始は「やり直し」の確認がある場合だけで、終了時は確定済みの給与をすべて照合の対象にする（独立した点検 #3）', () => {
     const { h } = store();
     h.env.platform.secrets.set(MAINTENANCE_KEY, '{壊れた');
     expect(code(h.owner('settings.update', { storeName: 'x' }))).toBe('MAINTENANCE');
     expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
     expect(h.ownerOk<any>('system.info').maintenanceWork).toMatchObject({ active: true, readable: false });
-    h.ownerOk('maintenance.begin', BEGIN);
+    // 通常の開始では、記録のない手作業を基準に含め得るため作り直さない
+    expect(code(h.owner('maintenance.begin', BEGIN))).toBe('MAINTENANCE_RESTART_REQUIRED');
+    expect(code(h.owner('maintenance.begin', { confirmText: '保守を開始する', restart: true }))).toBe('INVALID_INPUT');
+    const r = h.ownerOk('maintenance.begin', { confirmText: '保守を開始し直す', restart: true });
+    expect(r.baselineUncertain).toBe(true);
     h.ownerOk('maintenance.finish', FINISH);
     expect(code(h.owner('settings.update', { storeName: '再開後' }))).toBe('OK');
   });
@@ -259,8 +263,8 @@ describe('R1: 保守作業で守る記録（全表を代表行で確かめる）
       u.insert(t, { ...rowFor(t, 'added', String(orig.employeeId ?? '')), ...(orig.employeeId ? { employeeId: orig.employeeId } : {}) } as never, 'rep');
       u.flush();
       const ok = h.ownerOk('maintenance.finish', FINISH);
-      // 監査ログはアプリ自身が保守中にも追記するため、追加は「内容の変更」と数えない（削除・変更は止める）
-      if (t === 'audit_logs') expect(ok.changedTables).not.toContain(t);
+      // 監査ログ・バックアップの履歴はアプリ自身が保守中にも追記するため（保守の開始の記録・開始時のバックアップ）、追加は「内容の変更」と数えない（削除・変更は止める）
+      if (t === 'audit_logs' || t === 'backup_history') expect(ok.changedTables).not.toContain(t);
       else expect(ok.changedTables).toContain(t);
     });
   }
@@ -465,4 +469,153 @@ describe('給与の停止の記録が壊れている場合（独立した点検 
       expect(code(h.owner('payroll.confirm', { periodId: p.id, acknowledgements: acks }))).toBe(ok ? 'OK' : 'PAYROLL_BLOCKED');
     });
   }
+});
+
+describe('独立した点検（D-027 の 1 回目）の反例: 照合の迂回をしない', () => {
+  function confirmedStore() {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913', { rate: 1200 });
+    h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
+    h.punchAt(a, '482913', '2026-11-02', '14:00', 'clock_out');
+    const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
+    h.ownerOk('deductions.upsert', { employeeId: a, periodId: p.id, status: 'explicit_none' });
+    h.setNow('2026-12-01', '06:00');
+    const c = h.ownerOk('payroll.compute', { periodId: p.id });
+    const acks = c.employees[0].issues.filter((i: any) => i.severity === 'confirm').map((i: any) => i.key);
+    h.ownerOk('payroll.confirm', { periodId: p.id, acknowledgements: acks });
+    return { h, a, p };
+  }
+  const lockOf = (h: Harness, p: { id: string }) => h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock;
+
+  it('#1: 同じ ID の行を重ねて挿入した（控除を 4 万円にした行を元の行の前に置いた）場合は再開しない', () => {
+    const { h, a, p } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const sheet = h.env.adapter.sheets.get('deductions')!;
+    const i = sheet.findIndex((r) => r[0] !== 'id' && String(r[0]).startsWith('ded'));
+    expect(i).toBeGreaterThanOrEqual(0);
+    const dup = [...sheet[i]!];
+    sheet.splice(i, 0, dup); // 同じ ID の行（内容は後で変える）を前に置く
+    const r = h.owner('maintenance.finish', FINISH);
+    expect(code(r)).toBe('MAINTENANCE_CHECK_FAILED');
+    expect((r as any).error.message).toContain('同じ ID の行');
+    sheet.splice(i, 1);
+    h.ownerOk('maintenance.finish', FINISH);
+    expect(lockOf(h, p)).toBeNull();
+    void a;
+  });
+
+  it('#1: 守る表（端末）の行を重複させた場合も再開しない', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const sheet = h.env.adapter.sheets.get('devices')!;
+    const row = sheet.find((r) => String(r[0]).startsWith('dev'))!;
+    sheet.push([...row]);
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+  });
+
+  it('#2: 打刻の行を別の月のシートへ移した場合は再開しない（給与の計算から外れる）', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const nov = h.env.adapter.sheets.get('attendance_events__2026_11')!;
+    const out = nov.findIndex((r) => r.includes('clock_out'));
+    const [row] = nov.splice(out, 1);
+    h.env.adapter.sheets.set('attendance_events__2026_08', [row!]);
+    const r = h.owner('maintenance.finish', FINISH);
+    expect(code(r)).toBe('MAINTENANCE_CHECK_FAILED');
+  });
+
+  it('#2: 月のシートの名前を変えた（年月の形式でない）場合は再開しない', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const rows = h.env.adapter.sheets.get('attendance_events__2026_11')!;
+    h.env.adapter.sheets.delete('attendance_events__2026_11');
+    h.env.adapter.sheets.set('attendance_events__2026_11_old', rows);
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+  });
+
+  it('#3: 開始が途中で止まった（開始時の記録を作れなかった）後は、通常の開始で基準を作り直さない。やり直しは確認が必要で、終了時は確定済みの給与を停止する', () => {
+    const { h, p } = confirmedStore();
+    const files = h.env.files;
+    const create = files.createFile.bind(files);
+    files.createFile = () => {
+      throw new Error('Drive の一時的な失敗（模擬）');
+    };
+    expect(h.owner('maintenance.begin', BEGIN).ok).toBe(false);
+    files.createFile = create;
+    expect(code(h.owner('settings.update', { storeName: '保守中' }))).toBe('MAINTENANCE');
+    // 開始の後の手作業（打刻を 1 行消した）を、やり直しの基準に含めない
+    const nov = h.env.adapter.sheets.get('attendance_events__2026_11')!;
+    nov.splice(nov.findIndex((r) => r.includes('clock_out')), 1);
+    expect(code(h.owner('maintenance.begin', BEGIN))).toBe('MAINTENANCE_RESTART_REQUIRED');
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+    // 所有者が「手作業をしていない」と確認してやり直した場合は、基準が不確かなため、内容の変更の有無にかかわらず確定済みの給与を停止して照合する
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始し直す', restart: true });
+    const f = h.ownerOk('maintenance.finish', FINISH);
+    expect(f.payrollPeriodsToReview).toBe(1);
+    expect(lockOf(h, p)).not.toBeNull();
+    // 照合で差が分かる（打刻を消したため総支給額が 6,000 円から下がる）。差がある間は解除できない
+    expect(h.ownerOk<any>('payroll.restoreLockReview', { periodId: p.id }).differences).toBe(1);
+  });
+
+  it('#3: 開始時のバックアップだけが失敗した場合は、再実行でバックアップだけをやり直し、開始時の記録（基準）はそのまま使う', () => {
+    const { h } = confirmedStore();
+    const files = h.env.files;
+    const copy = files.copyDatabase.bind(files);
+    files.copyDatabase = () => {
+      throw new Error('容量不足（模擬）');
+    };
+    expect(code(h.owner('maintenance.begin', BEGIN))).toBe('MAINTENANCE_BEGIN_FAILED');
+    files.copyDatabase = copy;
+    // 失敗の後の手作業（打刻の削除）は、基準（失敗の前に作った記録）との照合で検出される
+    const nov = h.env.adapter.sheets.get('attendance_events__2026_11')!;
+    const [removed] = nov.splice(nov.findIndex((r) => r.includes('clock_out')), 1);
+    h.ownerOk('maintenance.begin', BEGIN);
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+    nov.push(removed!);
+    h.ownerOk('maintenance.finish', FINISH);
+  });
+
+  it('#5: 開始時の記録のファイルを失った場合も、やり直し（確認あり）で抜け出せ、確定済みの給与は停止して照合する', () => {
+    const { h, p } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    for (const f of h.env.files.files.values()) if (f.name.startsWith('Shiftly_maintenance_snapshot_')) f.data = null;
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+    expect(code(h.owner('maintenance.begin', BEGIN))).toBe('CONFLICT');
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始し直す', restart: true });
+    h.ownerOk('maintenance.finish', FINISH);
+    expect(lockOf(h, p)).not.toBeNull();
+  });
+
+  it('#6: 保守中は、途中で止まった書き込みの再適用（ジャーナル）を、業務の要求・定期処理をきっかけに行わない', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const proto = UnitOfWork.prototype as unknown as { recoverJournal: (...a: unknown[]) => unknown };
+    const orig = proto.recoverJournal;
+    let calls = 0;
+    proto.recoverJournal = function (this: unknown, ...a: unknown[]) {
+      calls++;
+      return orig.apply(this, a);
+    };
+    try {
+      expect(code(h.owner('settings.update', { storeName: '保守中' }))).toBe('MAINTENANCE');
+      expect(code(handleRequest(h.be, { op: 'system.dailyJob' }, 'system'))).toBe('MAINTENANCE');
+      expect(code(h.owner('payroll.confirm', { periodId: 'x' }))).toBe('MAINTENANCE');
+      expect(calls).toBe(0);
+      h.ownerOk('maintenance.finish', FINISH); // 保守の終了は再適用してから照合する
+      expect(calls).toBe(1);
+    } finally {
+      proto.recoverJournal = orig;
+    }
+  });
+
+  it('#7: 既存の環境で店舗設定・初期化の記録の行を手で消し、世代の記録も失った場合も、初期化は世代を作り直さない', () => {
+    const { h } = confirmedStore();
+    h.env.adapter.sheets.set('store_settings', []);
+    h.env.adapter.sheets.set('system_metadata', h.env.adapter.sheets.get('system_metadata')!.filter((r) => !r.includes('initializedAt')));
+    h.env.platform.secrets.delete('SHIFTLY_RESTORE_EPOCH');
+    h.owner('system.initialize', { storeName: 'テスト店舗', envId: 'env_test' });
+    expect(h.currentEpoch()).toBeNull();
+    expect(code(h.owner('settings.update', { storeName: 'x' }, { epoch: null }))).not.toBe('OK');
+  });
 });
