@@ -10,7 +10,8 @@
 - **B案（2026-11-27、D-027）**: v1.3 は「正常時は自動・異常時は手動」。アプリ内の自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・自動ロールバックを v1.3 から除外（処理を削除、DEFERRED_OPS で全経路を拒否）。データの復元は Google 所有者の保守作業（maintenance.begin / finish）。C-24 の A1・A3・A4 は機能を修正、A2 は仕様変更で実行経路を除外（docs/review-log.md「C-24 の対応」）。41 機能の分類: 初回 37・一部手動 2（F26・F35）・延期 2（F36・F37）
 - **D-027 追補（2026-11-27）**: 残存リスクの整理。停止中の給与期間はアプリの外の例外的な手動訂正（運用手順「9.1」）、保守の「開始のやり直し」を廃止（記録を失ったら保守中のまま。紙のタイムカードと開発者への個別の依頼。「9.2」）、終了前に数式のセルを確認。実環境検証に L24〜L26 と初めて GAS を扱う人向けの構築手順（live-verification.md「1.6」）を追加
 - **初回リリース（2026-11-27、D-028）**: v1.3 を v1.3.0 として初回リリースする（限定先行運用）。版を 1.3.0 に変更。工程 A（最終確認）・C（導入手順 installer-guide.md「0.5」、手動アップデート update-rollback.md「2」、障害対応 incident-response.md（DB のファイルの消失の個別対応を含む）、リリースノート release-notes-v1.3.0.md）を実施。給与の手計算シナリオ（live-verification.md「2.5」）をモックで確認（tests/integration/release-scenario.test.ts）
-- **現在の工程: B（最低限の Google 実環境検証）のユーザーの操作待ち**。docs/live-verification.md「0.1 公開前の必須検証」14 項目と L24〜L26。その後 D（ユーザーの最終のマージの承認 → PR #2 を PR #1 のブランチへ → PR #1 を main へ）→ E（ユーザーによる所有権の移譲）→ F（v1.3.0 の GitHub Release）→ G（本番の構築）→ H（限定先行運用）
+- **導入方法の A案（2026-11-27、D-029。ユーザーの正式な承認）**: 開発者が共通ホスト型 Setup を公開し、利用者自身の Google アカウントに自動構築する。保守の B案（D-027）は維持。新しいセッション（ブランチ `claude/determined-ptolemy-xuuec8`。PR #2 のブランチ `beb0c14` を起点に積み重ね）で実装: API の失敗の分類（USER_API_DISABLED 等）と「Google の設定画面を開く」「設定が完了したので再確認」、構築の内容の表示（構築先のアカウント・作成物・保存先・権限・確認事項）、実行中の工程の表示、完了画面の「次に行うこと」、**ブラウザでの権限承認と初期化**（Apps Script API の一覧の HEAD のテスト用 URL /dev を `#shiftly-init=<確認コード>` 付きで開き、Staff は `shiftlyWebInitialize`（操作するアカウント＝実行するアカウント＋確認コードのハッシュ＋未完了のときだけ＋失敗回数の制限）、Admin は `shiftlyAuthorize`。エディタでの実行は代わりの方法として常に表示）、共通 Setup の利用者の分離（Script Properties・Script Cache・Script Lock を使わない。`createGasCrypto`）、配置物 `dist/gas/setup-hosted/`（例外のログなし）。**Google 実環境では未検証**（docs/live-verification.md「0.2」L41〜L49）
+- **現在の工程: B（最低限の Google 実環境検証）のユーザーの操作待ち**。A案により、まず開発者（ユーザー）が共通 Setup を限定公開で配置し（docs/deployment-guide.md「6.1」）、L41〜L49 と「0.1」14 項目・L24〜L26 を行う。docs/live-verification.md「0.1 公開前の必須検証」14 項目と L24〜L26。その後 D（ユーザーの最終のマージの承認 → PR #2 を PR #1 のブランチへ → PR #1 を main へ）→ E（ユーザーによる所有権の移譲）→ F（v1.3.0 の GitHub Release）→ G（本番の構築）→ H（限定先行運用）
 
 ## リポジトリ / ブランチ / PR / CI
 - リポジトリ: https://github.com/chihiro-hashimoto/shiftly（Private）
@@ -18,6 +19,7 @@
 - ブランチ:
   - `claude/inspiring-einstein-73ks5s`: v1.2（PR https://github.com/chihiro-hashimoto/shiftly/pull/1、ドラフト、`b093a80`）
   - `claude/friendly-dijkstra-bt20os`: **v1.3**（`b093a80` から分岐。v1.2 の全コミットを含む）。v1.3 の新規セッションは v1.2 のブランチへ直接 push できない設定のため、別ブランチ・別 PR とした
+  - `claude/determined-ptolemy-xuuec8`: **A案（D-029）**（`claude/friendly-dijkstra-bt20os` の `beb0c14` から分岐。PR #2 のブランチを base にした積み重ねの PR。統合の順は この PR → PR #2 → PR #1 → main）
 - PR の関係: v1.3 の PR は PR #1 のブランチ（`claude/inspiring-einstein-73ks5s`）を base にした「積み重ね」の PR（差分は v1.3 の変更のみ）。統合方法は次のいずれか（ユーザーの判断）
   1. v1.3 の PR を先に PR #1 のブランチへマージ → PR #1 を main へマージ（v1.2＋v1.3 が main に入る）
   2. PR #1 をマージ後、v1.3 の PR の base を main に変更してマージ
@@ -43,6 +45,7 @@
 5. v1.3 で追加した確認待ちの事項: 管理者パスワードの初期設定（Google 所有者が Shiftly-Admin で設定）、既存店舗の時間基準（既定はシフト基準。実績基準に戻す場合は店舗設定）
 
 ## テスト結果（直近の実行）
+- `npm ci` → `npm run verify`（2026-11-27、A案（D-029）の実装の後に実行、exit 0）: lint・typecheck・単体 103・統合 466・セキュリティ 58・E2E 108 件すべて合格（計 735。追加: 単体 2（web-init）・統合 26（hosted-setup: API の失敗の分類・テスト用 URL・確認コード・所有者限定の初期化・匿名と別アカウントの拒否・回数の制限・利用者の分離・共通 Setup の配置物）・E2E 16（構築の内容・API 無効の案内と再確認・ブラウザでの承認の案内・完了画面の次に行うこと・初期化と接続の画面。各 4 画面幅）。既存のテストの期待値は変更していない）。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。**Google 実環境・iPad 実機・WebKit では未検証**
 - `npm ci` → `npm run verify`（2026-11-27、v1.3.0 の版の変更・給与の手計算シナリオの追加の後に実行、exit 0）: lint・typecheck・単体 101・統合 440・セキュリティ 58・E2E 92 件すべて合格（計 691）。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。`npm audit --omit=dev` は 0 件（moderate 8 件は開発時だけの依存）
 - （以前の記録）`npm ci` → `npm run verify`（2026-11-27、D-027 追補の後に実行、exit 0）: lint・typecheck・単体 101・統合 439・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし
 - （以前の記録）`npm ci` → `npm run verify`（2026-11-27、B案の実装・独立した点検 2 回の対応の後に実行、exit 0）: lint・typecheck・単体 101・統合 435・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。npm audit の 8 件（moderate）は既存の依存関係のもの（依存関係は変更していない）
@@ -53,6 +56,7 @@
 - いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
 
 ## 次に実行する作業
+0. A案（D-029）: ユーザーが開発者のアカウントで共通 Setup を限定公開で配置（docs/google-api-setup.md「2」→ docs/deployment-guide.md「6.1」）→ 検証用の利用者アカウント 2 つで L41〜L49。NG（例: HEAD のテスト用 URL が取れない・/dev で初期化が拒否される）は公開を阻害する事項として最小限に修正。代わりの方法（エディタ）は残っているため、構築そのものは止まらない
 1. 工程 B: ユーザーが検証用アカウントで docs/live-verification.md「0.1」の 14 項目と L24〜L26 を実施し、結果を共有する（NG があれば、公開前に直すべき問題（D-028）だけを最小限に修正）。Codex の再監査（25 回目）は実施しない（新たな承認が必要）
 2. ユーザーから実環境検証の記録（docs/live-verification.md の表。L1〜L10・L13〜L16・L18〜L26）を受け取り、technical-verification.md に反映・NG を修正
 3. 工程 D〜F（D-028）: ユーザーの最終のマージの承認 → PR #2 を PR #1 のブランチへマージ → PR #1 を main へマージ → ユーザーが Settings → General → Danger Zone → Transfer ownership で `chihirohashimotoac-coder` へ移譲 → 移譲後の main から v1.3.0 の GitHub Release（配布物 shiftly-gas-bundle.zip・shiftly-preview.zip・SHA-256・リリースノート）
@@ -75,8 +79,16 @@
 - 初回の構築の作成物の状態と失敗の扱いは docs/creation-matrix.md。結果不明は確認・関連付けまで作らない。完了前に作成物の整合性を検証（プロジェクトの重複は自動では確かめられないため、所有者の確認を完了の条件にした。D-027）
 - 新しい操作を追加するときは kind を決め、edit 以外の更新系なら除外の理由を登録する。新しい外部の作成物を追加するときは creation-matrix の状態管理に従う
 
+## A案の要点（引き継ぎ。D-029）
+- 共通 Setup はホスト型（`gas/manifests/setup-hosted.json`: USER_ACCESSING / ANYONE / exceptionLogging NONE）。コードは自己ホスト型と同一（ビルドで `dist/gas/setup-hosted/` にコピー）
+- `scripts.run` は使わない（同じ標準 Cloud プロジェクトの共有が必要・トリガーを作れない）。Staff の初期化はテスト用 URL（/dev。編集者だけ）での `shiftlyWebInitialize`。確認コードは Setup の SecretRegistry.initCode（UserProperties）、Core の bootstrap には `initCodeHash` だけ。以前の Setup で始めた構築は Core の配置の前に発行
+- 画面の分類コード: StepResult.error.code（SetupErrorCode）。USER_API_DISABLED のときだけ設定画面のボタンを出す
+- 重複の確認（D-027 の所有者の確認）は維持。drive.file でプロジェクトを一覧できるかは L43 ④ で確認してから自動化を判断
+- OAuth: 一般公開は審査の後。それまで限定公開（テストユーザー最大 100・承認 7 日）。スコープの分類は Cloud Console で要確認
+- 公式資料（developers.google.com）は、この作業環境のネットワークの制限で原文を取得できず、検索結果の要約で確認した（docs/google-api-setup.md「出典」）
+
 ## 累計 Codex 監査回数
-- **累計 24 回**（承認済みの上限 5 回。6〜24 回目はユーザーの指示で実施。20・21 回目は判定なしで中断。25 回目以降は未承認）
+- **累計 24 回**（承認済みの上限 5 回。6〜24 回目はユーザーの指示で実施。20・21 回目は判定なしで中断。25 回目以降は未承認。A案の実装（2026-11-27）の後も実施していない）
   - 1 回目: 2026-11-24、対象 `50156ae`。開発コンテナに Codex CLI 0.167.0 を一時導入し、ユーザー本人がブラウザでデバイス認証。`codex exec --sandbox read-only`
   - 2 回目: 2026-11-25、対象 `564a04a`（v1.3 実装後）。Codex CLI 0.167.1、ユーザー本人のデバイス認証。指摘 10 件をすべて修正（docs/review-log.md C-2）
   - 3 回目: 2026-11-25、対象 `d132bd6`（C-2 の修正後の再監査）。C-2 の 6 件解消・4 件未解消＋新規 2 件 → 6 件をすべて修正（docs/review-log.md C-3）

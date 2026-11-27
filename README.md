@@ -5,6 +5,8 @@
 > 状態: **v1.3.0 初回リリースの準備中（限定先行運用版。docs/release-notes-v1.3.0.md・D-028）**。Google 実環境・iPad 実機は未検証（公開前の必須検証は docs/live-verification.md「0.1」）。v1.3（1 台の iPad での管理者モード、PIN 任意化、本人の勤怠修正、予定休憩の取得確認、シフト基準の給与計算、早出・残業申請）を実装済み（モック・エミュレーションで検証）。本番利用・実在スタッフの登録・正式な給与支払いへの利用は、検証と並行運用の後に管理者の判断で行ってください。詳細は `docs/implementation-status.md`。
 >
 > **v1.3 のリリース範囲（B案。docs/decisions.md D-027）: 正常時は自動・異常時は手動。** 日常業務・初回の自動構築・安全な再開・自動／手動のバックアップは対象。アプリ内のデータの自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・自動ロールバックは次期以降に延期し、サーバー側でどの経路からも拒否します。データの復元・更新は Google 所有者の保守作業（docs/operations-guide.md「9」）。41 機能の分類は docs/requirements.md
+>
+> **導入方法の A案（docs/decisions.md D-029）**: 開発者が公開する共通の Shiftly Setup の URL を開き、Google の承認画面で許可するだけで、利用者自身の Google アカウントの中に Shiftly を自動構築します（利用者の Google Cloud の作業・コードの貼り付けは不要。Apps Script API のオンだけは Google の仕様で必要）。一般の利用者向けの手順は docs/installer-guide.md「A」、開発者の公開・保守の手順は docs/deployment-guide.md「6」・docs/google-api-setup.md「2」「5」。**共通 Setup は Google 実環境で未検証**（docs/live-verification.md「0.2」）
 
 ## 構成
 
@@ -12,7 +14,7 @@
 |---|---|
 | Shiftly-Staff（Core。v1.2 までの名称は Shiftly-Kiosk） | 店舗 iPad 用画面（スタッフ画面＋右上「管理者ページ」から管理者パスワードで入る管理者モード）＋業務データの唯一の更新経路（GAS Web アプリ、匿名アクセス・Google 所有者として実行） |
 | Shiftly-Admin | Google 所有者の管理画面（PC・スマホ。任意。GAS Web アプリ、本人のみ）。業務の管理・保守作業の案内・管理者パスワードの設定 |
-| Shiftly Setup | 上記 2 つを管理者のアカウントに自動作成・配置・デプロイするインストーラー（初回の構築だけ。v1.3 では更新しない） |
+| Shiftly Setup | 上記 2 つを利用者（Google 所有者）のアカウントに自動作成・配置・デプロイするインストーラー（初回の構築だけ。v1.3 では更新しない）。A案では開発者が共通の Setup を公開する（D-029） |
 
 詳細: `docs/architecture.md`
 
