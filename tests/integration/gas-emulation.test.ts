@@ -548,6 +548,25 @@ describe.skipIf(!built || !existsSync('dist/gas/admin/Code.js'))('R1: GAS のア
     expect(sc.data.issues).toEqual([]);
   });
 
+  it('D-027 追補: 保守作業の終了前に、DB の数式のセルを Sheets API で確かめる（「=」で始まる文字列の値は数式と数えない）。開始のやり直しの関数はない', () => {
+    const { coreEmu, core, api, epoch } = stack();
+    expect((core as unknown as Record<string, unknown>).shiftlyMaintenanceRestart).toBeUndefined();
+    // 「=」で始まる店舗名（RAW で保存した文字列）は数式ではない
+    expect(api({ op: 'settings.update', args: { storeName: '=1+1 店' }, epoch: epoch() }).ok).toBe(true);
+    expect(core.shiftlyMaintenanceBegin().ok).toBe(true);
+    const db = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID');
+    // 手での作業で、店舗設定のセルに数式を入れた（値は同じでも、後で変わり得る）
+    coreEmu.formulas.set(`${db}|store_settings|1|1`, '=UPPER("a")');
+    const r = core.shiftlyMaintenanceFinish();
+    expect(r.ok).toBe(false);
+    expect(r.error.code).toBe('MAINTENANCE_CHECK_FAILED');
+    expect(r.error.message).toContain('store_settings!B2');
+    expect(coreEmu.scriptProps.getProperty('SHIFTLY_MAINTENANCE')).not.toBeNull();
+    // 「値のみ貼り付け」で値に置き換えると終了できる
+    coreEmu.formulas.clear();
+    expect(core.shiftlyMaintenanceFinish().ok).toBe(true);
+  });
+
   it('保守作業中は、日次の定期処理（時間主導トリガー）も業務の更新をしない', () => {
     const { coreEmu, core } = stack();
     expect(core.shiftlyMaintenanceBegin().ok).toBe(true);

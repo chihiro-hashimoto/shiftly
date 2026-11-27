@@ -248,10 +248,8 @@ export interface MaintenanceState {
   startedAt: string;
   /** 開始時のバックアップ（backup_history の ID）。開始の途中で失敗した場合は null */
   backupId: string | null;
-  /** 開始時の DB の内容の記録（Google ドライブの 00_System のファイル）。開始の途中で失敗した場合は null */
+  /** 開始時の DB の内容の記録（Google ドライブの 00_System のファイル）。v1.3 では記録を作ってから保守の記録を保存するため、null の場合は記録の破損として扱う */
   snapshotFileId: string | null;
-  /** 開始のやり直し（記録の喪失・開始の途中の失敗の後）で作った基準か。true の場合、終了時は確定済みの給与をすべて照合の対象にする */
-  baselineUncertain?: boolean;
 }
 export function maintenanceActive(p: Platform): boolean {
   try {
@@ -271,7 +269,6 @@ export function maintenanceState(p: Platform): MaintenanceState | 'broken' | nul
       startedAt: o.startedAt,
       backupId: typeof o.backupId === 'string' ? o.backupId : null,
       snapshotFileId: typeof o.snapshotFileId === 'string' ? o.snapshotFileId : null,
-      ...(o.baselineUncertain === true ? { baselineUncertain: true } : {}),
     };
   } catch {
     return 'broken';

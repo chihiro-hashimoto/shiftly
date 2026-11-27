@@ -150,7 +150,7 @@ function tableHashes(ctx: Ctx): { tables: Snapshot['tables']; issues: string[] }
 function saveState(ctx: Ctx, s: MaintenanceState) {
   ctx.p.secrets.set(MAINTENANCE_KEY, JSON.stringify(s));
   const back = maintenanceState(ctx.p);
-  if (!back || back === 'broken' || back.startedAt !== s.startedAt || back.snapshotFileId !== s.snapshotFileId || back.backupId !== s.backupId || !!back.baselineUncertain !== !!s.baselineUncertain)
+  if (!back || back === 'broken' || back.startedAt !== s.startedAt || back.snapshotFileId !== s.snapshotFileId || back.backupId !== s.backupId)
     throw new Error('保守作業の記録を保存できませんでした');
 }
 
@@ -208,26 +208,29 @@ function fromAscii(b: Bytes): string {
   return s;
 }
 
-function snapshotReadable(ctx: Ctx, fileId: string): boolean {
-  try {
-    readSnapshot(ctx, fileId);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function readSnapshot(ctx: Ctx, fileId: string): Snapshot {
   const bytes = ctx.p.files.readFile(fileId);
-  if (!bytes) throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録（Google ドライブの 00_System の「Shiftly_maintenance_snapshot」）を読み込めないため、業務を再開できません（保守中のままです）。時間をおいて再実行してください。記録を失った場合は shiftlyMaintenanceRestart（開始のやり直し。確定済みの給与はすべて照合の対象になります）を参照してください', 409);
+  // 読み込めない理由（一時的な失敗・ゴミ箱・削除）はここでは区別しない。どの場合も記録を作り直さず、保守中のまま止める
+  if (!bytes)
+    throw new ApiError(
+      'MAINTENANCE_CHECK_FAILED',
+      '保守の開始時の記録（Google ドライブの 00_System の「Shiftly_maintenance_snapshot_…」）を読み込めないため、業務を再開していません（保守中のままです）。一時的な失敗の可能性があるため、時間をおいて再実行してください。ゴミ箱に移した場合は、ゴミ箱から元に戻してから再実行してください。' + RECORD_LOST_GUIDE,
+      409,
+    );
   try {
     const s = JSON.parse(fromAscii(bytes)) as Snapshot;
     if (s.v !== 2 || !s.tables || !s.meta || !Array.isArray(s.issues)) throw new Error('format');
     return s;
   } catch {
-    throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録の内容を読み取れないため、業務を再開できません（保守中のままです）', 409);
+    throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録の内容を読み取れないため、業務を再開していません（保守中のままです）。' + RECORD_LOST_GUIDE, 409);
   }
 }
+
+/** 開始時の記録を失った場合の案内（D-027 追補。今の DB を新しい基準にして開始し直す処理は提供しない） */
+const RECORD_LOST_GUIDE =
+  '記録を失った場合でも、今の DB を新しい基準にして開始し直す処理はありません（安全な状態を確認できないまま再開しないため）。店舗は紙のタイムカードで運用し、開発者に個別の復旧を依頼してください（docs/operations-guide.md「9.2」）';
+const recordLost = () =>
+  new ApiError('MAINTENANCE_RECORD_LOST', '保守作業の記録（Script Properties の SHIFTLY_MAINTENANCE）を読み取れない、または開始時の記録の ID がないため、業務を再開できません（保守中のままです）。' + RECORD_LOST_GUIDE, 409);
 
 const BEGIN_NOTE = '業務の更新（打刻・修正・申請・給与・定期処理を含む）を停止しました。店舗に紙のタイムカードへの切替を連絡してください。作業の後に maintenance.finish（shiftlyMaintenanceFinish）を実行するまで再開しません';
 const beginBackupFailed = () =>
@@ -243,60 +246,52 @@ defineOps([
     allowInMaintenance: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw ?? {});
-      // restart: 開始が途中で止まった・保守の記録や開始時の記録を失った場合の開始のやり直し（独立した点検 #3・#5）。
-      // 今の DB を新しい基準にするため、開始の後の手作業を基準に含めてしまう可能性がある。所有者が「記録のない手作業をしていない」と
-      // 確認した場合だけ行い、終了時は内容の変更の有無にかかわらず、確定済みの給与がある期間をすべて停止して照合する（R2）
-      const restart = a.restart === true;
-      const want = restart ? '保守を開始し直す' : '保守を開始する';
-      if (v.str(a, 'confirmText', { max: 20 }) !== want) throw E.invalid(`確認のため「${want}」と入力してください`);
+      // 開始のやり直し（今の DB を新しい基準にすること）は提供しない（D-027 追補。旧版の restart を指定した要求も拒否する）
+      if (a.restart !== undefined) throw E.invalid('保守作業の開始のやり直し（今の DB を新しい基準にすること）は提供していません');
+      if (v.str(a, 'confirmText', { max: 20 }) !== '保守を開始する') throw E.invalid('確認のため「保守を開始する」と入力してください');
       const cur = maintenanceState(ctx.p);
-      // 開始のやり直しは、開始時の記録が本当に使えない場合だけ（保守の記録の破損・記録の ID がない・記録のファイルを読めない）。
-      // 記録を読める場合は拒否する（手で消した守る記録を新しい基準に取り込んで再開することを防ぐ。独立した点検 2 回目 #1）
-      if (restart && cur && cur !== 'broken' && cur.snapshotFileId && snapshotReadable(ctx, cur.snapshotFileId))
-        throw E.conflict('開始時の記録を読み込めるため、開始のやり直しはできません。shiftlyMaintenanceFinish の案内に従って作業を元に戻し、終了してください');
-      if (!restart && cur) {
-        if (cur !== 'broken' && cur.snapshotFileId && cur.backupId) throw E.conflict(`保守作業はすでに開始しています（開始: ${cur.startedAt}）`);
-        if (cur !== 'broken' && cur.snapshotFileId) {
-          // 開始時の記録はある（バックアップだけが失敗した）: 記録はそのまま使い、バックアップだけをやり直す。
-          // その間に DB を変更していた場合は、バックアップが「開始時」の内容にならないため止める（独立した点検 2 回目 #5）
-          const d0 = compareWithSnapshot(ctx, readSnapshot(ctx, cur.snapshotFileId));
-          if (d0.violations.length || d0.metaIssues.length || d0.changedTables.length)
-            throw new ApiError('MAINTENANCE_CHECK_FAILED', `開始の後に DB が変更されているため、開始時のバックアップを作り直せません（業務の更新は止めたままです）。変更を元に戻してから再実行してください: ${d0.changedTables.slice(0, 5).join(', ')}`, 409);
-          const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
-          ctx.uow.flush();
-          if (b.status !== 'ok') throw beginBackupFailed();
-          saveState(ctx, { ...cur, backupId: b.id });
-          audit(ctx, 'maintenance.begin', 'system', null, '保守作業の開始（バックアップのやり直し）');
-          return { startedAt: cur.startedAt, backupId: b.id, note: BEGIN_NOTE };
-        }
-        throw new ApiError(
-          'MAINTENANCE_RESTART_REQUIRED',
-          '保守作業の開始が途中で止まっているため、開始時の記録がありません（業務の更新は止めたままです）。開始の後に DB を手で変更していない場合だけ、shiftlyMaintenanceRestart で開始し直してください（変更した場合は、先に開始時のバックアップの内容に戻してください）',
-          409,
-        );
+      if (cur === 'broken' || (cur && !cur.snapshotFileId)) throw recordLost();
+      if (cur) {
+        if (cur.backupId) throw E.conflict(`保守作業はすでに開始しています（開始: ${cur.startedAt}）`);
+        // 開始時の記録はある（バックアップだけが失敗した）: 記録はそのまま使い、バックアップだけをやり直す。
+        // その間に DB を変更していた場合は、バックアップが「開始時」の内容にならないため止める（独立した点検 2 回目 #5）
+        const d0 = compareWithSnapshot(ctx, readSnapshot(ctx, cur.snapshotFileId!));
+        if (d0.violations.length || d0.metaIssues.length || d0.changedTables.length)
+          throw new ApiError('MAINTENANCE_CHECK_FAILED', `開始の後に DB が変更されているため、開始時のバックアップを作り直せません（業務の更新は止めたままです）。変更を元に戻してから再実行してください: ${d0.changedTables.slice(0, 5).join(', ')}`, 409);
+        const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
+        ctx.uow.flush();
+        if (b.status !== 'ok') throw beginBackupFailed();
+        saveState(ctx, { ...cur, backupId: b.id });
+        audit(ctx, 'maintenance.begin', 'system', null, '保守作業の開始（バックアップのやり直し）');
+        return { startedAt: cur.startedAt, backupId: b.id, note: BEGIN_NOTE };
       }
-      // 1) 最初に保守の記録を保存する（以後、全員の更新系が止まる。途中で失敗しても保守中のまま＝安全側）
-      const state: MaintenanceState = { startedAt: nowIso(ctx), backupId: null, snapshotFileId: null, ...(restart && cur ? { baselineUncertain: true } : {}) };
-      saveState(ctx, state);
-      // 2) 開始時の DB の全行の内容の記録（終了時の照合の基準）を、バックアップより先に作る（バックアップの失敗のやり直しでも同じ基準を使う）
+      // 1) 開始時の DB の全行の内容の記録（終了時の照合の基準）を先に作り、2) 記録の ID とともに保守の記録を保存する（以後、全員の更新系が止まる）。
+      // この操作は更新系のロックの内側で動くため、1) と 2) の間にアプリの書き込みは入らない。1) で失敗した場合は保守を開始していない
+      // （業務はそのまま。記録の ID のない保守の状態を作らないため、開始時の記録のない保守作業は起きない。D-027 追補）
+      const startedAt = nowIso(ctx);
       const h = tableHashes(ctx);
       const snap: Snapshot = {
         v: 2,
-        takenAt: state.startedAt,
+        takenAt: startedAt,
         tables: h.tables,
         issues: h.issues,
         meta: { envId: metaValue(ctx, 'envId'), initializedAt: metaValue(ctx, 'initializedAt'), payrollRestoreLocks: payrollRestoreLocks(ctx) },
       };
-      const f = ctx.p.files.createFile('00_System', `Shiftly_maintenance_snapshot_${state.startedAt.slice(0, 19).replace(/[:T]/g, '-')}.json`, 'application/json', utf8(JSON.stringify(snap)));
-      const withSnap: MaintenanceState = { ...state, snapshotFileId: f.fileId };
+      let f: { fileId: string };
+      try {
+        f = ctx.p.files.createFile('00_System', `Shiftly_maintenance_snapshot_${startedAt.slice(0, 19).replace(/[:T]/g, '-')}.json`, 'application/json', utf8(JSON.stringify(snap)));
+      } catch {
+        throw new ApiError('MAINTENANCE_BEGIN_FAILED', '開始時の記録（Google ドライブの 00_System）を作れなかったため、保守作業を開始していません（業務はそのままです）。DB を手で変更せず、時間をおいて shiftlyMaintenanceBegin を再実行してください', 409);
+      }
+      const withSnap: MaintenanceState = { startedAt, backupId: null, snapshotFileId: f.fileId };
       saveState(ctx, withSnap);
       // 3) 開始時のバックアップ（Google ドライブの 05_Backup）。失敗したら保守中のまま止める（再実行でバックアップだけをやり直す）
       const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
       ctx.uow.flush();
       if (b.status !== 'ok') throw beginBackupFailed();
       saveState(ctx, { ...withSnap, backupId: b.id });
-      audit(ctx, 'maintenance.begin', 'system', null, restart ? '保守作業の開始のやり直し（業務の更新を停止）' : '保守作業の開始（業務の更新を停止）');
-      return { startedAt: state.startedAt, backupId: b.id, baselineUncertain: !!state.baselineUncertain, note: BEGIN_NOTE };
+      audit(ctx, 'maintenance.begin', 'system', null, '保守作業の開始（業務の更新を停止）');
+      return { startedAt, backupId: b.id, note: BEGIN_NOTE };
     },
   },
   {
@@ -309,14 +304,26 @@ defineOps([
       if (v.str(v.obj(raw ?? {}), 'confirmText', { max: 20 }) !== '保守を終了する') throw E.invalid('確認のため「保守を終了する」と入力してください');
       const st = maintenanceState(ctx.p);
       if (st === null) throw E.conflict('保守作業は開始されていません');
-      if (st === 'broken' || !st.snapshotFileId)
-        throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守作業の開始時の記録がないため、業務を再開できません（保守中のままです）。開始の後に DB を手で変更していない場合だけ、shiftlyMaintenanceRestart で開始し直してください', 409);
+      if (st === 'broken' || !st.snapshotFileId) throw recordLost();
       if (!st.backupId) throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守作業の開始時のバックアップが完了していないため、業務を再開できません。shiftlyMaintenanceBegin をもう一度実行してください（開始時の記録はそのまま使います）', 409);
       // 1) DB の構造
       const check = integrityCheck(ctx);
       const sv = Number(metaValue(ctx, 'schemaVersion') ?? '0');
       if (!check.ok || sv !== SCHEMA_VERSION)
         throw new ApiError('MAINTENANCE_CHECK_FAILED', `DB の整合性の確認で問題が見つかったため、業務を再開していません（保守中のままです）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
+      // 数式のセル: 業務の DB は値だけを保存する（書き込みは RAW）。手での作業で入った数式は、後で値が変わり照合をすり抜けるため、再開しない（D-027 追補）
+      let formulas: string[];
+      try {
+        formulas = ctx.uow.adapter.findFormulas?.() ?? [];
+      } catch {
+        throw new ApiError('MAINTENANCE_CHECK_FAILED', 'DB の数式のセルの確認ができなかったため、業務を再開していません（保守中のままです）。時間をおいて再実行してください', 409);
+      }
+      if (formulas.length)
+        throw new ApiError(
+          'MAINTENANCE_CHECK_FAILED',
+          `DB に数式の入ったセルがあるため、業務を再開していません（保守中のままです）。該当のセルを「値のみ貼り付け」で値に置き換えてから、もう一度実行してください: ${formulas.slice(0, 5).join(', ')}${formulas.length > 5 ? ` ほか ${formulas.length - 5} 件` : ''}`,
+          409,
+        );
       // 2) 開始時の記録との照合（守る表の行の削除・変更、環境の記録の変更があれば再開しない）
       const snap = readSnapshot(ctx, st.snapshotFileId);
       if (snap.takenAt !== st.startedAt) throw new ApiError('MAINTENANCE_CHECK_FAILED', '開始時の記録が、この保守作業のものではありません（業務を再開していません）', 409);
@@ -345,8 +352,7 @@ defineOps([
         /* 現在の記録が壊れている（手で編集された）: 保守の間に停止を追加する経路はないため、開始時の記録と、ここで加える停止を使う */
       }
       let locked = 0;
-      // 開始をやり直した（基準に手作業が含まれ得る）場合は、変更の有無にかかわらず停止して照合する
-      if (diff.changedTables.length || st.baselineUncertain) {
+      if (diff.changedTables.length) {
         const lock: PayrollRestoreLock = { restoredAt: nowIso(ctx), backupId: st.backupId };
         const periods = new Set<string>();
         for (const r of ctx.uow.list<PayrollResult>('payroll_results')) if (r.status === 'confirmed' || r.status === 'issued' || r.status === 'superseded') periods.add(r.periodId);

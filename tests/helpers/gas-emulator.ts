@@ -106,6 +106,8 @@ export class GasEmulator {
     failCreate?: (name: string, appProperties?: Record<string, string>) => boolean;
     updateFail?: (id: string) => boolean;
   } = {};
+  /** 数式の入ったセル（`シートID|シート名|行|列`（0 始まり）→ 数式）。Values.get の valueRenderOption: 'FORMULA' のときだけ数式を返す */
+  formulas = new Map<string, string>();
   /** 検索の 1 ページの最大件数（実際の Drive は要求の pageSize 以下で返す。テストで小さくして複数ページを確かめる） */
   maxPageSize = 100;
 
@@ -189,7 +191,7 @@ export class GasEmulator {
           return {};
         },
         Values: {
-          get(id: string, range: string) {
+          get(id: string, range: string, opts?: { valueRenderOption?: string }) {
             self.apiCalls++;
             const r = self.parseRange(range);
             const sh = self.sheetOf(id, r.sheet);
@@ -199,16 +201,21 @@ export class GasEmulator {
             for (let i = r.r1; i <= end; i++) {
               const row = sh.rows[i] ?? [];
               const sliced = row.slice(r.c1, r.c2 === null ? undefined : r.c2 + 1);
+              if (opts?.valueRenderOption === 'FORMULA')
+                sliced.forEach((_, j) => {
+                  const fm = self.formulas.get(`${id}|${r.sheet}|${i}|${r.c1 + j}`);
+                  if (fm !== undefined) sliced[j] = fm;
+                });
               while (sliced.length && sliced[sliced.length - 1] === '') sliced.pop();
               out.push(sliced);
             }
             while (out.length && out[out.length - 1]!.length === 0) out.pop();
             return out.length ? { values: out } : {};
           },
-          batchGet(id: string, opts: { ranges: string[] }) {
+          batchGet(id: string, opts: { ranges: string[]; valueRenderOption?: string }) {
             self.apiCalls++;
             const valueRanges = opts.ranges.map((range) => {
-              const r = Sheets.Spreadsheets.Values.get(id, range) as { values?: Cell[][] };
+              const r = Sheets.Spreadsheets.Values.get(id, range, opts) as { values?: Cell[][] };
               self.apiCalls--;
               return { range, values: r.values };
             });

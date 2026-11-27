@@ -30,6 +30,11 @@ export interface TableAdapter {
   readMany?(reqs: Array<{ def: TableDef; partition: string | null }>): RawRow[][];
   /** 接続先 DB の切替後にキャッシュ（シート一覧・行番号）を破棄する */
   reset?(): void;
+  /**
+   * 数式の入ったセルの一覧（「シート名!A1」。任意）。業務の DB は値だけを保存する（D-027 追補。保守作業の終了前の確認）。
+   * 実装のないアダプタ（メモリ上の DB）は数式を保持できないため、呼び出し側は空として扱う。確認できない場合は例外を投げる
+   */
+  findFormulas?(): string[];
   /** 変更をまとめて書き込む（id 一致行は上書き、なければ追加） */
   write(changes: Array<{ def: TableDef; partition: string | null; id: string; raw: RawRow }>): void;
 }

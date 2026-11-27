@@ -8,6 +8,7 @@
 - v1.2: 工程 A〜L 完了（F01〜F37 の実装・モック／エミュレーション検証・E2E・独立レビュー R-1・Codex 監査 C-1）
 - **v1.3（2026-11-25）**: 実装・テスト・文書更新を完了（F38〜F41 を追加。docs/requirements.md「v1.3 の変更」）。Codex 監査 C-2（累計 2 回目）は docs/review-log.md を参照
 - **B案（2026-11-27、D-027）**: v1.3 は「正常時は自動・異常時は手動」。アプリ内の自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・自動ロールバックを v1.3 から除外（処理を削除、DEFERRED_OPS で全経路を拒否）。データの復元は Google 所有者の保守作業（maintenance.begin / finish）。C-24 の A1・A3・A4 は機能を修正、A2 は仕様変更で実行経路を除外（docs/review-log.md「C-24 の対応」）。41 機能の分類: 初回 37・一部手動 2（F26・F35）・延期 2（F36・F37）
+- **D-027 追補（2026-11-27）**: 残存リスクの整理。停止中の給与期間はアプリの外の例外的な手動訂正（運用手順「9.1」）、保守の「開始のやり直し」を廃止（記録を失ったら保守中のまま。紙のタイムカードと開発者への個別の依頼。「9.2」）、終了前に数式のセルを確認。実環境検証に L24〜L26 と初めて GAS を扱う人向けの構築手順（live-verification.md「1.6」）を追加
 - 残: Google 実環境・iPad 実機での検証（ユーザーの実機・検証用アカウントが必要。docs/live-verification.md「1.5 v1.3（B案）の検証の進め方」）
 
 ## リポジトリ / ブランチ / PR / CI
@@ -33,14 +34,16 @@
 - 未実装として明示しているもの: 変形労働時間制等、時間単位年休、標準報酬日額方式、出来高払の割増、日割の規定、環境間のデータ移行の自動化
 
 ## 未解決・未確認
-1. Google 実環境での検証: ユーザーが検証用アカウントで実施（手順と記録表: docs/live-verification.md。B案で L11・L12・L17 を対象外とし、L18〜L23（構築の完了の条件・失敗時の停止・記録ファイル・バックアップ・保守作業・手動の復元）を追加）。結果待ち
+1. Google 実環境での検証: ユーザーが検証用アカウントで実施（手順と記録表: docs/live-verification.md。B案で L11・L12・L17 を対象外とし、L18〜L26（構築の完了の条件・失敗時の停止・記録ファイル・バックアップ・保守作業・手動の復元・数式のセル・DB のファイルの消失の個別対応・開始時の記録を読めない場合）を追加。**L24・L25 は本番導入の前に必須**）。結果待ち
+6. 本番導入の前に必要なもの: DB のファイルを失った場合の開発者の個別対応の手順書（L25。v1.3 のアプリの機能ではない。未検証の復旧の能力は保証しない）
 2. iPad 実機（Safari、ホーム画面）での検証: **ユーザーの実機が必要**（管理者モードの終了動作・PIN 入力・休憩確認ダイアログを含む）
 3. （解決）Codex 監査1 #8: v1.3 の休憩仕様で対応（docs/review-log.md、D-017）
 4. 未確定の業務条件（docs/requirements.md「未確定事項」）は管理者が設定画面で登録する
 5. v1.3 で追加した確認待ちの事項: 管理者パスワードの初期設定（Google 所有者が Shiftly-Admin で設定）、既存店舗の時間基準（既定はシフト基準。実績基準に戻す場合は店舗設定）
 
 ## テスト結果（直近の実行）
-- `npm ci` → `npm run verify`（2026-11-27、B案の実装・独立した点検 2 回の対応の後に実行、exit 0）: lint・typecheck・単体 101・統合 435・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。npm audit の 8 件（moderate）は既存の依存関係のもの（依存関係は変更していない）
+- `npm ci` → `npm run verify`（2026-11-27、D-027 追補の後に実行、exit 0）: lint・typecheck・単体 101・統合 439・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし
+- （以前の記録）`npm ci` → `npm run verify`（2026-11-27、B案の実装・独立した点検 2 回の対応の後に実行、exit 0）: lint・typecheck・単体 101・統合 435・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。npm audit の 8 件（moderate）は既存の依存関係のもの（依存関係は変更していない）
 - （以前の記録）`npm ci` → `npm run verify`（2026-11-26、C-23 の構造的な対応・独立した点検 2 回の対応の後に実行、exit 0。対象 9429da3 のコード。権限表・DB 定義は再生成して差分なし。`git diff --check origin/main` 問題なし）: lint・typecheck 合格／単体 101・統合 429・セキュリティ 39・E2E 88 件すべて合格。`npm audit` は既存の依存（minimatch）の中程度 8 件（今回は依存を変更していない）
   - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2〜6 の回帰（codex-audit-2.test.ts・codex-audit-3.test.ts・codex-audit-6.test.ts・codex-audit-8.test.ts・codex-audit-9.test.ts・codex-audit-10.test.ts・codex-audit-17.test.ts・installer.test.ts・restore-policy.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
   - E2E は店舗 iPad（スタッフ・管理者モード・PIN 未設定・休憩確認）・Google 所有者の管理画面の全ページ・Setup（iPad 横・縦／PC 1440／スマホ 390、Chromium）
@@ -49,7 +52,7 @@
 
 ## 次に実行する作業
 1. ユーザーが B案の結果（docs/review-log.md「C-24 の対応」、PR #2）を確認する。Codex の再監査（25 回目）は未承認（実施する場合はユーザーの承認が必要）
-2. ユーザーから実環境検証の記録（docs/live-verification.md の表。L1〜L10・L13〜L16・L18〜L23）を受け取り、technical-verification.md に反映・NG を修正
+2. ユーザーから実環境検証の記録（docs/live-verification.md の表。L1〜L10・L13〜L16・L18〜L26）を受け取り、technical-verification.md に反映・NG を修正
 3. PR の統合方法をユーザーが決定（上記）
 4. 次期以降の候補（約束しない）: アプリ内の復元（稼働中の DB の切替）・Setup による更新・ロールバック・更新に伴う DB の移行（docs/update-rollback.md「2」）
 
@@ -60,7 +63,7 @@
 
 ## D-027 の要点（引き継ぎ）
 - v1.3 で提供しない操作は src/backend/api.ts の DEFERRED_OPS（登録すると読み込み時にエラー）。Setup の鍵は読み取りだけ。setupApi の更新・ロールバックは拒否
-- 保守作業: src/backend/handlers/maintenance.ts（MAINTENANCE_TABLES で全表の扱いを型で必須）。保守の記録は Script Properties の SHIFTLY_MAINTENANCE（ある間は全員の更新系を停止）。エディタ関数 shiftlyMaintenanceBegin / Finish / Status
+- 保守作業: src/backend/handlers/maintenance.ts（MAINTENANCE_TABLES で全表の扱いを型で必須）。保守の記録は Script Properties の SHIFTLY_MAINTENANCE（ある間は全員の更新系を停止）。エディタ関数 shiftlyMaintenanceBegin / Finish / Status（開始のやり直しの関数はない。D-027 追補）。終了前に数式のセルを確認（TableAdapter.findFormulas。Sheets では数式と値の読み比べ）
 - 画面の世代は乱数で、発行は初めての構築と保守作業の終了だけ（issueEpoch）。既存の環境では自動で作り直さない
 - Setup の記録ファイルは保存済み ID で直接照会（src/gas/setup.ts）。Drive の検索は listAllDriveFiles（全ページ）。完了には registryReport と所有者のプロジェクトの確認が必要
 

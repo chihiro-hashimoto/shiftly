@@ -97,6 +97,32 @@ export class SheetsAdapter implements TableAdapter {
     return reqs.map((r) => out.get(sheetNameFor(r.def, r.partition)) ?? []);
   }
 
+  /**
+   * 数式の入ったセル（D-027 追補。保守作業の終了前の確認）。全シートを「数式」と「値」の 2 通りで読み（values.batchGet を 2 回）、
+   * 数式の表示が「=」で始まり、値と異なるセルを数式とみなす。書き込みは RAW のため、「=」で始まる文字列の値は数式として数えない
+   * （値と同じ文字列で返る）。計算結果が数式の文字列と同じになる数式は見分けられない。【実環境未検証】応答の大きさ・所要時間
+   */
+  findFormulas(): string[] {
+    const ss = Sheets.Spreadsheets.get(this.spreadsheetId(), { fields: 'sheets.properties(title,gridProperties.columnCount)' });
+    const sheets = ((ss.sheets ?? []) as any[]).map((x) => ({ title: x.properties.title as string, cols: Number(x.properties?.gridProperties?.columnCount) || 26 }));
+    if (!sheets.length) return [];
+    const ranges = sheets.map((x) => `${q(x.title)}!A1:${colLetter(x.cols)}`);
+    const f = Sheets.Spreadsheets.Values.batchGet(this.spreadsheetId(), { ranges, valueRenderOption: 'FORMULA' });
+    const u = Sheets.Spreadsheets.Values.batchGet(this.spreadsheetId(), { ranges, valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'FORMATTED_STRING' });
+    if ((f.valueRanges ?? []).length !== sheets.length || (u.valueRanges ?? []).length !== sheets.length) throw new Error('数式の確認の応答が不完全です');
+    const out: string[] = [];
+    sheets.forEach((x, i) => {
+      const fr = (f.valueRanges[i]?.values ?? []) as unknown[][];
+      const ur = (u.valueRanges[i]?.values ?? []) as unknown[][];
+      fr.forEach((row, r) =>
+        row.forEach((cell, c) => {
+          if (typeof cell === 'string' && cell.startsWith('=') && ur[r]?.[c] !== cell) out.push(`${x.title}!${colLetter(c + 1)}${r + 1}`);
+        }),
+      );
+    });
+    return out;
+  }
+
   reset() {
     this.titles = null;
     this.colCounts.clear();

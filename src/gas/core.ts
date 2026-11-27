@@ -195,7 +195,8 @@ export function shiftlyResetSetupPairing() {
 /**
  * Google 所有者の保守作業（D-027 B案。docs/operations-guide.md「データの復元（Google 所有者の保守作業）」）。
  * v1.3 ではアプリ内の自動復元・自動更新を提供しない。データを手で直す前に shiftlyMaintenanceBegin を実行して業務の更新を止め、
- * 作業の後に shiftlyMaintenanceFinish で開始時の記録と照合してから再開する（問題があれば再開しない）
+ * 作業の後に shiftlyMaintenanceFinish で開始時の記録と照合してから再開する（問題があれば再開しない）。
+ * 開始時の記録を失った場合に今の DB を新しい基準にして開始し直す関数は提供しない（D-027 追補。紙のタイムカードでの運用と開発者への個別の復旧の依頼）
  */
 export function shiftlyMaintenanceBegin() {
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
@@ -204,14 +205,6 @@ export function shiftlyMaintenanceBegin() {
 export function shiftlyMaintenanceFinish() {
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
   return report('保守作業の終了', handleRequest(be(), { op: 'maintenance.finish', args: { confirmText: '保守を終了する' } }, 'owner'));
-}
-/**
- * 保守作業の開始のやり直し（開始が途中で止まった・保守の記録や開始時の記録を失った場合だけ）。今の DB を新しい基準にするため、
- * 開始の後に DB を手で変更していない場合だけ実行する（変更した場合は先に開始時のバックアップの内容に戻す）。終了時は確定済みの給与をすべて照合の対象にする
- */
-export function shiftlyMaintenanceRestart() {
-  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
-  return report('保守作業の開始のやり直し', handleRequest(be(), { op: 'maintenance.begin', args: { confirmText: '保守を開始し直す', restart: true } }, 'owner'));
 }
 export function shiftlyMaintenanceStatus() {
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
