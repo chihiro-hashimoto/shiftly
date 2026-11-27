@@ -56,6 +56,7 @@
 - いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
 
 ## 次に実行する作業
+- GitHub Pages（D-030。2026-11-27 追加）: 案内ページ＋デモを `.github/workflows/pages.yml` で公開する準備まで完了。**ユーザーの操作待ち**: Settings → Pages の Source を「GitHub Actions」、Environments → github-pages に作業ブランチを追加 → ワークフローの再実行（docs/deployment-guide.md「7.1」）。リポジトリが public であることを確認済み（仕様の Private との関係はユーザーの確認待ち）。共通 Setup の URL の発行後は site/config.json に設定。`npm run verify`（Pages の追加の後、exit 0）: 単体 103・統合 470（pages 4 件を追加）・セキュリティ 58・E2E 108
 0. A案（D-029）: ユーザーが開発者のアカウントで共通 Setup を限定公開で配置（docs/google-api-setup.md「2」→ docs/deployment-guide.md「6.1」）→ 検証用の利用者アカウント 2 つで L41〜L49。NG（例: HEAD のテスト用 URL が取れない・/dev で初期化が拒否される）は公開を阻害する事項として最小限に修正。代わりの方法（エディタ）は残っているため、構築そのものは止まらない
 1. 工程 B: ユーザーが検証用アカウントで docs/live-verification.md「0.1」の 14 項目と L24〜L26 を実施し、結果を共有する（NG があれば、公開前に直すべき問題（D-028）だけを最小限に修正）。Codex の再監査（25 回目）は実施しない（新たな承認が必要）
 2. ユーザーから実環境検証の記録（docs/live-verification.md の表。L1〜L10・L13〜L16・L18〜L26）を受け取り、technical-verification.md に反映・NG を修正

@@ -1,0 +1,47 @@
+# GitHub Pages: 案内ページ＋架空のデータのデモ（docs/decisions.md D-030）
+# 公開するのは dist/pages（site/ と dist/preview）だけ。業務データ・GAS の配布物・秘密情報は含めない
+# 事前に Settings → Pages → Source を「GitHub Actions」にする必要がある（docs/deployment-guide.md「7」）
+name: Pages
+
+on:
+  push:
+    branches: [main, claude/determined-ptolemy-xuuec8]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:preview
+      - run: npm run build:pages
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

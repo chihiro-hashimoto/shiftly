@@ -1,0 +1,5 @@
+{
+  "_comment": "GitHub Pages の案内ページの設定（scripts/build-pages.mjs が index.html に埋め込む）。setupUrl は共通 Shiftly Setup の URL（https://script.google.com/macros/s/…/exec）。未発行の間は空文字",
+  "setupUrl": "",
+  "setupStatus": "限定公開の検証の準備中です（共通 Setup の URL は未発行）"
+}

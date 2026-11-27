@@ -216,3 +216,12 @@
 - **維持するもの**: 重複作成の防止・結果不明時の停止（D-025・D-026）、構築の完了の条件（Setup の記録ファイルの点検と、プロジェクトの重複の所有者の確認。D-027）。プロジェクトの重複の確認は、Setup の権限（drive.file）でプロジェクトを一覧できるかが未検証のため、自動化していない（所有者が https://script.google.com/home で確認してチェック。L18）。自動化は実環境の結果（L43 ④）の後に判断する
 - **OAuth の審査**: 共通 Setup は開発者の標準 Cloud プロジェクトの OAuth クライアントで、`script.projects`・`script.deployments`・`script.external_request`・`drive.file`・`userinfo.email` を要求する。センシティブなスコープを含むため、一般公開には Google の OAuth 審査（確認）が必要と判断している（各スコープの分類は Cloud Console の表示で開発者が確認する。**要確認**）。審査が完了するまでは**限定公開**（公開ステータス「テスト」＋テストユーザー最大 100 人。承認は 7 日で失効）とし、一般公開しない。未確認アプリの警告を無条件に無視させない（案内は、提供者が開発者本人であることを確認できる限定公開の利用者に限る）
 - 未検証（Google 実環境での確認が必要。docs/live-verification.md L41〜L49）: HEAD のテスト用 URL の取得、`/dev` での承認画面の表示と初期化、`/dev` での getActiveUser、Web アプリの文脈でのトリガーの登録、2 つの Google アカウントでの分離、承認の失効と再承認、未確認アプリの警告の表示。**実環境で確認するまで、エディタ操作の省略・利用者間の分離を検証済みとして扱わない**
+
+## D-030 GitHub Pages での案内ページとデモの公開（2026-11-27、ユーザーの指示「GitHub Pages で公開するところまで進めてください」）
+
+- 前提の変化: D-002・D-011 で Pages を採用しなかった理由は「非公開リポジトリでは無料で使えない」だった。2026-11-27 07:46 の時点で、リポジトリ `chihiro-hashimoto/shiftly` が**公開（public）**になっていることを確認した（作業セッションでは公開設定を変更していない）。仕様（Private・一般公開の禁止）との関係は**ユーザーの明示の確認待ち**（公開の設定はユーザーの判断。Private に戻す場合、無料プランでは Pages を使えない）
+- 決定: Pages には静的なページだけを公開する。①案内ページ（site/index.html。製品の説明・はじめ方・データの扱い・現在の状態。共通 Setup の URL は site/config.json に設定したときだけリンクにする。Apps Script の Web アプリの URL 以外は受け付けない）②架空のデータだけで動くデモ（dist/preview の複製。Google に接続しない）。GAS の配布物・業務データ・秘密情報は公開物に含めない（scripts/build-pages.mjs の点検と tests/integration/pages.test.ts）
+- 共通 Setup 本体は GAS の Web アプリで、Pages では動かさない（D-029）。業務データは引き続き利用者の Google ドライブだけ
+- 反映: .github/workflows/pages.yml（main と作業ブランチへの push、手動実行）。Settings → Pages の Source を「GitHub Actions」にする操作と、作業ブランチからのデプロイの許可（環境 github-pages の保護規則）は、リポジトリの管理者（ユーザー）が行う。main への統合の後は作業ブランチの指定を外す
+- 所有権の移譲（D-028 工程 E）の後は、Pages の URL が移譲先のアカウントの github.io に変わる（移譲先で Pages を有効にし直す）
+- プライバシーポリシー・利用規約（OAuth の審査に必要）は、運営者の名前・連絡先などの提供を受けてから作る（未作成）

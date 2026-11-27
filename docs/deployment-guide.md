@@ -41,7 +41,7 @@ Core と Admin は Setup が自動配置するため、手動で配置するの�
 
 - ローカル: `npm run build:preview && npm run preview` → http://127.0.0.1:4173/
 - CI: GitHub Actions の Artifacts「shiftly-preview」（リポジトリにアクセスできる人のみ）をダウンロードし、`npx serve` 等でローカル表示
-- GitHub Pages 等での公開は行わない（非公開リポジトリ・データ保護のため）
+- GitHub Pages: 案内ページと架空のデータのデモだけを公開する（「7」。D-030。2026-11-27 にリポジトリが公開の状態であることを確認した後の変更）
 
 ## 5. 本番デプロイ・main へのマージ
 
@@ -74,3 +74,21 @@ npm run build && npm run build:gas
 
 ### 6.3 一般公開
 - OAuth の審査（docs/google-api-setup.md「5」）の完了・ユーザーの承認・L41〜L49 の確認の後に、OAuth の公開ステータスを「本番環境」に切り替える。それまでは限定公開（テストユーザーだけ）
+
+## 7. GitHub Pages（案内ページ＋デモ。D-030）
+
+公開物は `dist/pages/`（`npm run build:preview && npm run build:pages`）: `index.html`（site/index.html）と `demo/`（架空のデータのプレビュー）。GAS の配布物・業務データ・秘密情報は含めない。
+
+### 7.1 最初の公開（リポジトリの管理者が行う）
+1. GitHub のリポジトリ → **Settings → Pages** →「Build and deployment」の **Source を「GitHub Actions」** にする
+2. main への統合の前に作業ブランチから公開する場合: **Settings → Environments → github-pages** →「Deployment branches and tags」に `claude/determined-ptolemy-xuuec8` を追加する（既定では main だけが許可される）
+3. **Actions → Pages** のワークフローを再実行する（または作業ブランチに push する）→ 完了すると Settings → Pages に公開の URL（`https://<アカウント>.github.io/shiftly/`）が表示される
+4. main への統合の後は、2 で追加した作業ブランチを外す
+
+### 7.2 共通 Setup の URL の掲載
+- `site/config.json` の `setupUrl` に共通 Setup の URL（`https://script.google.com/macros/s/…/exec`。docs/deployment-guide.md「6.1」の 6）を入れて push する。限定公開の間は、案内ページに「限定公開中」と表示される
+- 一般公開（OAuth の審査の後）までは、テストユーザー以外には使えない
+
+### 7.3 注意
+- Pages は誰でも閲覧できる。業務データ・実在のスタッフの情報・秘密情報を `site/` に置かない
+- 所有権の移譲の後は、移譲先のリポジトリで 7.1 をやり直す（URL が変わる）
