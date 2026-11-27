@@ -7,7 +7,7 @@
 | 開発・プレビュー | ブラウザ内のモック Core（`npm run dev` / `npm run preview`） | 架空のサンプルのみ（メモリ上） |
 | 自動テスト | Vitest（メモリ環境）、GAS エミュレータ、Playwright（プレビュー） | テスト用の架空データ |
 | 検証用 Google 環境 | 本番と別の Google アカウントで Setup を実行 | 架空データのみ。**ユーザー承認後に構築** |
-| 本番 | 店長の Google アカウント | 実データ。**ユーザー承認後** |
+| 本番 | 管理者の Google アカウント | 実データ。**ユーザー承認後** |
 
 実データ・認証情報（clasp のログイン情報、OAuth トークン等）を GitHub や開発環境に保存しないこと（.gitignore 済み）。
 
@@ -27,8 +27,8 @@ npm run verify
 
 | パス | 内容 |
 |---|---|
-| `dist/gas-html/` | GAS 用の単一 HTML（kiosk / admin / setup） |
-| `dist/gas/core/` | Shiftly-Kiosk（Core）: appsscript.json, Code.js, kiosk.html |
+| `dist/gas-html/` | GAS 用の単一 HTML（staff / admin / setup） |
+| `dist/gas/core/` | Shiftly-Staff（Core）: appsscript.json, Code.js, staff.html |
 | `dist/gas/admin/` | Shiftly-Admin: appsscript.json, Code.js, admin.html |
 | `dist/gas/setup/` | Shiftly Setup: appsscript.json（自己ホスト）, Code.js, Release.js（Core/Admin 同梱）, setup.html, appsscript.hosted.json.txt |
 | `dist/gas/release.json` | 配布物の SHA-256 一覧 |

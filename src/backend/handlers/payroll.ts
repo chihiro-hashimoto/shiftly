@@ -3,10 +3,10 @@
  * F14 給与計算 / F18 給与締め・確定・訂正 / F19 給与明細PDF発行・本人閲覧
  */
 import { defineOps } from '../api';
-import { audit, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
+import { actorId, audit, isOwner, nowIso, payrollRestoreLocks, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
 import { ApiError, E } from '../errors';
 import * as v from '../validate';
-import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PaySlip } from '../../shared/types';
+import type { Employee, PayrollPeriod, PayrollResult, PayrollStatus, PayrollTotals, PaySlip } from '../../shared/types';
 import { issueKey, unacknowledged, type PayrollIssue, type PayrollOutput, type PayrollInput } from '../../shared/payroll';
 import { employeesInPeriod, getOrCreatePeriod, latestResult, overlappingPeriod, periodClosedAt, periodConfig, runPayroll } from '../services';
 import { periodForDate } from '../../shared/period';
@@ -49,11 +49,121 @@ function updatePeriodStatus(ctx: Ctx, p: PayrollPeriod) {
   if (st !== p.status) ctx.uow.update('payroll_periods', { ...p, status: st });
 }
 
+/** 給与の計算結果（totals）の項目名（比較の結果の表示用） */
+const TOTAL_LABELS: Record<string, string> = {
+  workDays: '出勤日数',
+  workMinutes: '労働時間',
+  overtimeMinutes: '時間外労働の時間',
+  over60Minutes: '月60時間を超える時間外労働',
+  nightMinutes: '深夜労働の時間',
+  holidayMinutes: '休日労働の時間',
+  basePay: '基本給',
+  extraHoursBasePay: '所定時間外の通常賃金',
+  overtimePremium: '時間外の割増',
+  over60Premium: '月60時間超の割増',
+  nightPremium: '深夜の割増',
+  holidayPremium: '休日の割増',
+  fixedOvertimePay: '固定残業代',
+  fixedOvertimeExcess: '固定残業代の超過分',
+  paidLeavePay: '有給の賃金',
+  paidLeaveDays: '有給の日数',
+  allowances: '手当',
+  transport: '交通費',
+  absenceDeduction: '欠勤・遅刻早退の控除',
+  grossPay: '総支給額',
+  deductions: '控除の内訳',
+  deductionTotal: '控除合計',
+  netPay: '差引支給額',
+};
+
+/** 項目の順序に左右されない比較用の文字列（オブジェクトのキーを並べ替える。配列の順序は計算結果の順序として比較する） */
+function canonical(x: unknown): string {
+  if (Array.isArray(x)) return `[${x.map(canonical).join(',')}]`;
+  if (x && typeof x === 'object')
+    return `{${Object.keys(x as Record<string, unknown>)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical((x as Record<string, unknown>)[k])}`)
+      .join(',')}}`;
+  return JSON.stringify(x ?? null);
+}
+
+/** 二つの計算結果（totals）で異なる項目（すべての項目を比べる。項目を個別に選ばない。Codex 監査19 #1） */
+export function differingTotals(confirmed: PayrollTotals, current: PayrollTotals): string[] {
+  const a = confirmed as unknown as Record<string, unknown>;
+  const b = current as unknown as Record<string, unknown>;
+  const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])];
+  return keys.filter((k) => canonical(a[k]) !== canonical(b[k])).map((k) => TOTAL_LABELS[k] ?? k);
+}
+
+/**
+ * 復元で停止中の期間について、確定済みの給与（最新の確定・発行済みのリビジョン）と、現在の給与条件で計算し直した結果を比べる。
+ * 比べるのは計算結果の全項目（日数・時間・支給の各項目・手当・控除の内訳・差引支給額）と、確定を止める問題の有無
+ * （Codex 監査17 #1・監査18 #1・監査19 #1。項目を個別に選んで比べると、選ばなかった項目の違いを見落とすため）
+ */
+function restoreLockReview(ctx: Ctx, p: PayrollPeriod) {
+  const latest = new Map<string, PayrollResult>();
+  for (const r of ctx.uow.list<PayrollResult>('payroll_results').filter((x) => x.periodId === p.id && (x.status === 'confirmed' || x.status === 'issued'))) {
+    const cur = latest.get(r.employeeId);
+    if (!cur || r.revision > cur.revision) latest.set(r.employeeId, r);
+  }
+  const rows: Array<{
+    employeeId: string;
+    displayName: string;
+    payType: Employee['payType'];
+    revision: number;
+    confirmedGross: number;
+    currentGross: number | null;
+    confirmedNet: number;
+    currentNet: number | null;
+    differingItems: string[];
+    differs: boolean;
+  }> = [];
+  for (const r of latest.values()) {
+    const e = ctx.uow.get<Employee>('employees', r.employeeId);
+    if (!e) continue;
+    let out: PayrollOutput | null;
+    try {
+      out = runPayroll(ctx, e, p).output;
+    } catch {
+      out = null; // 計算できない（条件の不足など）場合も「差あり」として扱う
+    }
+    const items = out ? differingTotals(r.totals, out.totals) : ['計算できない'];
+    if (out && !out.canConfirm) items.push('確定を止める問題がある');
+    rows.push({
+      employeeId: e.id,
+      displayName: e.displayName,
+      payType: e.payType,
+      revision: r.revision,
+      confirmedGross: r.totals.grossPay,
+      currentGross: out ? out.totals.grossPay : null,
+      confirmedNet: r.totals.netPay,
+      currentNet: out ? out.totals.netPay : null,
+      differingItems: items,
+      differs: items.length > 0,
+    });
+  }
+  // 確定済みの結果があるのにスタッフが見つからない場合も、照合できないため「差あり」とする
+  const missing = [...latest.values()].filter((r) => !ctx.uow.get<Employee>('employees', r.employeeId)).length;
+  return { hasMonthly: rows.some((x) => x.payType === 'monthly'), rows, differences: rows.filter((x) => x.differs).length + missing };
+}
+
+/** 復元で引き継いだ確定済みの給与がある期間は、給与条件の確認（解除）まで確定・訂正・明細の発行をしない（Codex 監査9 #1） */
+function assertNoRestoreLock(ctx: Ctx, p: PayrollPeriod) {
+  const l = payrollRestoreLocks(ctx)[p.id];
+  if (l)
+    throw new ApiError(
+      'PAYROLL_BLOCKED',
+      `${p.periodKey} は、Google 所有者の保守作業（データの復元など。${l.restoredAt.slice(0, 16).replace('T', ' ')} 終了）の前に給与を確定した期間です。保守作業の後の給与条件・勤怠（時給・手当・控除など）が確定時と異なる可能性があるため、条件を確認して「復元後の確認を完了」するまで、確定・訂正・明細の発行はできません`,
+      409,
+    );
+}
+
 function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], reason: string, isCorrection: boolean): PayrollResult {
   const prev = latestResult(ctx, p.id, e.id);
   const isConfirmed = prev && (prev.status === 'confirmed' || prev.status === 'issued');
   if (isConfirmed && !isCorrection) throw E.conflict(`${e.displayName}さんの給与はすでに確定しています（訂正を使用してください）`);
   if (!isConfirmed && isCorrection) throw E.invalid('確定済みの給与がないため訂正できません');
+  assertNoRestoreLock(ctx, p);
   if (ctx.now < periodClosedAt(ctx, p)) {
     throw new ApiError('PAYROLL_BLOCKED', `${p.periodKey} の給与期間（〜${p.to}）がまだ終了していないため確定できません（締め日の翌日の営業日切替時刻以降に確定できます）`, 409);
   }
@@ -81,7 +191,7 @@ function confirmOne(ctx: Ctx, p: PayrollPeriod, e: Employee, acks: string[], rea
       status: 'confirmed',
       computedAt: nowIso(ctx),
       confirmedAt: nowIso(ctx),
-      confirmedBy: isOwner(ctx) ? 'owner' : staff(ctx).employeeId,
+      confirmedBy: actorId(ctx),
       calcVersion: output.calcVersion,
       totals: output.totals,
       snapshot: snapshotOf(input, output),
@@ -111,6 +221,7 @@ function payslipData(ctx: Ctx, slip: PaySlip): PayslipData {
 defineOps([
   {
     name: 'payroll.periods',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all', 'payroll_confirm', 'pay_conditions_edit', 'payslip_view_others', 'export_payroll'],
     sensitive: true,
@@ -122,11 +233,19 @@ defineOps([
       } catch {
         suggested = null;
       }
-      return { periods: ctx.uow.list<PayrollPeriod>('payroll_periods').sort((a, b) => (a.periodKey < b.periodKey ? 1 : -1)), suggestedPeriodKey: suggested };
+      const locks = payrollRestoreLocks(ctx);
+      return {
+        periods: ctx.uow
+          .list<PayrollPeriod>('payroll_periods')
+          .sort((a, b) => (a.periodKey < b.periodKey ? 1 : -1))
+          .map((p) => ({ ...p, restoreLock: locks[p.id] ?? null })),
+        suggestedPeriodKey: suggested,
+      };
     },
   },
   {
     name: 'payroll.openPeriod',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm', 'pay_conditions_edit'],
     sensitive: true,
@@ -138,6 +257,7 @@ defineOps([
   },
   {
     name: 'payroll.compute',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all', 'payroll_confirm'],
     sensitive: true,
@@ -174,6 +294,7 @@ defineOps([
   },
   {
     name: 'payroll.submitReview',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm'],
     sensitive: true,
@@ -188,7 +309,9 @@ defineOps([
   },
   {
     name: 'payroll.confirm',
+    kind: 'edit',
     auth: 'staff_or_owner',
+    reauth: true,
     perms: ['payroll_confirm'],
     sensitive: true,
     mutating: true,
@@ -207,8 +330,68 @@ defineOps([
     },
   },
   {
-    name: 'payroll.correct',
+    // 復元後の確認のための比較（確定済みの総支給額と、現在の条件で計算し直した額。Codex 監査17 #1）
+    name: 'payroll.restoreLockReview',
+    kind: 'read',
     auth: 'staff_or_owner',
+    perms: ['payroll_confirm'],
+    sensitive: true,
+    mutating: false,
+    handler: (ctx, raw) => {
+      const p = period(ctx, v.id(v.obj(raw), 'periodId'));
+      if (!payrollRestoreLocks(ctx)[p.id]) throw E.conflict('この期間には復元後の確認の対象がありません');
+      return restoreLockReview(ctx, p);
+    },
+  },
+  {
+    // 復元後の確認の完了（Codex 監査9 #1）。給与条件が確定時と一致する、または訂正の必要がないことを管理者が確認した後に解除する
+    name: 'payroll.releaseRestoreLock',
+    kind: 'edit',
+    auth: 'staff_or_owner',
+    reauth: true,
+    perms: ['payroll_confirm'],
+    sensitive: true,
+    mutating: true,
+    handler: (ctx, raw) => {
+      const a = v.obj(raw);
+      const p = period(ctx, v.id(a, 'periodId'));
+      // 確認項目は定型（自由記述は受け付けない。氏名・個別の時給などを監査ログに残さない。Codex 監査10 回帰 2）
+      const checks = { wageRules: v.bool(a, 'checkedWageRules'), allowances: v.bool(a, 'checkedAllowances'), deductions: v.bool(a, 'checkedDeductions') };
+      if (!checks.wageRules || !checks.allowances || !checks.deductions) throw E.invalid('時給ルール・手当（通勤手当を含む）・控除のすべてについて、確定時と一致することを確認してください');
+      if (v.str(a, 'confirmText', { max: 20 }) !== '確認しました') throw E.invalid('確認のため「確認しました」と入力してください');
+      const locks = payrollRestoreLocks(ctx);
+      const l = locks[p.id];
+      if (!l) throw E.conflict('この期間には復元後の確認の対象がありません');
+      const review = restoreLockReview(ctx, p);
+      // 月給制のスタッフの確定済みの給与がある期間は、月給設定（固定残業代・所定労働時間を含む）の確認も必須（Codex 監査17 #1）
+      if (review.hasMonthly && !v.bool(a, 'checkedSalaryRules'))
+        throw E.invalid('月給制のスタッフがいるため、月給設定（基本給・固定残業代・所定労働時間を含む）が確定時と一致することも確認してください');
+      // 解除できるのは、この場で計算し直した総支給額が、確定済みの額とすべてのスタッフで一致する場合だけ（Codex 監査17 #1・監査18 #1）。
+      // 差がある場合は、給与条件を確定時に合わせてから解除し、必要な変更はその後の通常の訂正で行う（画面で見た比較の古さに左右されない）
+      if (review.differences > 0)
+        throw new ApiError(
+          'RESTORE_DIFFERENCES',
+          `確定済みの給与と、現在の給与条件で計算し直した結果（支給・控除・差引支給額などの全項目）が異なるスタッフが ${review.differences} 名います。差がある間は解除できません。給与条件を確定時に合わせてから「復元後の確認を完了」し、変更が必要な場合はその後に通常の訂正を行ってください`,
+          409,
+        );
+      delete locks[p.id];
+      setPayrollRestoreLocks(ctx, locks);
+      // 監査ログには定型の確認項目と人数だけを記録する（氏名・金額は記録しない）
+      audit(
+        ctx,
+        'payroll.releaseRestoreLock',
+        'payroll_period',
+        p.id,
+        `復元後の確認を完了 期間=${p.periodKey} 復元=${l.restoredAt} バックアップ=${l.backupId} 確認項目=時給ルール・手当・控除${review.hasMonthly ? '・月給設定' : ''}（確定時と一致を確認） 再計算との照合=差額なし（${review.rows.length}名）`,
+      );
+      return { periodId: p.id, released: true };
+    },
+  },
+  {
+    name: 'payroll.correct',
+    kind: 'edit',
+    auth: 'staff_or_owner',
+    reauth: true,
     perms: ['payroll_confirm'],
     sensitive: true,
     mutating: true,
@@ -227,6 +410,7 @@ defineOps([
   },
   {
     name: 'payroll.results',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all', 'payroll_confirm'],
     sensitive: true,
@@ -243,6 +427,7 @@ defineOps([
   },
   {
     name: 'payroll.resultDetail',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payroll_view_all'],
     sensitive: true,
@@ -255,6 +440,7 @@ defineOps([
   },
   {
     name: 'payroll.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['payroll_view_self'],
     mutating: false,
@@ -284,12 +470,14 @@ defineOps([
   // ------------------------------------------------------------ 明細
   {
     name: 'payslips.issue',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['payroll_confirm'],
     sensitive: true,
     mutating: true,
     handler: (ctx, raw) => {
       const p = period(ctx, v.id(v.obj(raw), 'periodId'));
+      assertNoRestoreLock(ctx, p);
       let issued = 0;
       const failedPdf: string[] = [];
       for (const r of ctx.uow.list<PayrollResult>('payroll_results').filter((x) => x.periodId === p.id && x.status === 'confirmed')) {
@@ -310,6 +498,7 @@ defineOps([
   },
   {
     name: 'payslips.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payslip_view_others'],
     sensitive: true,
@@ -322,6 +511,7 @@ defineOps([
   },
   {
     name: 'payslips.mine',
+    kind: 'read',
     auth: 'session',
     perms: ['payslip_view_self'],
     mutating: false,
@@ -337,6 +527,7 @@ defineOps([
   },
   {
     name: 'payslips.view',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['payslip_view_self', 'payslip_view_others'],
     mutating: false,
@@ -359,10 +550,11 @@ defineOps([
   },
   {
     name: 'payslips.pdf',
+    kind: 'read',
     auth: 'owner',
     mutating: false,
     handler: (ctx, raw) => {
-      // 店長端末からの印刷・ダウンロード用（共用 iPad からは呼べない）
+      // 管理者端末からの印刷・ダウンロード用（共用 iPad からは呼べない）
       const slip = ctx.uow.get<PaySlip>('pay_slips', v.id(v.obj(raw), 'payslipId'));
       if (!slip) throw E.notFound('給与明細');
       const data = payslipData(ctx, slip);
@@ -372,4 +564,3 @@ defineOps([
     },
   },
 ]);
-

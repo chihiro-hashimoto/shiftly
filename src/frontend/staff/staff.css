@@ -1,61 +1,61 @@
 /* 店舗 iPad（暗い店内でまぶしくないダークな盤面） */
-.kiosk {
-  --k-bg: #10201a;
-  --k-bg-2: #172c24;
-  --k-line: #2a4339;
-  --k-ink: #eef3ef;
-  --k-ink-2: #a9bdb3;
+.sf-app {
+  --sf-bg: #10201a;
+  --sf-bg-2: #172c24;
+  --sf-line: #2a4339;
+  --sf-ink: #eef3ef;
+  --sf-ink-2: #a9bdb3;
   min-height: 100vh;
   min-height: 100dvh;
-  background: var(--k-bg);
-  color: var(--k-ink);
+  background: var(--sf-bg);
+  color: var(--sf-ink);
   display: flex;
   flex-direction: column;
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-.kiosk .btn {
+.sf-app .btn {
   min-height: var(--tap);
 }
-.k-top {
+.sf-top {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 14px 24px;
-  border-bottom: 1px solid var(--k-line);
+  border-bottom: 1px solid var(--sf-line);
 }
-.k-online {
+.sf-online {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 0.85rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
 }
-.k-online i {
+.sf-online i {
   width: 9px;
   height: 9px;
   border-radius: 50%;
   background: #4cc38a;
   display: inline-block;
 }
-.k-online.off i {
+.sf-online.off i {
   background: var(--bull);
 }
-.k-main {
+.sf-main {
   flex: 1;
   display: grid;
   grid-template-columns: minmax(280px, 38%) 1fr;
   gap: 0;
 }
-.k-clock {
+.sf-clock {
   padding: 40px 32px;
-  border-right: 1px solid var(--k-line);
+  border-right: 1px solid var(--sf-line);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.k-clock .time {
+.sf-clock .time {
   font-family: var(--font-num);
   font-weight: 600;
   font-size: clamp(72px, 11vw, 148px);
@@ -63,41 +63,41 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
-.k-clock .time small {
+.sf-clock .time small {
   font-size: 0.38em;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
   margin-left: 6px;
 }
-.k-clock .date {
+.sf-clock .date {
   font-size: 1.3rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
 }
-.k-clock .store {
+.sf-clock .store {
   margin-top: auto;
   font-size: 1.1rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
 }
-.k-staff {
+.sf-staff {
   padding: 28px;
   overflow: auto;
 }
-.k-staff h2 {
+.sf-staff h2 {
   font-size: 1.1rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
   font-weight: 500;
   margin-bottom: 16px;
 }
-.k-tiles {
+.sf-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 14px;
 }
-.k-tile {
+.sf-tile {
   min-height: 96px;
   border-radius: 14px;
-  border: 1px solid var(--k-line);
-  background: var(--k-bg-2);
-  color: var(--k-ink);
+  border: 1px solid var(--sf-line);
+  background: var(--sf-bg-2);
+  color: var(--sf-ink);
   font-size: 1.25rem;
   font-weight: 700;
   cursor: pointer;
@@ -107,64 +107,64 @@
   flex-direction: column;
   justify-content: space-between;
 }
-.k-tile small {
+.sf-tile small {
   font-size: 0.8rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
   font-weight: 400;
 }
-.k-tile:active {
+.sf-tile:active {
   background: #1d382e;
 }
 
 /* PIN パッド */
-.k-pin {
+.sf-pin {
   max-width: 380px;
   margin: 0 auto;
   display: grid;
   gap: 18px;
 }
-.k-dots {
+.sf-dots {
   display: flex;
   justify-content: center;
   gap: 14px;
 }
-.k-dots i {
+.sf-dots i {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2px solid var(--k-ink-2);
+  border: 2px solid var(--sf-ink-2);
   display: inline-block;
 }
-.k-dots i.on {
-  background: var(--k-ink);
-  border-color: var(--k-ink);
+.sf-dots i.on {
+  background: var(--sf-ink);
+  border-color: var(--sf-ink);
 }
-.k-pad {
+.sf-pad {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
 }
-.k-key {
+.sf-key {
   min-height: 72px;
   border-radius: 14px;
-  border: 1px solid var(--k-line);
-  background: var(--k-bg-2);
-  color: var(--k-ink);
+  border: 1px solid var(--sf-line);
+  background: var(--sf-bg-2);
+  color: var(--sf-ink);
   font-family: var(--font-num);
   font-size: 2rem;
   cursor: pointer;
 }
-.k-key:active {
+.sf-key:active {
   background: #1d382e;
 }
-.k-key.sub {
+.sf-key.sub {
   font-family: var(--font-body);
   font-size: 1rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
 }
 
 /* 本人画面 */
-.k-person {
+.sf-person {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr;
@@ -175,29 +175,29 @@
   width: 100%;
   margin: 0 auto;
 }
-.k-state {
+.sf-state {
   display: flex;
   align-items: baseline;
   gap: 16px;
   flex-wrap: wrap;
 }
-.k-state .name {
+.sf-state .name {
   font-size: 1.6rem;
   font-weight: 700;
 }
-.k-state .st {
+.sf-state .st {
   font-size: 1.05rem;
   padding: 2px 12px;
   border-radius: 999px;
-  background: var(--k-bg-2);
-  border: 1px solid var(--k-line);
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-line);
 }
-.k-actions {
+.sf-actions {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
 }
-.k-act {
+.sf-act {
   min-height: 120px;
   border-radius: 16px;
   border: 0;
@@ -211,111 +211,201 @@
   gap: 6px;
   color: #fff;
 }
-.k-act small {
+.sf-act small {
   font-size: 0.8rem;
   font-weight: 400;
   opacity: 0.85;
 }
-.k-act.in {
+.sf-act.in {
   background: var(--board);
 }
-.k-act.out {
+.sf-act.out {
   background: var(--bull);
 }
-.k-act.brk {
+.sf-act.brk {
   background: #3b5a4e;
 }
-.k-act:disabled {
+.sf-act:disabled {
   background: #22352d;
   color: #6f8a7e;
   cursor: not-allowed;
 }
-.k-tabs {
+.sf-tabs {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--k-line);
+  border-bottom: 1px solid var(--sf-line);
   padding-bottom: 8px;
 }
-.k-tabs button {
+.sf-tabs button {
   min-height: 44px;
   padding: 0 16px;
   border-radius: 999px;
-  border: 1px solid var(--k-line);
+  border: 1px solid var(--sf-line);
   background: transparent;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
   cursor: pointer;
 }
-.k-tabs button[aria-selected='true'] {
-  background: var(--k-ink);
-  color: var(--k-bg);
-  border-color: var(--k-ink);
+.sf-tabs button[aria-selected='true'] {
+  background: var(--sf-ink);
+  color: var(--sf-bg);
+  border-color: var(--sf-ink);
 }
-.k-sheet {
+.sf-sheet {
   background: var(--surface);
   color: var(--ink);
   border-radius: var(--radius-l);
   padding: 18px;
 }
-.k-done {
+.sf-done {
   position: fixed;
   inset: 0;
-  background: var(--k-bg);
+  background: var(--sf-bg);
   display: grid;
   place-items: center;
   text-align: center;
   z-index: 40;
 }
-.k-done .what {
+.sf-done .what {
   font-size: 2rem;
   font-weight: 700;
 }
-.k-done .at {
+.sf-done .at {
   font-family: var(--font-num);
   font-size: clamp(80px, 14vw, 160px);
   line-height: 1;
 }
-.k-idle {
+.sf-idle {
   font-size: 0.85rem;
-  color: var(--k-ink-2);
+  color: var(--sf-ink-2);
 }
 
 @media (max-width: 900px), (orientation: portrait) {
-  .k-main {
+  .sf-main {
     grid-template-columns: 1fr;
   }
-  .k-clock {
+  .sf-clock {
     border-right: 0;
-    border-bottom: 1px solid var(--k-line);
+    border-bottom: 1px solid var(--sf-line);
     padding: 24px;
   }
-  .k-clock .store {
+  .sf-clock .store {
     margin-top: 8px;
   }
-  .k-actions {
+  .sf-actions {
     grid-template-columns: repeat(2, 1fr);
   }
 }
 @media (max-width: 420px) {
-  .k-tiles {
+  .sf-tiles {
     grid-template-columns: 1fr 1fr;
   }
-  .k-act {
+  .sf-act {
     min-height: 96px;
     font-size: 1.2rem;
   }
 }
-.kiosk .btn:not(.btn-primary):not(.btn-danger) {
+.sf-app .btn:not(.btn-primary):not(.btn-danger) {
   background: transparent;
-  border-color: var(--k-line);
-  color: var(--k-ink);
+  border-color: var(--sf-line);
+  color: var(--sf-ink);
 }
-.kiosk .k-sheet .btn:not(.btn-primary):not(.btn-danger),
-.kiosk .modal .btn:not(.btn-primary):not(.btn-danger) {
+.sf-app .sf-sheet .btn:not(.btn-primary):not(.btn-danger),
+.sf-app .modal .btn:not(.btn-primary):not(.btn-danger) {
   background: var(--surface);
   border-color: var(--line);
   color: var(--ink);
 }
-.kiosk .modal {
+.sf-app .modal {
   color: var(--ink);
+}
+
+/* v1.3: 管理者ページへの入口・管理者モード・本人の勤怠確認と申請 */
+.sf-admin-entry {
+  min-height: 44px;
+}
+.sf-adminbar {
+  /* ページ上部の操作帯（固定しない。常に見える表示はサイドバーの「管理者モード」バッジ） */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 14px;
+  background: #7a2e12;
+  color: #fff;
+}
+.sf-adminbar strong {
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+}
+.sf-adminbar .spacer {
+  flex: 1;
+}
+.sf-adminbar .btn {
+  min-height: 44px;
+  background: #fff;
+  color: #3b1608;
+  border-color: #fff;
+}
+.sf-cards {
+  display: grid;
+  gap: 10px;
+}
+.sf-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.sf-card .top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+.sf-card .acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sf-card .acts .btn {
+  min-height: 44px;
+}
+.sf-grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 4px 14px;
+}
+.sf-unverified {
+  margin: 6px 0;
+}
+.sf-pin-ok {
+  min-height: 64px;
+}
+
+/* 管理者モード: サイドバー（スマホでは上部の固定ヘッダー）に常に表示するバッジ・戻るボタン */
+.sf-admin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sf-admin-badge .tag {
+  background: #c2410c;
+  color: #fff;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.sf-admin-badge .btn {
+  min-height: 36px;
+  padding: 2px 10px;
+  background: #fff;
+  color: #3b1608;
+  border-color: #fff;
+  font-size: 0.8rem;
 }

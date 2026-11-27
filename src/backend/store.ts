@@ -30,6 +30,11 @@ export interface TableAdapter {
   readMany?(reqs: Array<{ def: TableDef; partition: string | null }>): RawRow[][];
   /** 接続先 DB の切替後にキャッシュ（シート一覧・行番号）を破棄する */
   reset?(): void;
+  /**
+   * 数式の入ったセルの一覧（「シート名!A1」。任意）。業務の DB は値だけを保存する（D-027 追補。保守作業の終了前の確認）。
+   * 実装のないアダプタ（メモリ上の DB）は数式を保持できないため、呼び出し側は空として扱う。確認できない場合は例外を投げる
+   */
+  findFormulas?(): string[];
   /** 変更をまとめて書き込む（id 一致行は上書き、なければ追加） */
   write(changes: Array<{ def: TableDef; partition: string | null; id: string; raw: RawRow }>): void;
 }
@@ -205,6 +210,17 @@ export class UnitOfWork {
     if (!current) throw new ConflictError(`${table} の対象データが見つかりません`);
     if (current.version !== row.version) throw new ConflictError('他の操作で更新されています。画面を更新してやり直してください');
     const next = { ...row, updatedAt: this.nowIso(), version: row.version + 1 } as T;
+    this.updatedKeys.add(`${table}|${row.id}`);
+    this.stage(table, next as unknown as Record<string, unknown>);
+    return next;
+  }
+
+  /**
+   * 復元専用: 版を指定して書き込む（楽観的排他の照合はしない）。復元で行の版を復元前より小さくしないために使う
+   * （小さくすると、復元前に開いていた画面からの古い内容の上書きが版の照合を通ってしまう。D-025 R1）。通常の更新には使わない
+   */
+  putForRestore<T extends RowMeta>(table: TableName, row: T): T {
+    const next = { ...row, updatedAt: this.nowIso() } as T;
     this.updatedKeys.add(`${table}|${row.id}`);
     this.stage(table, next as unknown as Record<string, unknown>);
     return next;

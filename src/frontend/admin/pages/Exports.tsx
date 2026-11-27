@@ -46,7 +46,7 @@ function rangeError(from: string, to: string): string | null {
 
 export function ExportsPage() {
   const client = useClient();
-  const isKiosk = client.transport.mode === 'kiosk';
+  const isSharedDevice = client.transport.mode === 'staff';
   const toast = useToast();
   const { busy, run } = useAction();
   const [history, setHistory] = useState<HistoryRow[]>([]);
@@ -61,9 +61,9 @@ export function ExportsPage() {
     if (r.base64 && r.mimeType) {
       downloadBase64(r.base64, r.fileName, r.mimeType);
       downloaded = true;
-      toast('ok', `${r.fileName} をダウンロードしました（店長の Google Drive の 03_Exports にも保存しました）`);
+      toast('ok', `${r.fileName} をダウンロードしました（管理者の Google Drive の 03_Exports にも保存しました）`);
     } else if (r.savedToDrive) {
-      toast('ok', `店長の Google Drive の 03_Exports に保存しました（${r.fileName}）`);
+      toast('ok', `管理者の Google Drive の 03_Exports に保存しました（${r.fileName}）`);
     }
     setHistory((h) => [{ at: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }), fileName: r.fileName, downloaded }, ...h].slice(0, 10));
   };
@@ -74,9 +74,9 @@ export function ExportsPage() {
     <div style={PAGE_ROOT}>
       <style>{LOCAL_CSS}</style>
       <div className="callout">
-        {isKiosk ? (
+        {isSharedDevice ? (
           <>
-            この端末（店舗の共用端末）にはファイルをダウンロードしません。出力したファイルは<strong>店長の Google Drive の「03_Exports」フォルダ</strong>に保存されます。
+            この端末（店舗の共用端末）にはファイルをダウンロードしません。出力したファイルは<strong>Google 所有者の Google Drive の「03_Exports」フォルダ</strong>に保存されます。Drive のファイルは管理者の PC で開いてください。共用端末で画面を印刷・保存しないでください（アプリは端末に保存されたファイルを削除できません）。
           </>
         ) : (
           <>

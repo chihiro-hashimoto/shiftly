@@ -1,15 +1,15 @@
 /**
  * システム・店舗設定・端末・認証・監査ログ
- * F01 初期設定 / F02 店舗端末 / F03 認証 / F25 監査ログ / F27 店舗設定 / F35 DB更新
+ * F01 初期設定 / F02 店舗端末 / F03 認証 / F25 監査ログ / F27 店舗設定 / F35 初回の DB 構造の生成（更新に伴う自動移行は v1.3 では提供しない。D-027）
  */
 import { defineOps } from '../api';
-import { audit, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
+import { audit, currentEpoch, issueEpoch, maintenanceActive, maintenanceState, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
 import { E } from '../errors';
 import * as v from '../validate';
-import { createEnrollment, enrollDevice, ensureSecrets, login, logout, revokeSessionsWhere, setCredential, stepUp, verifyCredential } from '../auth';
+import { createEnrollment, enrollDevice, ensureSecrets, login, logout, revokeAdminSessions, revokeSessionsWhere, setCredential, stepUp, verifyCredential } from '../auth';
 import type { AuditLog, BusinessHours, Device, Employee, MinimumWageEntry, StoreSettings } from '../../shared/types';
 import { SCHEMA_VERSION, TABLES } from '../schema';
-import { validatePinFormat } from '../../shared/crypto';
+import { validatePinPolicy } from '../../shared/crypto';
 import { effectiveState, STATE_LABEL, allowedPunches } from '../../shared/attendance';
 import { loadEffective, activeEmployees } from '../services';
 import { addDays } from '../../shared/time';
@@ -20,6 +20,12 @@ import { APP_VERSION } from '../version';
 export function initialize(ctx: Ctx, args: { storeName: string; envId: string }) {
   ensureSecrets(ctx.p);
   const existing = ctx.uow.list<StoreSettings>('store_settings');
+  // 画面の世代は、初めての構築（DB に店舗設定も初期化の記録もない）でだけ発行する（D-027。Codex 監査24 A1）。
+  // 既存の環境で記録が失われた・壊れた場合は作り直さない（業務の更新は止まったまま。Google 所有者の保守作業の終了で再発行する）
+  // 店舗設定・初期化の記録・環境 ID・スタッフ・打刻のどれかがあれば既存の環境（手で一部の行を消されても、初めての構築と取り違えない。独立した点検 #7）
+  const firstEnvironment =
+    existing.length === 0 && !metaValue(ctx, 'initializedAt') && !metaValue(ctx, 'envId') && ctx.uow.list('employees').length === 0 && ctx.uow.list('attendance_events').length === 0;
+  if (firstEnvironment && currentEpoch(ctx.p) === null) issueEpoch(ctx.p);
   if (existing.length === 0) {
     ctx.uow.insert<StoreSettings>('store_settings', { ...DEFAULT_SETTINGS, storeName: args.storeName } as never, 'set');
   }
@@ -29,6 +35,13 @@ export function initialize(ctx: Ctx, args: { storeName: string; envId: string })
   if (!metaValue(ctx, 'initializedAt')) setMeta(ctx, 'initializedAt', nowIso(ctx));
   audit(ctx, 'system.initialize', 'system', null, '初期化（冪等）');
   return { initialized: true, envId: metaValue(ctx, 'envId') ?? args.envId };
+}
+
+function maintenanceInfo(ctx: Ctx): { active: boolean; startedAt: string | null; readable: boolean } {
+  const m = maintenanceState(ctx.p);
+  if (m === null) return { active: false, startedAt: null, readable: true };
+  if (m === 'broken') return { active: true, startedAt: null, readable: false };
+  return { active: true, startedAt: m.startedAt, readable: true };
 }
 
 function validateSettingsPatch(a: v.Args): Partial<StoreSettings> {
@@ -92,6 +105,8 @@ function validateSettingsPatch(a: v.Args): Partial<StoreSettings> {
   if (has('retentionYears')) out.retentionYears = v.int(a, 'retentionYears', { min: 5, max: 20, label: '保存期間（法定5年未満は不可）' });
   if (has('dailyBackupGenerations')) out.dailyBackupGenerations = v.int(a, 'dailyBackupGenerations', { min: 7, max: 120 });
   if (has('monthlyBackupGenerations')) out.monthlyBackupGenerations = v.int(a, 'monthlyBackupGenerations', { min: 12, max: 120 });
+  if (has('breakMode')) out.breakMode = v.oneOf(a, 'breakMode', ['scheduled', 'punch'] as const, '休憩の記録方式');
+  if (has('payrollTimeBasis')) out.payrollTimeBasis = v.oneOf(a, 'payrollTimeBasis', ['shift', 'actual'] as const, '給与計算の時間基準');
   return out;
 }
 
@@ -99,11 +114,30 @@ function validateSettingsPatch(a: v.Args): Partial<StoreSettings> {
 const PAYROLL_KEYS: Array<keyof StoreSettings> = [
   'workingTimeSystem', 'weekStartDay', 'statutoryHolidayWeekday', 'weekly44Confirmed', 'overtime60StartDay', 'payrollClosingDay',
   'payMonthOffset', 'payDay', 'yenRounding', 'minimumWages', 'paidLeaveWageMethod', 'businessDayCutoff', 'publicHolidays', 'halfDayLeaveAllowed',
+  'payrollTimeBasis',
 ];
+
+function enrollHandler(ctx: Ctx, raw: unknown) {
+  const a = v.obj(raw);
+  return enrollDevice(ctx, v.str(a, 'code', { max: 20, label: '登録コード' }), v.str(a, 'userAgent', { optional: true, max: 300 }));
+}
+
+function bootstrapHandler(ctx: Ctx) {
+  const s = settings(ctx);
+  // 初期画面に給与・詳細勤怠・PIN の有無は出さない（氏名と表示順のみ）
+  return {
+    storeName: s.storeName,
+    idleTimeoutSec: s.idleTimeoutSec,
+    breakMode: s.breakMode,
+    staff: activeEmployees(ctx).map((e) => ({ id: e.id, displayName: e.displayName, kana: e.kana })),
+    serverTime: ctx.now,
+  };
+}
 
 defineOps([
   {
     name: 'system.status',
+    kind: 'read',
     auth: 'public',
     mutating: false,
     allowInMaintenance: true,
@@ -118,11 +152,12 @@ defineOps([
       } catch {
         initialized = false;
       }
-      return { initialized, version: APP_VERSION, maintenance: metaValue(ctx, 'maintenance') === 'on', deviceRegistered: ctx.principal.kind === 'device', storeName };
+      return { initialized, version: APP_VERSION, maintenance: metaValue(ctx, 'maintenance') === 'on' || maintenanceActive(ctx.p), deviceRegistered: ctx.principal.kind === 'device', storeName };
     },
   },
   {
     name: 'system.initialize',
+    kind: 'system',
     auth: 'owner',
     mutating: true,
     allowInMaintenance: true,
@@ -132,8 +167,19 @@ defineOps([
     },
   },
   {
-    name: 'system.info',
+    // 構築の完了前の保管先の点検（D-026 S1。Setup の確認の工程で使う）。点検できない環境では ok にしない
+    name: 'system.storageCheck',
+    kind: 'read',
     auth: 'owner',
+    mutating: false,
+    allowInMaintenance: true,
+    handler: (ctx) => (ctx.p.storageReport ? ctx.p.storageReport() : { ok: false, issues: ['この環境では保管先を点検できません'], items: [], unavailable: true }),
+  },
+  {
+    name: 'system.info',
+    kind: 'read',
+    auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     allowInMaintenance: true,
     handler: (ctx) => ({
@@ -143,39 +189,36 @@ defineOps([
       appVersion: metaValue(ctx, 'appVersion'),
       codeVersion: APP_VERSION,
       maintenance: metaValue(ctx, 'maintenance') === 'on',
+      // Google 所有者の保守作業（D-027）の状態と、画面の世代の記録の有無（ない場合は業務の更新が止まっている）
+      maintenanceWork: maintenanceInfo(ctx),
+      epochAvailable: currentEpoch(ctx.p) !== null,
       initializedAt: metaValue(ctx, 'initializedAt'),
       platform: ctx.p.kind,
       storage: ctx.p.files.storageQuota(),
     }),
   },
   {
-    name: 'system.setMaintenance',
-    auth: 'owner',
-    mutating: true,
-    allowInMaintenance: true,
-    handler: (ctx, raw) => {
-      const on = v.bool(v.obj(raw), 'on');
-      setMeta(ctx, 'maintenance', on ? 'on' : 'off');
-      audit(ctx, 'system.maintenance', 'system', null, on ? 'メンテナンス開始' : 'メンテナンス終了');
-      return { maintenance: on };
-    },
-  },
-  {
     name: 'system.integrityCheck',
+    kind: 'read',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     allowInMaintenance: true,
     handler: (ctx) => integrityCheck(ctx),
   },
   {
     name: 'settings.get',
+    kind: 'read',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: (ctx) => settings(ctx),
   },
   {
     name: 'settings.update',
+    kind: 'edit',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx, raw) => {
       const patch = validateSettingsPatch(v.obj(raw));
@@ -190,7 +233,10 @@ defineOps([
   },
   {
     name: 'settings.confirmPayrollRules',
+    kind: 'edit',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx) => {
       const s = settings(ctx);
@@ -210,19 +256,27 @@ defineOps([
   // ------------------------------------------------------------ 端末
   {
     name: 'devices.list',
+    kind: 'read',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: (ctx) => ctx.uow.list<Device>('devices').map(({ tokenHash: _t, ...d }) => d),
   },
   {
     name: 'devices.createEnrollment',
+    kind: 'auth',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => createEnrollment(ctx, v.str(v.obj(raw), 'deviceName', { max: 40, label: '端末名' })),
   },
   {
     name: 'devices.revoke',
+    kind: 'auth',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => {
       const id = v.id(v.obj(raw), 'deviceId');
@@ -230,13 +284,16 @@ defineOps([
       if (!d) throw E.notFound('端末');
       ctx.uow.update('devices', { ...d, status: 'revoked', revokedAt: nowIso(ctx) });
       revokeSessionsWhere(ctx, (s) => s.deviceId === id);
+      revokeAdminSessions(ctx, (s) => s.deviceId === id, 'device_revoked');
       audit(ctx, 'device.revoke', 'device', id, '端末の失効');
       return { ok: true };
     },
   },
   {
     name: 'devices.rename',
+    kind: 'edit',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
@@ -248,33 +305,33 @@ defineOps([
     },
   },
   {
-    name: 'kiosk.enroll',
+    name: 'staff.enroll',
+    kind: 'auth',
     auth: 'public',
     mutating: true,
     secretResponse: true,
-    handler: (ctx, raw) => {
-      const a = v.obj(raw);
-      return enrollDevice(ctx, v.str(a, 'code', { max: 20, label: '登録コード' }), v.str(a, 'userAgent', { optional: true, max: 300 }));
-    },
+    handler: (ctx, raw) => enrollHandler(ctx, raw),
   },
   {
-    name: 'kiosk.bootstrap',
+    name: 'staff.bootstrap',
+    kind: 'read',
     auth: 'device',
     mutating: false,
-    handler: (ctx) => {
-      const s = settings(ctx);
-      // 初期画面に給与・詳細勤怠は出さない（氏名と表示順のみ）
-      return {
-        storeName: s.storeName,
-        idleTimeoutSec: s.idleTimeoutSec,
-        staff: activeEmployees(ctx).map((e) => ({ id: e.id, displayName: e.displayName, kana: e.kana })),
-        serverTime: ctx.now,
-      };
-    },
+    handler: (ctx) => bootstrapHandler(ctx),
+  },
+  // 互換: v1.2 以前の名称（Kiosk）。更新の前から開いていた店舗端末の画面が、更新後も定期的なスタッフ一覧の再取得を行えるように残す
+  // （内部の API 識別子のみ。端末登録 kiosk.enroll は公開操作を増やさないため互換名を残さない。docs/decisions.md D-014）
+  {
+    name: 'kiosk.bootstrap',
+    kind: 'read',
+    auth: 'device',
+    mutating: false,
+    handler: (ctx) => bootstrapHandler(ctx),
   },
   // ------------------------------------------------------------ スタッフ認証
   {
     name: 'auth.login',
+    kind: 'auth',
     auth: 'device',
     mutating: true,
     secretResponse: true,
@@ -283,13 +340,17 @@ defineOps([
       if (ctx.principal.kind !== 'device') throw E.deviceNotRegistered();
       const dev = ctx.uow.get<Device>('devices', ctx.principal.deviceId);
       if (!dev) throw E.deviceNotRegistered();
-      const r = login(ctx, dev, v.id(a, 'employeeId', 'スタッフ'), v.str(a, 'pin', { max: 12, label: 'PIN' }));
+      // PIN は任意（未指定・null は「PIN なし」）。PIN の要否はサーバーの DB で判定する
+      const pin = a.pin === undefined || a.pin === null ? null : v.str(a, 'pin', { max: 12, label: 'PIN', optional: true });
+      const r = login(ctx, dev, v.id(a, 'employeeId', 'スタッフ'), pin);
       const evs = loadEffective(ctx, r.employee.id, addDays(today(ctx), -3), today(ctx));
       const { state: st, staleOpenSince } = effectiveState(evs, ctx.now);
       return {
         sessionToken: r.sessionToken,
         employee: { id: r.employee.id, displayName: r.employee.displayName, payType: r.employee.payType },
         permissions: r.permissions,
+        verified: r.verified,
+        breakMode: settings(ctx).breakMode,
         state: st,
         stateLabel: STATE_LABEL[st],
         allowedPunches: allowedPunches(st),
@@ -299,7 +360,9 @@ defineOps([
   },
   {
     name: 'auth.logout',
+    kind: 'auth',
     auth: 'session',
+    allowUnverified: true,
     mutating: true,
     handler: (ctx) => {
       logout(ctx, staff(ctx).sessionId);
@@ -309,7 +372,9 @@ defineOps([
   },
   {
     name: 'auth.me',
+    kind: 'read',
     auth: 'session',
+    allowUnverified: true,
     mutating: false,
     handler: (ctx) => {
       const s = staff(ctx);
@@ -320,6 +385,8 @@ defineOps([
         employee: { id: e.id, displayName: e.displayName, payType: e.payType },
         permissions: s.permissions,
         stepUp: s.stepUp,
+        verified: s.verified,
+        breakMode: settings(ctx).breakMode,
         state: st,
         stateLabel: STATE_LABEL[st],
         allowedPunches: allowedPunches(st),
@@ -330,6 +397,7 @@ defineOps([
   },
   {
     name: 'auth.stepUp',
+    kind: 'auth',
     auth: 'session',
     mutating: true,
     handler: (ctx, raw) => {
@@ -340,6 +408,7 @@ defineOps([
   },
   {
     name: 'auth.changePin',
+    kind: 'auth',
     auth: 'session',
     mutating: true,
     handler: (ctx, raw) => {
@@ -347,7 +416,7 @@ defineOps([
       const s = staff(ctx);
       const current = v.str(a, 'currentPin', { max: 12, label: '現在のPIN' });
       const next = v.str(a, 'newPin', { max: 12, label: '新しいPIN' });
-      const err = validatePinFormat(next);
+      const err = validatePinPolicy(next);
       if (err) throw E.invalid(err);
       // 本人確認として現在の PIN を再検証
       verifyCurrentPin(ctx, s.employeeId, current);
@@ -360,7 +429,9 @@ defineOps([
   // ------------------------------------------------------------ 監査ログ
   {
     name: 'audit.list',
+    kind: 'read',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
@@ -390,7 +461,7 @@ export function integrityCheck(ctx: Ctx) {
     const idset = new Set(rows.map((r) => r.id));
     if (idset.size !== rows.length) issues.push(`${table}: 主キー重複`);
   };
-  for (const t of ['credentials', 'permissions', 'wage_rules', 'salary_rules', 'attendance_corrections', 'shifts', 'leave_grants', 'leave_transactions', 'payroll_results', 'pay_slips'] as const) check(t);
+  for (const t of ['credentials', 'permissions', 'wage_rules', 'salary_rules', 'attendance_corrections', 'shifts', 'leave_grants', 'leave_transactions', 'payroll_results', 'pay_slips', 'break_declarations', 'overtime_requests'] as const) check(t);
   check('attendance_events');
   const journal = ctx.uow.list<{ state: string }>('operation_journal', { partitions: ctx.uow.recentPartitions() });
   const pending = journal.filter((j) => j.state === 'started').length;

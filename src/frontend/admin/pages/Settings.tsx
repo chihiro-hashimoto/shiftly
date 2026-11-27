@@ -102,6 +102,7 @@ const SECTIONS: Array<[string, string]> = [
   ['st-store', '店舗情報'],
   ['st-hours', '営業時間'],
   ['st-labor', '労働時間制度'],
+  ['st-worktime', '勤怠・給与の時間基準'],
   ['st-pay', '締め日・支払日'],
   ['st-minwage', '最低賃金'],
   ['st-leave', '有給休暇'],
@@ -147,6 +148,7 @@ export function SettingsPage() {
         <StoreSection {...props} />
         <HoursSection {...props} />
         <LaborSection {...props} />
+        <WorktimeSection {...props} />
         <PaySection {...props} />
         <MinWageSection {...props} />
         <LeaveSection {...props} />
@@ -362,7 +364,7 @@ function LaborSection({ s, onSaved }: SecProps) {
         <span>
           週44時間の特例を適用する
           <span className="small muted" style={{ display: 'block' }}>
-            常時使用する労働者が10人未満で、商業・接客娯楽業（飲食店等）・保健衛生業・映画演劇業のいずれかに該当する事業場のみ。要件を店長が確認した場合のみチェックしてください。
+            常時使用する労働者が10人未満で、商業・接客娯楽業（飲食店等）・保健衛生業・映画演劇業のいずれかに該当する事業場のみ。要件を管理者が確認した場合のみチェックしてください。
           </span>
         </span>
       </label>
@@ -602,6 +604,31 @@ function CostSection({ s, onSaved }: SecProps) {
   );
 }
 
+function WorktimeSection({ s, onSaved }: SecProps) {
+  const x = useSection(s, ['payrollTimeBasis', 'breakMode'] as const, onSaved);
+  const d = x.draft;
+  return (
+    <Section id="st-worktime" title="勤怠・給与の時間基準" desc="給与計算に使う時間と、休憩の記録方法です。" dirty={x.changed.length > 0} busy={x.busy} onSave={x.save} onReset={x.reset} payroll>
+      <Field label="給与計算の時間基準">
+        <select className="input" value={d.payrollTimeBasis ?? 'shift'} onChange={(e) => x.set('payrollTimeBasis', e.target.value as 'shift' | 'actual')}>
+          <option value="shift">シフト基準（標準）: シフト外の時間は、実労働と確認したものだけを加える</option>
+          <option value="actual">打刻（修正後）の実績どおり</option>
+        </select>
+      </Field>
+      <Hint>
+        シフト基準では、シフトより早い出勤・遅い退勤の打刻だけでは給与の時間を増やしません。シフト外の時間は「申請・確認」で実労働かどうかを確認し、実労働であれば申請がなくても給与に含めます。未確認のシフト外の時間がある間は、そのスタッフの給与を確定できません。遅刻・早退は実際に働いた時間で計算します。
+      </Hint>
+      <Field label="休憩の記録方法">
+        <select className="input" value={d.breakMode ?? 'scheduled'} onChange={(e) => x.set('breakMode', e.target.value as 'scheduled' | 'punch')}>
+          <option value="scheduled">予定休憩（標準）: 休憩ボタンを表示せず、退勤のときに取得状況を確認</option>
+          <option value="punch">休憩打刻: 休憩開始・休憩終了のボタンで記録</option>
+        </select>
+      </Field>
+      <Hint>どちらの方法でも、シフトの予定休憩は「取得した」と確認された場合だけ差し引きます。休憩を取れなかった・短かった・長かった場合はスタッフが申告できます。シフトに休憩がない場合、法定の休憩時間を自動で差し引くことはありません（休憩不足は警告します）。</Hint>
+    </Section>
+  );
+}
+
 function SecuritySection({ s, onSaved }: SecProps) {
   const x = useSection(s, ['idleTimeoutSec', 'pinMaxAttempts', 'pinLockMinutes'] as const, onSaved);
   const d = x.draft;
@@ -615,7 +642,7 @@ function SecuritySection({ s, onSaved }: SecProps) {
         <Field label="PIN の失敗許容回数" hint="3〜10回">{num('pinMaxAttempts', 3, 10)}</Field>
         <Field label="ロック時間（分）" hint="5〜1440分">{num('pinLockMinutes', 5, 1440)}</Field>
       </div>
-      <Hint>給与・勤怠などの個人情報を表示したまま操作がない場合、設定した秒数で自動的にログアウトします。PIN を続けて間違えると、そのスタッフはロック時間が経過するまで（または店長が解除するまで）ログインできません。</Hint>
+      <Hint>給与・勤怠などの個人情報を表示したまま操作がない場合、設定した秒数で自動的にログアウトします。PIN を続けて間違えると、そのスタッフはロック時間が経過するまで（または管理者が解除するまで）ログインできません。</Hint>
     </Section>
   );
 }

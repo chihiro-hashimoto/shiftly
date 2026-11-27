@@ -9,8 +9,12 @@ import { STATUS } from './Dashboard';
 const PAGE_ROOT = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 18, minWidth: 0 } as const;
 
 // ------------------------------------------------------------------ 型
+interface RestoreLock {
+  restoredAt: string;
+  backupId: string;
+}
 interface PeriodsResp {
-  periods: PayrollPeriod[];
+  periods: Array<PayrollPeriod & { restoreLock?: RestoreLock | null }>;
   suggestedPeriodKey: string | null;
 }
 interface Issue {
@@ -86,7 +90,7 @@ table.pr-main > tbody > tr > td:first-child{white-space:nowrap}
 // ------------------------------------------------------------------ ページ
 export function PayrollPage() {
   const client = useClient();
-  const isKiosk = client.transport.mode === 'kiosk';
+  const isSharedDevice = client.transport.mode === 'staff';
   const periods = useLoad(() => client.call<PeriodsResp>('payroll.periods'), []);
   const [selected, setSelected] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
@@ -153,10 +157,136 @@ export function PayrollPage() {
               </span>
             </div>
             <Steps status={current.status} />
+            {current.restoreLock && <RestoreLockNotice key={current.id} periodId={current.id} lock={current.restoreLock} onReleased={periods.reload} />}
           </div>
         )}
       </Panel>
-      {current && <PeriodWork key={current.id} period={current} isKiosk={isKiosk} onPeriodChanged={periods.reload} />}
+      {current && <PeriodWork key={current.id} period={current} isSharedDevice={isSharedDevice} onPeriodChanged={periods.reload} />}
+    </div>
+  );
+}
+
+/** 復元で引き継いだ確定済みの給与がある期間の停止表示と解除（Codex 監査9 #1） */
+function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; lock: RestoreLock; onReleased: () => void }) {
+  const client = useClient();
+  const { busy, run } = useAction();
+  // 確定済みの総支給額と、現在の条件で計算し直した額の比較（Codex 監査17 #1）
+  const review = useLoad(
+    () =>
+      client.call<{
+        hasMonthly: boolean;
+        differences: number;
+        rows: Array<{
+          employeeId: string;
+          displayName: string;
+          payType: string;
+          revision: number;
+          confirmedGross: number;
+          currentGross: number | null;
+          confirmedNet: number;
+          currentNet: number | null;
+          differingItems: string[];
+          differs: boolean;
+        }>;
+      }>('payroll.restoreLockReview', { periodId }),
+    [periodId],
+  );
+  const [checks, setChecks] = useState({ wage: false, allowance: false, deduction: false, salary: false });
+  const [confirmText, setConfirmText] = useState('');
+  const r = review.data;
+  // 比較の読み込み中・失敗時・差があるときは解除できない（解除の可否はサーバーがその場で計算し直して判断する。Codex 監査18 #1）
+  const allChecked = !!r && !review.loading && !review.error && r.differences === 0 && checks.wage && checks.allowance && checks.deduction && (!r.hasMonthly || checks.salary);
+  const release = async () => {
+    const res = await run(
+      () =>
+        client.call('payroll.releaseRestoreLock', {
+          periodId,
+          checkedWageRules: checks.wage,
+          checkedAllowances: checks.allowance,
+          checkedDeductions: checks.deduction,
+          checkedSalaryRules: checks.salary,
+          confirmText,
+        }),
+      '復元後の確認を完了しました',
+    );
+    if (res) onReleased();
+  };
+  const check = (k: keyof typeof checks, label: string) => (
+    <label className="row small">
+      <input type="checkbox" checked={checks[k]} onChange={(e) => setChecks({ ...checks, [k]: e.target.checked })} />
+      <span>{label}</span>
+    </label>
+  );
+  return (
+    <div className="callout callout-warn" role="alert">
+      <strong>復元後の給与条件の確認が必要です</strong>
+      <p className="small" style={{ margin: '6px 0' }}>
+        この期間は、Google 所有者の保守作業（データの復元など。{lock.restoredAt.slice(0, 16).replace('T', ' ')} 終了）の前に給与を確定しています。保守作業の後の給与条件・勤怠（時給・月給・手当・控除など）は、確定したときと異なる可能性があります。条件を確認するまで、確定・訂正・明細の発行は停止しています。
+      </p>
+      {review.loading && !r && <Loading />}
+      {review.error && <ErrorBox message={review.error} onRetry={review.reload} />}
+      {r && (
+        <div className="stack" style={{ gap: 8 }}>
+          {r.differences > 0 ? (
+            <div>
+              <p className="small" style={{ margin: '4px 0' }}>
+                <strong>確定済みの給与と、現在の条件で計算し直した結果が異なるスタッフが {r.differences} 名います。差がある間は解除できません。</strong>
+                給与条件（「スタッフ・権限」の時給ルール・月給設定、手当、控除）を確定時に合わせてから、「比較を更新」を押してください。変更が必要な場合は、解除した後に通常の訂正を行ってください。
+              </p>
+              <div className="table-wrap">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>スタッフ</th>
+                      <th>違いのある項目</th>
+                      <th className="r">確定済み（差引支給）</th>
+                      <th className="r">現在の条件で計算（差引支給）</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.rows
+                      .filter((x) => x.differs)
+                      .map((x) => (
+                        <tr key={x.employeeId}>
+                          <td>
+                            {x.displayName}（{x.payType === 'monthly' ? '月給' : '時給'}・第{x.revision}版）
+                          </td>
+                          <td className="small">{x.differingItems.join('・')}</td>
+                          <td className="r">
+                            <Yen v={x.confirmedNet} />
+                          </td>
+                          <td className="r">{x.currentNet === null ? '計算できません' : <Yen v={x.currentNet} />}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <p className="small" style={{ margin: '4px 0' }}>
+              確定済みの給与と、現在の条件で計算し直した結果は、すべてのスタッフで全項目（支給・控除・差引支給額など）が一致しています。
+            </p>
+          )}
+          <fieldset className="stack" style={{ gap: 4, border: 0, padding: 0, margin: 0 }}>
+            <legend className="small muted">確定したときと一致することを確認した項目（監査ログには確認したことだけを記録します）</legend>
+            {check('wage', '時給ルール')}
+            {r.hasMonthly && check('salary', '月給設定（基本給・固定残業代・所定労働時間を含む）')}
+            {check('allowance', '手当（通勤手当を含む）')}
+            {check('deduction', '控除')}
+          </fieldset>
+          <Field label="確認のため「確認しました」と入力">
+            <input className="input" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} maxLength={20} style={{ maxWidth: 200 }} />
+          </Field>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn btn-sm" disabled={busy || review.loading} onClick={() => review.reload()}>
+              比較を更新
+            </button>
+            <button className="btn btn-sm btn-primary" disabled={busy || !allChecked || confirmText !== '確認しました'} onClick={() => void release()}>
+              復元後の確認を完了
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -176,7 +306,7 @@ function Steps({ status }: { status: string }) {
 }
 
 // ------------------------------------------------------------------ 期間ごとの作業
-function PeriodWork({ period, isKiosk, onPeriodChanged }: { period: PayrollPeriod; isKiosk: boolean; onPeriodChanged: () => void }) {
+function PeriodWork({ period, isSharedDevice, onPeriodChanged }: { period: PayrollPeriod; isSharedDevice: boolean; onPeriodChanged: () => void }) {
   const client = useClient();
   const [started, setStarted] = useState(period.status !== 'uncomputed');
   const comp = useLoad(() => (started ? client.call<ComputeResp>('payroll.compute', { periodId: period.id }) : Promise.resolve(null)), [period.id, started]);
@@ -477,8 +607,8 @@ function PeriodWork({ period, isKiosk, onPeriodChanged }: { period: PayrollPerio
                 </div>
                 {anyIssueCode('PAYROLL_RULES_UNCONFIRMED') && (
                   <div className="row" style={{ marginTop: 10 }}>
-                    {isKiosk ? (
-                      <span className="small">店舗の給与規定の確認は店長が管理画面（店舗設定）で行います。</span>
+                    {isSharedDevice ? (
+                      <span className="small">店舗の給与規定の確認は管理者が管理画面（店舗設定）で行います。</span>
                     ) : (
                       <button className="btn btn-sm" onClick={() => setRulesOpen(true)}>
                         店舗の給与規定を確認する
@@ -858,7 +988,7 @@ function AdjustmentModal({ emp, periodId, onClose }: { emp: EmpResult; periodId:
     <Modal title={`${emp.displayName}さんの給与調整`} onClose={onClose} wide footer={<button className="btn" onClick={onClose}>閉じる（再計算）</button>}>
       <div className="stack" style={{ gap: 14 }}>
         <div className="callout small">
-          欠勤日数・遅刻早退の分数は<strong>店長が承認した分のみ</strong>入力してください。シフトとの差（遅刻・早退・欠勤）から自動では控除しません。月給制で控除規定が未設定の場合は確定できません。時給制では不就労時間はもともと支給されないため、欠勤・遅刻早退の調整は適用されません。
+          欠勤日数・遅刻早退の分数は<strong>管理者が承認した分のみ</strong>入力してください。シフトとの差（遅刻・早退・欠勤）から自動では控除しません。月給制で控除規定が未設定の場合は確定できません。時給制では不就労時間はもともと支給されないため、欠勤・遅刻早退の調整は適用されません。
         </div>
         <section>
           <h3 style={{ margin: '0 0 6px' }}>この期間の調整</h3>
@@ -1053,7 +1183,7 @@ function CorrectionModal({ emp, periodId, onClose, onDone }: { emp: EmpResult; p
   );
 }
 
-// ------------------------------------------------------------------ 店舗の給与規定の確認（店長のみ）
+// ------------------------------------------------------------------ 店舗の給与規定の確認（管理者のみ）
 interface SettingsLite {
   workingTimeSystem: string;
   weekStartDay: number | null;
@@ -1130,4 +1260,3 @@ function PayrollRulesModal({ onClose, onDone }: { onClose: () => void; onDone: (
     </Modal>
   );
 }
-

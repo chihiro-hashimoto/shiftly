@@ -1,11 +1,12 @@
-/** スタッフ・権限（登録・編集・退職・個別権限・PIN／管理用パスコード） F04/F05 */
+/** スタッフ・権限（登録・編集・退職・個別権限・PIN／管理用パスコード・スタッフ別の給与条件） F04/F05（v1.3: 時給ルール・月給設定の導線を統合） */
 import { useMemo, useState } from 'react';
 import { Empty, ErrorBox, Field, Loading, Modal, Panel, todayJst, useAction, useClient, useLoad } from '../../components/ui';
 import type { Employee, PermissionKey } from '../../../shared/types';
 import type { PermissionDef } from '../../../shared/permissions';
-import { validatePinFormat, validateStepUpSecret } from '../../../shared/crypto';
+import { PIN_MAX_LENGTH, PIN_MIN_LENGTH, validatePinPolicy, validateStepUpSecret } from '../../../shared/crypto';
+import { PayConditionsPage } from './PayConditions';
 
-/** employees.list の行（staff_manage があれば Employee 全項目。店長のときのみ認証・権限情報が付く） */
+/** employees.list の行（staff_manage があれば Employee 全項目。管理者のときのみ認証・権限情報が付く） */
 type EmpRow = Pick<Employee, 'id' | 'displayName' | 'kana' | 'status' | 'payType' | 'sortOrder'> &
   Partial<Employee> & {
     permissions?: PermissionKey[];
@@ -28,7 +29,7 @@ export function StaffPage() {
   const client = useClient();
   const [includeRetired, setIncludeRetired] = useState(false);
   const list = useLoad(() => client.call<EmpRow[]>('employees.list', { includeRetired }), [includeRetired]);
-  // employees.list に permissions が含まれるのは店長のときだけ
+  // employees.list に permissions が含まれるのは管理者（Google 所有者・管理者モード）のときだけ
   const isOwner = !!list.data?.some((e) => Array.isArray(e.permissions));
   const catalog = useLoad(() => (isOwner ? client.call<Catalog>('permissions.catalog') : Promise.resolve(null)), [isOwner]);
   const defaults = useMemo(() => new Set<string>(catalog.data?.defaults ?? []), [catalog.data]);
@@ -39,9 +40,25 @@ export function StaffPage() {
   const [perm, setPerm] = useState<EmpRow | null>(null);
   const [cred, setCred] = useState<EmpRow | null>(null);
   const [reactivate, setReactivate] = useState<EmpRow | null>(null);
+  const [pay, setPay] = useState<EmpRow | null>(null);
 
   const rows = list.data ?? [];
   const active = rows.filter((r) => r.status === 'active').length;
+
+  if (pay)
+    return (
+      <div className="st-page" style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <button className="btn" onClick={() => setPay(null)}>
+            ← スタッフ一覧に戻る
+          </button>
+          <h2 style={{ margin: 0 }}>
+            {pay.displayName}さんの{pay.payType === 'monthly' ? '月給設定' : '時給ルール'}
+          </h2>
+        </div>
+        <PayConditionsPage fixedEmployeeId={pay.id} />
+      </div>
+    );
 
   return (
     <div className="st-page" style={{ display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 }}>
@@ -117,6 +134,9 @@ export function StaffPage() {
                           <button className="btn btn-sm" onClick={() => setEdit(e)}>
                             編集
                           </button>
+                          <button className="btn btn-sm" onClick={() => setPay(e)} aria-label={`${e.displayName}さんの${e.payType === 'monthly' ? '月給設定' : '時給ルール'}`}>
+                            {e.payType === 'monthly' ? '月給設定' : '時給ルール'}
+                          </button>
                           {isOwner && e.status === 'active' && (
                             <>
                               <button className="btn btn-sm" onClick={() => setPerm(e)}>
@@ -148,7 +168,7 @@ export function StaffPage() {
           </div>
         )}
         <p className="small muted" style={{ padding: '10px 18px 14px' }}>
-          新しく登録したスタッフの初期権限は、自分の打刻・勤怠・給与明細・有給・公開シフトの閲覧のみです。{isOwner ? '店舗端末で打刻するには PIN の設定が必要です。' : '権限・PIN の設定は店長のみが行えます。'}
+          新しく登録したスタッフの初期権限は、自分の打刻・勤怠・給与明細・有給・公開シフトの閲覧のみです。PIN は任意です。PIN 未設定のスタッフは名前の選択だけで出退勤できますが、本人確認ができないため給与・明細・勤怠の詳細は表示されず、修正・申請は管理者の確認後に反映されます。{isOwner ? '' : '権限・PIN の設定は管理者のみが行えます。'}
         </p>
       </Panel>
 
@@ -355,7 +375,7 @@ function RetireModal({ emp, onClose, onDone }: { emp: EmpRow; onClose: () => voi
         <ul className="small" style={{ margin: 0, paddingLeft: '1.2em' }}>
           <li>店舗端末の氏名一覧に表示されなくなり、ログイン中のセッションは無効になります。</li>
           <li>退職月の給与計算・明細発行は、退職後も給与計算ページから行えます。</li>
-          <li>誤って処理した場合は、店長が再有効化できます。</li>
+          <li>誤って処理した場合は、管理者が再有効化できます。</li>
         </ul>
         <Field label="退職日">
           <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -395,7 +415,7 @@ function ReactivateModal({ emp, onClose, onDone }: { emp: EmpRow; onClose: () =>
   );
 }
 
-// ------------------------------------------------------------------ 個別権限（店長専用）
+// ------------------------------------------------------------------ 個別権限（管理者専用）
 function PermissionModal({ emp, catalog, catalogError, onClose, onSaved }: { emp: EmpRow; catalog: Catalog | null; catalogError: string | null; onClose: () => void; onSaved: () => void }) {
   const client = useClient();
   const { busy, run } = useAction();
@@ -447,7 +467,7 @@ function PermissionModal({ emp, catalog, catalogError, onClose, onSaved }: { emp
       {catalog && (
         <div className="stack" style={{ gap: 14 }}>
           <div className="callout">
-            権限の管理・店舗端末の登録・バックアップからの復元・システム更新（店舗設定を含む）は<strong>店長専用</strong>で、スタッフには付与できません。
+            権限の管理・店舗端末の登録・バックアップからの復元・システム更新（店舗設定を含む）は<strong>管理者専用</strong>で、スタッフには付与できません。
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
             {groups.map(([g, ps]) => (
@@ -484,7 +504,7 @@ function PermissionModal({ emp, catalog, catalogError, onClose, onSaved }: { emp
   );
 }
 
-// ------------------------------------------------------------------ PIN・管理用パスコード（店長専用）
+// ------------------------------------------------------------------ PIN・管理用パスコード（管理者専用）
 function CredentialModal({ emp, onClose }: { emp: EmpRow; onClose: () => void }) {
   const client = useClient();
   const { busy, run } = useAction();
@@ -493,8 +513,9 @@ function CredentialModal({ emp, onClose }: { emp: EmpRow; onClose: () => void })
   const [pin2, setPin2] = useState('');
   const [pass, setPass] = useState('');
   const [pass2, setPass2] = useState('');
-  const [done, setDone] = useState<{ pin?: boolean; pass?: boolean; unlock?: boolean }>({});
-  const pinErr = pin ? validatePinFormat(pin) : null;
+  const [done, setDone] = useState<{ pin?: boolean; pass?: boolean; unlock?: boolean; cleared?: boolean }>({});
+  const [confirmClear, setConfirmClear] = useState(false);
+  const pinErr = pin ? validatePinPolicy(pin) : null;
   const passErr = pass ? validateStepUpSecret(pass) : null;
   const close = () => {
     setPin('');
@@ -511,6 +532,11 @@ function CredentialModal({ emp, onClose }: { emp: EmpRow; onClose: () => void })
     const r = await run(() => client.call('credentials.setPin', { employeeId: emp.id, pin: v }), 'PIN を設定しました');
     if (r) setDone((d) => ({ ...d, pin: true }));
   };
+  const clearPin = async () => {
+    const r = await run(() => client.call('credentials.clearPin', { employeeId: emp.id }), 'PIN を解除しました');
+    if (r) setDone((d) => ({ ...d, pin: false, cleared: true }));
+    setConfirmClear(false);
+  };
   const submitPass = async () => {
     const v = pass;
     setPass('');
@@ -525,8 +551,9 @@ function CredentialModal({ emp, onClose }: { emp: EmpRow; onClose: () => void })
         <section className="stack" style={{ gap: 10 }}>
           <div className="row">
             <h3>PIN（店舗端末のログイン用）</h3>
-            {emp.hasPin || done.pin ? <span className="badge badge-board">設定済み</span> : <span className="badge badge-warn">未設定</span>}
+            {(emp.hasPin && !done.cleared) || done.pin ? <span className="badge badge-board">設定済み</span> : <span className="badge badge-warn">未設定（本人未確認でのログイン）</span>}
           </div>
+          <p className="small muted">PIN は任意です。未設定のスタッフは名前の選択だけで出退勤できますが、給与・明細・勤怠の詳細は表示されません。</p>
           <form
             className="stack"
             style={{ gap: 10 }}
@@ -536,17 +563,17 @@ function CredentialModal({ emp, onClose }: { emp: EmpRow; onClose: () => void })
             }}
           >
             <div className="form-grid">
-              <Field label="新しい PIN（6桁の数字）">
-                <input className="input num" type="password" inputMode="numeric" autoComplete="new-password" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} />
+              <Field label={`新しい PIN（${PIN_MIN_LENGTH}〜${PIN_MAX_LENGTH}桁の数字・先頭0可）`}>
+                <input className="input num" type="password" inputMode="numeric" autoComplete="new-password" maxLength={PIN_MAX_LENGTH} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} />
               </Field>
               <Field label="確認のためもう一度">
-                <input className="input num" type="password" inputMode="numeric" autoComplete="new-password" maxLength={6} value={pin2} onChange={(e) => setPin2(e.target.value.replace(/\D/g, ''))} />
+                <input className="input num" type="password" inputMode="numeric" autoComplete="new-password" maxLength={PIN_MAX_LENGTH} value={pin2} onChange={(e) => setPin2(e.target.value.replace(/\D/g, ''))} />
               </Field>
             </div>
             {pinErr && <span className="small" style={{ color: 'var(--bull)' }}>{pinErr}</span>}
             {!pinErr && pin2 && pin !== pin2 && <span className="small" style={{ color: 'var(--bull)' }}>確認用の PIN が一致しません</span>}
             <ul className="small muted" style={{ margin: 0, paddingLeft: '1.2em' }}>
-              <li>同じ数字の繰り返し（例: 111111）や連続した数字（例: 123456、654321）は使用できません。</li>
+              <li>同じ数字の繰り返し（例: 1111）や連続した数字（例: 1234、654321）は使用できません。4桁の PIN は推測されやすいため、6桁以上を推奨します（入力の失敗が続くとロックされ、ロックのたびに時間が延長されます）。</li>
               <li>設定すると、このスタッフのログイン中のセッションは無効になります。</li>
               <li>PIN は本人に直接伝え、紙やメッセージに残さないでください。</li>
             </ul>
@@ -554,6 +581,22 @@ function CredentialModal({ emp, onClose }: { emp: EmpRow; onClose: () => void })
               <button type="submit" className="btn btn-primary" disabled={busy || !pin || !!pinErr || pin !== pin2}>
                 PIN を設定
               </button>
+              {((emp.hasPin && !done.cleared) || done.pin) && !confirmClear && (
+                <button type="button" className="btn" style={{ marginLeft: 8 }} disabled={busy} onClick={() => setConfirmClear(true)}>
+                  PIN を解除
+                </button>
+              )}
+              {confirmClear && (
+                <span className="row" style={{ display: 'inline-flex', marginLeft: 8 }}>
+                  <span className="small">解除すると本人確認なしのログインになります。</span>
+                  <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => void clearPin()}>
+                    解除する
+                  </button>
+                  <button type="button" className="btn btn-sm" onClick={() => setConfirmClear(false)}>
+                    やめる
+                  </button>
+                </span>
+              )}
             </div>
           </form>
         </section>

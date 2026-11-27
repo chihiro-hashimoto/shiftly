@@ -185,7 +185,7 @@ export function NotificationsPage() {
         {list.data && rows.length >= 200 && <p className="small muted" style={{ padding: '8px 18px' }}>新しい順に最大200件まで表示しています。</p>}
       </Panel>
       <p className="small muted">
-        通知は店長のみが確認できる内容と、権限を委任したスタッフにも表示される内容（打刻漏れ・シフト関連など）があります。同じ内容の通知は重複して作成されません。
+        通知は管理者のみが確認できる内容と、権限を委任したスタッフにも表示される内容（打刻漏れ・シフト関連など）があります。同じ内容の通知は重複して作成されません。
       </p>
     </div>
   );

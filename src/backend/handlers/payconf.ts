@@ -4,7 +4,7 @@
  * 自分自身の給与条件はスタッフ権限では変更できない（自己昇給の防止）。
  */
 import { defineOps } from '../api';
-import { audit, isOwner, staff, type Ctx } from '../context';
+import { actorId, audit, isOwner, staff, type Ctx } from '../context';
 import { E } from '../errors';
 import * as v from '../validate';
 import type { Allowance, DeductionEntry, Employee, PayrollAdjustment, PayrollPeriod, PremiumBaseCategory, SalaryRule, TransportRule, WageRule } from '../../shared/types';
@@ -45,6 +45,7 @@ function readPeriodAmounts(a: v.Args, k: string): Record<string, number> {
 defineOps([
   {
     name: 'payconf.get',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -64,6 +65,7 @@ defineOps([
   },
   {
     name: 'payconf.upsertWageRule',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -97,6 +99,7 @@ defineOps([
   },
   {
     name: 'payconf.upsertSalaryRule',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -131,6 +134,7 @@ defineOps([
   },
   {
     name: 'payconf.upsertTransport',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -156,6 +160,7 @@ defineOps([
   },
   {
     name: 'payconf.upsertAllowance',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -182,6 +187,7 @@ defineOps([
   },
   {
     name: 'deductions.get',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit', 'payroll_confirm'],
     sensitive: true,
@@ -193,6 +199,7 @@ defineOps([
   },
   {
     name: 'deductions.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -231,6 +238,7 @@ defineOps([
   },
   {
     name: 'adjustments.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit', 'payroll_confirm'],
     sensitive: true,
@@ -242,6 +250,7 @@ defineOps([
   },
   {
     name: 'adjustments.add',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -260,7 +269,7 @@ defineOps([
           amount: kind.startsWith('manual') ? v.int(a, 'amount', { min: 1, max: 10_000_000, label: '金額' }) : null,
           label: v.str(a, 'label', { optional: true, max: 30 }),
           reason: v.str(a, 'reason', { min: 2, max: 300, label: '理由' }),
-          approvedBy: isOwner(ctx) ? 'owner' : staff(ctx).employeeId,
+          approvedBy: actorId(ctx),
         },
         'adj',
       );
@@ -270,6 +279,7 @@ defineOps([
   },
   {
     name: 'adjustments.remove',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,

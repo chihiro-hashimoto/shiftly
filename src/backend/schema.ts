@@ -58,7 +58,12 @@ export type TableName =
   | 'request_idempotency'
   | 'operation_journal'
   | 'migration_history'
-  | 'exports';
+  | 'exports'
+  | 'admin_credentials'
+  | 'admin_sessions'
+  | 'break_declarations'
+  | 'overtime_requests'
+  | 'overtime_request_history';
 
 const t = (name: TableName, description: string, cols: Array<[string, ColType]>, partitionBy?: string): TableDef => ({
   name,
@@ -67,7 +72,8 @@ const t = (name: TableName, description: string, cols: Array<[string, ColType]>,
   ...(partitionBy ? { partitionBy } : {}),
 });
 
-export const SCHEMA_VERSION = 1;
+/** v1: 初版 / v2: v1.3（管理者パスワード・PIN 任意化・本人修正・休憩申告・シフト基準給与・早出残業申請）。列・テーブルの追加のみ */
+export const SCHEMA_VERSION = 2;
 
 export const TABLES: TableDef[] = [
   t('store_settings', '店舗設定（1行）', [
@@ -78,6 +84,8 @@ export const TABLES: TableDef[] = [
     ['idleTimeoutSec', 'number'], ['pinMaxAttempts', 'number'], ['pinLockMinutes', 'number'], ['publicHolidays', 'json'],
     ['paidLeaveWageMethod', 'string'], ['halfDayLeaveAllowed', 'boolean'], ['payslipDelivery', 'string'], ['retentionYears', 'number'],
     ['dailyBackupGenerations', 'number'], ['monthlyBackupGenerations', 'number'], ['payrollRulesConfirmedAt', 'string_nullable'],
+    // v2
+    ['breakMode', 'string'], ['payrollTimeBasis', 'string'],
   ]),
   t('employees', 'スタッフ（主キーは id。氏名は主キーにしない）', [
     ['employeeCode', 'string'], ['displayName', 'string'], ['kana', 'string'], ['status', 'string'], ['hireDate', 'string_nullable'],
@@ -91,6 +99,8 @@ export const TABLES: TableDef[] = [
   t('credentials', 'PIN・管理用パスコードのハッシュ（平文なし。pepper は Script Properties）', [
     ['employeeId', 'string'], ['kind', 'string'], ['hash', 'string'], ['salt', 'string'], ['iterations', 'number'], ['algo', 'string'],
     ['failedCount', 'number'], ['lockedUntil', 'string_nullable'], ['mustChange', 'boolean'],
+    // v2
+    ['lockCount', 'number'],
   ]),
   t('permissions', 'スタッフ個別権限', [['employeeId', 'string'], ['permissions', 'json']]),
   t('devices', '登録済み店舗端末（トークンはハッシュのみ）', [
@@ -101,6 +111,8 @@ export const TABLES: TableDef[] = [
   t('sessions', 'スタッフセッション（トークンはハッシュのみ。月別。有効期限30分のため直近2か月のみ参照）', [
     ['tokenHash', 'string'], ['deviceId', 'string'], ['employeeId', 'string'], ['expiresAt', 'string'], ['lastActivityAt', 'string'],
     ['stepUpUntil', 'string_nullable'], ['revokedAt', 'string_nullable'],
+    // v2
+    ['verified', 'boolean'],
   ], 'createdAt'),
   t('wage_rules', '時給ルール（個人・曜日・時間帯・祝日・特定日）', [
     ['employeeId', 'string'], ['kind', 'string'], ['hourlyRate', 'number'], ['effectiveFrom', 'string'], ['effectiveTo', 'string_nullable'],
@@ -120,6 +132,9 @@ export const TABLES: TableDef[] = [
   t('attendance_corrections', '勤怠修正（原本は不変。修正前後・理由・修正者）', [
     ['employeeId', 'string'], ['action', 'string'], ['targetEventId', 'string_nullable'], ['newType', 'string_nullable'], ['newAt', 'string_nullable'],
     ['reason', 'string'], ['actorId', 'string'], ['actorKind', 'string'], ['status', 'string'], ['before', 'string'], ['after', 'string'],
+    // v2
+    ['identityVerified', 'boolean'], ['reviewStatus', 'string'], ['reviewedAt', 'string_nullable'], ['reviewedBy', 'string_nullable'],
+    ['reviewComment', 'string'], ['groupId', 'string_nullable'], ['sessionKey', 'string_nullable'],
   ]),
   t('manual_breaks', '手動登録の休憩', [['employeeId', 'string'], ['start', 'string'], ['end', 'string'], ['reason', 'string'], ['actorId', 'string']]),
   t('shifts', 'シフト', [
@@ -179,6 +194,29 @@ export const TABLES: TableDef[] = [
   t('operation_journal', '書き込み処理履歴（部分失敗の検出・再実行。月別）', [['op', 'string'], ['state', 'string'], ['detail', 'string']], 'createdAt'),
   t('migration_history', 'DB マイグレーション履歴', [['fromVersion', 'number'], ['toVersion', 'number'], ['status', 'string'], ['note', 'string']]),
   t('exports', '出力ファイル履歴', [['kind', 'string'], ['format', 'string'], ['driveFileId', 'string'], ['requestedBy', 'string'], ['note', 'string']]),
+  // ---- v2（v1.3）
+  t('admin_credentials', '管理者パスワードのハッシュ（店舗に 1 行。平文なし。pepper は Script Properties）', [
+    ['hash', 'string'], ['salt', 'string'], ['iterations', 'number'], ['algo', 'string'], ['failedCount', 'number'], ['lockedUntil', 'string_nullable'],
+    ['lockCount', 'number'], ['setBy', 'string'], ['passwordChangedAt', 'string'],
+  ]),
+  t('admin_sessions', '管理者セッション（トークンはハッシュのみ。月別。無操作 5 分で失効）', [
+    ['tokenHash', 'string'], ['deviceId', 'string'], ['expiresAt', 'string'], ['lastActivityAt', 'string'], ['reauthUntil', 'string_nullable'],
+    ['revokedAt', 'string_nullable'], ['revokeReason', 'string'],
+  ], 'createdAt'),
+  t('break_declarations', '休憩の取得申告（予定休憩の取得確認・未取得・短縮・延長・時間帯違い・追加）', [
+    ['employeeId', 'string'], ['sessionKey', 'string'], ['laborDate', 'string'], ['shiftId', 'string_nullable'], ['kind', 'string'], ['intervals', 'json'],
+    ['reason', 'string'], ['identityVerified', 'boolean'], ['actorId', 'string'], ['actorKind', 'string'], ['status', 'string'], ['reviewStatus', 'string'],
+    ['reviewedAt', 'string_nullable'], ['reviewedBy', 'string_nullable'], ['reviewComment', 'string'],
+  ]),
+  t('overtime_requests', '早出・残業申請／シフト外勤務の確認（申請状態と実労働の確認を分けて保持）', [
+    ['employeeId', 'string'], ['sessionKey', 'string_nullable'], ['workDate', 'string'], ['shiftId', 'string_nullable'], ['category', 'string'],
+    ['requestedStart', 'string'], ['requestedEnd', 'string'], ['reason', 'string'], ['identityVerified', 'boolean'], ['requestedBy', 'string'],
+    ['requestedByKind', 'string'], ['status', 'string'], ['workConfirmation', 'string'], ['approvedStart', 'string_nullable'], ['approvedEnd', 'string_nullable'],
+    ['reviewedBy', 'string_nullable'], ['reviewedAt', 'string_nullable'], ['reviewComment', 'string'], ['parentRequestId', 'string_nullable'],
+  ]),
+  t('overtime_request_history', '早出・残業申請の履歴（追記専用）', [
+    ['requestId', 'string'], ['action', 'string'], ['actorId', 'string'], ['actorKind', 'string'], ['before', 'string'], ['after', 'string'], ['comment', 'string'],
+  ]),
 ];
 
 export const TABLE_BY_NAME: Record<TableName, TableDef> = Object.fromEntries(TABLES.map((d) => [d.name, d])) as Record<TableName, TableDef>;

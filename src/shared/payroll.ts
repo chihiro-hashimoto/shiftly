@@ -109,6 +109,13 @@ export interface PayrollInput {
   leaveOverdrawnDays?: number;
   /** 平均賃金方式の場合の1日平均賃金（円, 分数）。算出不能なら null */
   averageDailyWage: { n: string; d: string } | null;
+  /**
+   * v1.3: 勤怠の確認状況から生じる課題（シフト外の未確認時間・未処理の早出残業申請・未確認の本人修正等）。
+   * 勤怠側（services）で判定して渡す
+   */
+  extraIssues?: PayrollIssue[];
+  /** v1.3: 時間基準（shift=シフト基準 / actual=実績）と勤務ごとの時間区分（スナップショット用） */
+  timeBasis?: { basis: 'shift' | 'actual'; details: unknown[] };
 }
 
 export interface DailyBreakdown {
@@ -219,7 +226,23 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
       add('confirm', 'FIXED_BREAK_APPLIED', 'シフトの固定休憩を適用した勤務があります（実際に取得したか確認してください）', s.laborDate);
     if (s.anomalies.includes('abnormal_hours')) add('confirm', 'ABNORMAL_HOURS', '異常に長い勤務があります', s.laborDate);
     if (s.anomalies.includes('clock_out_during_break')) add('confirm', 'CLOCK_OUT_DURING_BREAK', '休憩中に退勤した勤務があります', s.laborDate);
+    // v1.3: 予定休憩は「取得した」と確認されたものだけを控除する
+    if (s.anomalies.includes('planned_break_unconfirmed'))
+      add('confirm', 'PLANNED_BREAK_UNCONFIRMED', '予定休憩の取得が確認されていないため、休憩を控除していません（取得していた場合は休憩の申告・修正を登録してください）', s.laborDate);
+    if (s.anomalies.includes('planned_break_time_unset'))
+      add('confirm', 'PLANNED_BREAK_TIME_UNSET', '予定休憩の開始時刻がシフトに登録されていないため、休憩を控除していません', s.laborDate);
+    if (s.anomalies.includes('planned_break_changed_after_declaration'))
+      add('confirm', 'PLANNED_BREAK_CHANGED', '休憩の取得を確認した後にシフトの予定休憩が変更されています（確認した時点の休憩で計算しています）', s.laborDate);
+    if (s.anomalies.includes('planned_break_not_added_due_to_punch'))
+      add('info', 'PLANNED_BREAK_NOT_ADDED', '休憩打刻があるため、予定休憩は重ねて控除していません', s.laborDate);
+    if (s.anomalies.includes('break_declaration_overrides_punch'))
+      add('confirm', 'BREAK_DECLARATION_OVERRIDES_PUNCH', '休憩の申告が休憩打刻と異なります（申告の内容で計算しています）', s.laborDate);
+    if (s.anomalies.includes('declared_break_outside_work'))
+      add('confirm', 'DECLARED_BREAK_OUTSIDE_WORK', '勤務時間外の休憩申告があります（控除していません）', s.laborDate);
+    if (s.anomalies.includes('break_declared_unverified'))
+      add('confirm', 'BREAK_DECLARED_UNVERIFIED', '本人確認（PIN）のない休憩の申告を反映しています', s.laborDate);
   }
+  for (const i of input.extraIssues ?? []) add(i.severity, i.code, i.message, i.date);
 
   // ---- 区分
   const rulesForCuts = input.wageRules;
@@ -515,7 +538,7 @@ export function computePayroll(input: PayrollInput): PayrollOutput {
         extraBase = extraBase.add(otBase);
       }
 
-      // 欠勤・遅刻早退控除（店長が承認した調整のみ。シフトから自動反映しない）
+      // 欠勤・遅刻早退控除（管理者が承認した調整のみ。シフトから自動反映しない）
       for (const a of input.adjustments) {
         if (a.kind === 'absence_days') {
           if (!sr.absenceDeduction?.enabled || !sr.absenceDeduction.divisorDays) {

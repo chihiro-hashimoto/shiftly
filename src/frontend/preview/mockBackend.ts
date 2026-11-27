@@ -4,6 +4,7 @@
  * - データはメモリ上のみ。再読み込みで初期状態に戻る（端末へ保存しない）
  */
 import { handleRequest } from '../../backend/index';
+import { currentEpoch } from '../../backend/context';
 import { createMockEnv, type MockEnv } from '../../backend/mock';
 import type { ApiResult, Transport } from '../api/transport';
 import { addDays, localDateTime, toIsoJst, toLocalDate } from '../../shared/time';
@@ -11,10 +12,14 @@ import { addDays, localDateTime, toIsoJst, toLocalDate } from '../../shared/time
 export interface PreviewBackend {
   env: MockEnv;
   owner: Transport;
-  kiosk: Transport;
+  staff: Transport;
   deviceToken: string;
   staffPins: Array<{ name: string; pin: string }>;
+  adminPassword: string;
 }
+
+/** プレビュー専用の架空の管理者パスワード（本番には存在しない。本番では Google 所有者が設定する） */
+const DEMO_ADMIN_PASSWORD = 'Demo#Manager2026';
 
 function delay<T>(v: T): Promise<T> {
   // 実環境の通信待ちを模した短い遅延（UI のローディング確認用）
@@ -24,10 +29,13 @@ function delay<T>(v: T): Promise<T> {
 export function startPreviewBackend(): PreviewBackend {
   const env = createMockEnv({ autoClock: true, kind: 'mock' });
   const be = { p: env.platform, adapter: () => env.adapter };
-  const owner: Transport = { mode: 'admin', call: (req) => delay(handleRequest(be, { op: req.op, args: req.args, requestId: req.requestId }, 'owner') as ApiResult) };
-  const kiosk: Transport = { mode: 'kiosk', call: (req) => delay(handleRequest(be, req) as ApiResult) };
+  // Shiftly-Admin（src/gas/admin.ts）と同じく、ブラウザ由来のフィールドは op / args / requestId / epoch だけを渡す
+  const owner: Transport = { mode: 'admin', call: (req) => delay(handleRequest(be, { op: req.op, args: req.args, requestId: req.requestId, ...(typeof req.epoch === 'number' ? { epoch: req.epoch } : {}) }, 'owner') as ApiResult) };
+  const staffT: Transport = { mode: 'staff', call: (req) => delay(handleRequest(be, req) as ApiResult) };
   const o = <T = unknown>(op: string, args?: unknown): T => {
-    const r = handleRequest(be, { op, args, requestId: `seed${Math.random().toString(16).slice(2, 12)}` }, 'owner');
+    // デモデータの投入（最新の画面と同じく、現在の復元世代を付ける）
+    const epoch = currentEpoch(env.platform);
+    const r = handleRequest(be, { op, args, requestId: `seed${Math.random().toString(16).slice(2, 12)}`, ...(epoch !== null ? { epoch } : {}) }, 'owner');
     if (!r.ok) throw new Error(`${op}: ${r.error.message}`);
     return r.data as T;
   };
@@ -45,8 +53,9 @@ export function startPreviewBackend(): PreviewBackend {
     minimumWages: [{ effectiveFrom: '2025-10-01', hourly: 1000, label: 'サンプル（架空の値）', sourceNote: 'プレビュー用の架空の値。本番では公式資料を確認して入力' }],
     paidLeaveWageMethod: 'normal',
   });
+  o('adminAuth.setPassword', { password: DEMO_ADMIN_PASSWORD });
   const en = o<{ code: string }>('devices.createEnrollment', { deviceName: '店舗iPad（デモ）' });
-  const dev = handleRequest(be, { op: 'kiosk.enroll', args: { code: en.code, userAgent: 'preview' }, requestId: 'seed_enroll_01' });
+  const dev = handleRequest(be, { op: 'staff.enroll', args: { code: en.code, userAgent: 'preview' }, requestId: 'seed_enroll_01' });
   if (!dev.ok) throw new Error(dev.error.message);
   const deviceToken = (dev.data as { deviceToken: string }).deviceToken;
 
@@ -54,13 +63,15 @@ export function startPreviewBackend(): PreviewBackend {
     { name: 'サンプル 一郎', kana: 'さんぷる いちろう', pin: '482913', rate: 1150, type: 'hourly' as const },
     { name: 'サンプル 花子', kana: 'さんぷる はなこ', pin: '573024', rate: 1200, type: 'hourly' as const },
     { name: 'デモ 次郎', kana: 'でも じろう', pin: '604135', rate: 1100, type: 'hourly' as const },
-    { name: 'デモ 店長代理', kana: 'でも てんちょうだいり', pin: '715246', rate: 0, type: 'monthly' as const },
+    { name: 'デモ 管理者代理', kana: 'でも かんりしゃだいり', pin: '715246', rate: 0, type: 'monthly' as const },
+    // PIN 未設定のスタッフ（名前の選択だけで出退勤。本人未確認）
+    { name: 'デモ 三郎', kana: 'でも さぶろう', pin: '', rate: 1100, type: 'hourly' as const },
   ];
   const ids: string[] = [];
   for (const s of staff) {
     const e = o<{ id: string }>('employees.create', { displayName: s.name, kana: s.kana, payType: s.type, hireDate: '2025-04-01' });
     ids.push(e.id);
-    o('credentials.setPin', { employeeId: e.id, pin: s.pin });
+    if (s.pin) o('credentials.setPin', { employeeId: e.id, pin: s.pin });
     o('payconf.upsertTransport', { employeeId: e.id, method: 'per_day', amount: 500, monthlyCap: 15000, effectiveFrom: '2025-04-01' });
     o('employment.upsert', { employeeId: e.id, effectiveFrom: '2025-04-01', payType: s.type, weeklyScheduledDays: s.type === 'monthly' ? 5 : 3, weeklyScheduledMinutes: s.type === 'monthly' ? 2400 : 1200, dailyScheduledMinutes: s.type === 'monthly' ? 480 : 400 });
     if (s.type === 'hourly') {
@@ -70,7 +81,7 @@ export function startPreviewBackend(): PreviewBackend {
       o('payconf.upsertSalaryRule', { employeeId: e.id, effectiveFrom: '2025-04-01', monthlySalary: 260000, monthlyScheduledMinutes: 10200, scheduledWeekdays: [0, 2, 3, 4, 5], scheduledDailyMinutes: 480, inLegalOvertimeRate: 100, confirmed: true });
     }
   }
-  // 店長代理にシフト管理・勤怠閲覧の委任（追加認証パスコード: Demo2026pass）
+  // 管理者代理にシフト管理・勤怠閲覧の委任（追加認証パスコード: Demo2026pass）
   o('permissions.set', { employeeId: ids[3], permissions: ['punch_self', 'attendance_view_self', 'payroll_view_self', 'payslip_view_self', 'shift_view_published', 'leave_view_self', 'notifications_view', 'attendance_view_all', 'shift_edit', 'shift_publish'] });
   o('credentials.setStepUp', { employeeId: ids[3], passcode: 'Demo2026pass' });
 
@@ -90,14 +101,22 @@ export function startPreviewBackend(): PreviewBackend {
       add('clock_out', end);
     });
   }
-  for (let d = 0; d < 14; d++) {
+  // 過去分も含めてシフトを登録（シフト基準の給与計算・シフト外の勤務の確認をプレビューで確認できるように）
+  for (let d = -10; d < 14; d++) {
     const date = addDays(today, d);
     ids.forEach((id, i) => {
       if ((d + i) % 3 === 0) return;
-      o('shifts.upsert', { employeeId: id, date, start: i === 3 ? '17:00' : '18:00', end: i === 3 ? '26:00' : '24:00', breakMinutes: 45, applyFixedBreak: false });
+      o('shifts.upsert', { employeeId: id, date, start: i === 3 ? '17:00' : '18:00', end: i === 3 ? '26:00' : '24:00', breakMinutes: 45, fixedBreakStart: '21:00' });
     });
   }
-  o('shifts.publish', { from: today, to: addDays(today, 6) });
+  o('shifts.publish', { from: addDays(today, -10), to: addDays(today, 6) });
+  // 早出・残業申請のサンプル（申請中）
+  try {
+    const d1 = addDays(today, -2);
+    o('offshift.confirm', { comment: 'プレビュー用サンプル（閉店作業）', items: [{ employeeId: ids[0], start: `${addDays(d1, 1)}T00:00`, end: `${addDays(d1, 1)}T00:30`, result: 'work', category: 'late' }] });
+  } catch {
+    /* サンプルの勤務がない日は登録しない */
+  }
   o('budgets.upsert', { month: today.slice(0, 7), monthlyAmount: 650000, laborCostAllocation: 'by_worked_minutes' });
   o('leave.grant', { employeeId: ids[0], grantDate: '2025-10-01', days: 6, kind: 'proportional', attendanceRateConfirmed: true, note: 'サンプル' });
   try {
@@ -105,5 +124,5 @@ export function startPreviewBackend(): PreviewBackend {
   } catch {
     /* noop */
   }
-  return { env, owner, kiosk, deviceToken, staffPins: staff.map((s) => ({ name: s.name, pin: s.pin })) };
+  return { env, owner, staff: staffT, deviceToken, staffPins: staff.filter((s) => s.pin).map((s) => ({ name: s.name, pin: s.pin })), adminPassword: DEMO_ADMIN_PASSWORD };
 }

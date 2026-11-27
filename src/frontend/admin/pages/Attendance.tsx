@@ -274,7 +274,7 @@ function DetailModal({ employeeId, name, from, to, onClose }: { employeeId: stri
                       {c.before && <div className="small muted">修正前: {(() => { try { const b = JSON.parse(c.before) as { type: string; at: string }; return `${TYPE_LABEL[b.type]} ${b.at.slice(5, 16).replace('T', ' ')}`; } catch { return ''; } })()}</div>}
                     </td>
                     <td>{c.reason}</td>
-                    <td>{c.actorId === 'owner' ? '店長' : 'スタッフ（委任）'}</td>
+                    <td>{c.actorId === 'owner' ? '管理者' : 'スタッフ（委任）'}</td>
                   </tr>
                 ))}
               </tbody>

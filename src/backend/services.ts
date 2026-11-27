@@ -8,12 +8,14 @@ import type {
   Allowance,
   AttendanceCorrection,
   AttendanceEvent,
+  BreakDeclaration,
   DeductionEntry,
   Employee,
   EmploymentHistory,
   LeaveGrant,
   LeaveTransaction,
   ManualBreak,
+  OvertimeRequest,
   PayrollAdjustment,
   PayrollPeriod,
   PayrollResult,
@@ -26,7 +28,8 @@ import type {
 } from '../shared/types';
 import { buildSessions, effectiveEvents, DEFAULT_SESSION_OPTIONS, type EffectiveEvent } from '../shared/attendance';
 import { addDays, localDateTime, monthKey, type LocalDate } from '../shared/time';
-import { computePayroll, type PayrollInput, type PayrollOutput } from '../shared/payroll';
+import { computePayroll, type PayrollInput, type PayrollIssue, type PayrollOutput } from '../shared/payroll';
+import { applyTimeBasis, type SessionTimeBasis } from '../shared/worktime';
 import { weekStartOf, overtime60WindowStart } from '../shared/labor';
 import { periodForKey } from '../shared/period';
 import { leaveBalance } from '../shared/leave';
@@ -67,10 +70,88 @@ export function sessionsFor(ctx: Ctx, employeeId: string, from: LocalDate, to: L
   const st = s ?? settings(ctx);
   const evs = loadEffective(ctx, employeeId, addDays(from, -1), addDays(to, 1));
   const mbs = ctx.uow.list<ManualBreak>('manual_breaks').filter((b) => b.employeeId === employeeId);
-  const shifts = ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === employeeId && x.date >= addDays(from, -1) && x.date <= to);
-  return buildSessions(employeeId, evs, mbs, shifts, { ...DEFAULT_SESSION_OPTIONS, businessDayCutoff: st.businessDayCutoff, now: ctx.now }).filter(
+  const shifts = ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === employeeId && x.date >= addDays(from, -1) && x.date <= addDays(to, 1));
+  // v1.3: 予定休憩は「取得した」と申告・確認された勤務だけに控除する（breakDeclarations を必ず渡す）
+  const decls = ctx.uow.list<BreakDeclaration>('break_declarations').filter((d) => d.employeeId === employeeId);
+  return buildSessions(employeeId, evs, mbs, shifts, { ...DEFAULT_SESSION_OPTIONS, businessDayCutoff: st.businessDayCutoff, now: ctx.now, breakDeclarations: decls }).filter(
     (x) => x.laborDate >= from && x.laborDate <= to,
   );
+}
+
+/** 給与計算用の勤務（店舗設定の時間基準に従い、シフト基準ではシフト外の未確認時間を除外） */
+export function payableSessionsFor(ctx: Ctx, employeeId: string, from: LocalDate, to: LocalDate, s?: StoreSettings, basisOverride?: 'shift' | 'actual'): { sessions: WorkSession[]; details: SessionTimeBasis[]; basis: 'shift' | 'actual' } {
+  const st = s ?? settings(ctx);
+  const actual = sessionsFor(ctx, employeeId, from, to, st);
+  const shifts = ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === employeeId && x.date >= addDays(from, -1) && x.date <= addDays(to, 1));
+  const reqs = ctx.uow.list<OvertimeRequest>('overtime_requests').filter((r) => r.employeeId === employeeId);
+  const basis = basisOverride ?? (st.payrollTimeBasis === 'actual' ? 'actual' : 'shift');
+  const r = applyTimeBasis(actual, shifts, reqs, basis);
+  return { ...r, basis };
+}
+
+/** 勤怠修正の対象日（修正後または修正前の日時の日付） */
+export function correctionDate(c: AttendanceCorrection): LocalDate | null {
+  const at = c.newAt ?? (() => {
+    try {
+      return (JSON.parse(c.before || '{}') as { at?: string }).at ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  return at ? (at.slice(0, 10) as LocalDate) : null;
+}
+
+/** v1.2 以前の行（列追加前）の確認状態は「確認不要」とみなす */
+export function reviewStatusOf(c: { reviewStatus?: string | null }): AttendanceCorrection['reviewStatus'] {
+  const r = c.reviewStatus;
+  return r === 'unreviewed' || r === 'pending' || r === 'approved' || r === 'rejected' ? r : 'not_required';
+}
+
+/** 未確認時間の表示（1 分未満は秒） */
+export function durationLabel(ms: number): string {
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}秒`;
+  return `${Math.round(ms / 60_000)}分`;
+}
+
+/**
+ * 給与計算に影響する勤怠の確認状況
+ * details には当期の勤務に加え、週・月60時間の判定のために読む期間前（前の給与期間）の勤務も含む。
+ * 期間前の未確認時間も当期の割増に影響するため確定を止める（Codex 監査2 #5）
+ */
+export function attendanceReviewIssues(ctx: Ctx, employeeId: string, from: LocalDate, to: LocalDate, details: SessionTimeBasis[]): PayrollIssue[] {
+  const out: PayrollIssue[] = [];
+  for (const d of details) {
+    if (d.laborDate > to) continue;
+    // 秒単位で判定（1 分未満の未確認時間も見逃さない。Codex 監査2 #4）
+    if (d.unresolvedMs > 0) {
+      const cats = [...new Set(d.candidates.filter((c) => c.segments.some((g) => g.resolution === 'unresolved')).map((c) => ({ early: '早出', late: '残業', between: 'シフト間', no_shift: 'シフト未登録' })[c.category]))];
+      const before = d.laborDate < from;
+      out.push({
+        severity: 'blocking',
+        code: before ? 'OFF_SHIFT_UNCONFIRMED_PRIOR' : 'OFF_SHIFT_UNCONFIRMED',
+        message: before
+          ? `前の給与期間の勤務にシフト外の未確認時間（${cats.join('・')}）${durationLabel(d.unresolvedMs)}があります。週・月60時間の時間外の判定に影響するため、先に確認してください`
+          : `シフト外の勤務候補（${cats.join('・')}）${durationLabel(d.unresolvedMs)}が未確認です。早出・残業申請の承認、または実労働の有無の確認を行ってください（未申請でも実労働であれば給与に含めます）`,
+        date: d.laborDate,
+      });
+    }
+  }
+  const reqs = ctx.uow.list<OvertimeRequest>('overtime_requests').filter((r) => r.employeeId === employeeId && r.workDate >= from && r.workDate <= to);
+  const pending = reqs.filter((r) => r.status === 'pending').length;
+  if (pending) out.push({ severity: 'blocking', code: 'OVERTIME_REQUEST_PENDING', message: `未処理の早出・残業申請が${pending}件あります` });
+  const returned = reqs.filter((r) => r.status === 'returned').length;
+  if (returned) out.push({ severity: 'confirm', code: 'OVERTIME_REQUEST_RETURNED', message: `差戻し中の早出・残業申請が${returned}件あります（該当時間が未確認の場合は給与確定できません）` });
+  const cors = ctx.uow.list<AttendanceCorrection>('attendance_corrections').filter((c) => c.employeeId === employeeId);
+  const inRange = (c: AttendanceCorrection) => {
+    const d = correctionDate(c);
+    return d !== null && d >= addDays(from, -1) && d <= addDays(to, 1);
+  };
+  const unreviewed = new Set(cors.filter((c) => inRange(c) && reviewStatusOf(c) === 'unreviewed' && c.status === 'applied').map((c) => c.groupId ?? c.id)).size;
+  if (unreviewed) out.push({ severity: 'confirm', code: 'SELF_CORRECTION_UNREVIEWED', message: `スタッフ本人による勤怠修正（管理者未確認）が${unreviewed}件あります。内容を確認してください` });
+  const decls = ctx.uow.list<BreakDeclaration>('break_declarations').filter((d) => d.employeeId === employeeId && d.laborDate >= from && d.laborDate <= to);
+  const pendingDecl = decls.filter((d) => d.status === 'pending').length;
+  if (pendingDecl) out.push({ severity: 'blocking', code: 'BREAK_DECLARATION_PENDING', message: `確認待ちの休憩の申告が${pendingDecl}件あります` });
+  return out;
 }
 
 export function activeEmployees(ctx: Ctx): Employee[] {
@@ -140,16 +221,31 @@ export function averageDailyWage(ctx: Ctx, employee: Employee, beforeDate: Local
 }
 
 /** 給与計算の入力組み立て */
-export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod): PayrollInput {
+/**
+ * 給与計算の入力
+ * basisOverride: 人件費分析では、確認待ちのシフト外の勤務も実績として概算するため 'actual' を指定する（Codex 監査2 #10）
+ */
+export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod, basisOverride?: 'shift' | 'actual'): PayrollInput {
   const s = settings(ctx);
   // 週の時間外判定と月60時間の累計に必要な過去の勤務を読む。
   // 60時間の起算日が週の途中にある場合、その週の初日まで遡る（起算週の週次時間外を取りこぼさない）
   const windowStart = s.overtime60StartDay === null ? period.from : overtime60WindowStart(period.from, { overtime60StartDay: s.overtime60StartDay } as never);
   const earliest = windowStart < period.from ? windowStart : period.from;
   const lookbackFrom = weekStartOf(earliest, s.weekStartDay ?? 0);
-  const sessions = sessionsFor(ctx, employee.id, lookbackFrom, period.to, s);
+  const tb = payableSessionsFor(ctx, employee.id, lookbackFrom, period.to, s, basisOverride);
+  const sessions = tb.sessions;
   const by = <T extends { employeeId: string }>(xs: T[]) => xs.filter((x) => x.employeeId === employee.id);
-  const pendingCorrections = ctx.uow.list<AttendanceCorrection>('attendance_corrections').filter((c) => c.employeeId === employee.id && c.status === 'pending').length;
+  // 承認待ち（未反映）の勤怠修正: 期間内（日付不明のものを含む）
+  const pendingCorrections = new Set(
+    ctx.uow
+      .list<AttendanceCorrection>('attendance_corrections')
+      .filter((c) => c.employeeId === employee.id && c.status === 'pending')
+      .filter((c) => {
+        const d = correctionDate(c);
+        return d === null || (d >= addDays(period.from, -1) && d <= addDays(period.to, 1));
+      })
+      .map((c) => c.groupId ?? c.id),
+  ).size;
   return {
     employee,
     period: { id: period.id, periodKey: period.periodKey, from: period.from, to: period.to, payDate: period.payDate },
@@ -167,6 +263,8 @@ export function payrollInput(ctx: Ctx, employee: Employee, period: PayrollPeriod
     pendingCorrectionCount: pendingCorrections,
     leaveOverdrawnDays: leaveBalance(by(ctx.uow.list<LeaveGrant>('leave_grants')), by(ctx.uow.list<LeaveTransaction>('leave_transactions')), period.to).overdrawn,
     averageDailyWage: s.paidLeaveWageMethod === 'average' ? averageDailyWage(ctx, employee, period.from) : null,
+    extraIssues: attendanceReviewIssues(ctx, employee.id, period.from, period.to, tb.details),
+    timeBasis: { basis: tb.basis, details: tb.details.filter((d) => d.laborDate >= period.from && d.laborDate <= period.to) },
   };
 }
 
@@ -194,4 +292,12 @@ export function latestResult(ctx: Ctx, periodId: string, employeeId: string): Pa
 
 export function currentMonth(ctx: Ctx): string {
   return monthKey(today(ctx));
+}
+
+/** 日付が給与確定済みの期間に含まれる場合はその期間 */
+export function confirmedPeriodFor(ctx: Ctx, d: LocalDate): PayrollPeriod | null {
+  const p = ctx.uow.list<PayrollPeriod>('payroll_periods').find((x) => x.from <= d && d <= x.to);
+  if (!p) return null;
+  const confirmed = ctx.uow.list<PayrollResult>('payroll_results').some((r) => r.periodId === p.id && (r.status === 'confirmed' || r.status === 'issued'));
+  return confirmed ? p : null;
 }

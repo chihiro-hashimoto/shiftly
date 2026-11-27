@@ -3,7 +3,7 @@
  * F04 個別権限 / F05 スタッフ・雇用条件
  *
  * なりすまし・権限昇格の防止:
- * - 権限の付与・変更、PIN・管理用パスコードの設定/リセットは店長専用
+ * - 権限の付与・変更、PIN・管理用パスコードの設定/リセットは管理者専用（Google 所有者、または管理者パスワードで再認証した管理者）
  * - staff_manage を持つスタッフも、他人の認証情報・権限は変更できない
  */
 import { defineOps } from '../api';
@@ -12,8 +12,8 @@ import { E } from '../errors';
 import * as v from '../validate';
 import type { Credential, Employee, EmploymentHistory, PermissionKey, PermissionRow } from '../../shared/types';
 import { DEFAULT_STAFF_PERMISSIONS, PERMISSIONS, sanitizePermissions } from '../../shared/permissions';
-import { permissionsOf, revokeSessionsWhere, setCredential } from '../auth';
-import { validatePinFormat, validateStepUpSecret } from '../../shared/crypto';
+import { clearPin, hasPin, permissionsOf, revokeSessionsWhere, setCredential } from '../auth';
+import { validatePinPolicy, validateStepUpSecret } from '../../shared/crypto';
 import { parseIso } from '../../shared/time';
 
 const MANAGER_VIEW_PERMS: PermissionKey[] = [
@@ -43,6 +43,7 @@ function readEmployeeArgs(a: v.Args, partial: boolean) {
 defineOps([
   {
     name: 'employees.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: MANAGER_VIEW_PERMS,
     mutating: false,
@@ -58,8 +59,8 @@ defineOps([
           ...(isOwner(ctx)
             ? {
                 permissions: permissionsOf(ctx, e.id),
-                hasPin: ctx.uow.list<Credential>('credentials').some((c) => c.employeeId === e.id && c.kind === 'pin'),
-                hasStepUp: ctx.uow.list<Credential>('credentials').some((c) => c.employeeId === e.id && c.kind === 'stepup'),
+                hasPin: hasPin(ctx, e.id),
+                hasStepUp: ctx.uow.list<Credential>('credentials').some((c) => c.employeeId === e.id && c.kind === 'stepup' && c.hash !== ''),
                 locked: ctx.uow.list<Credential>('credentials').some((c) => c.employeeId === e.id && !!c.lockedUntil && parseIso(c.lockedUntil) > ctx.now),
               }
             : {}),
@@ -68,6 +69,7 @@ defineOps([
   },
   {
     name: 'employees.create',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['staff_manage'],
     sensitive: true,
@@ -100,6 +102,7 @@ defineOps([
   },
   {
     name: 'employees.update',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['staff_manage'],
     sensitive: true,
@@ -118,6 +121,7 @@ defineOps([
   },
   {
     name: 'employees.retire',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['staff_manage'],
     sensitive: true,
@@ -136,7 +140,9 @@ defineOps([
   },
   {
     name: 'employees.reactivate',
+    kind: 'edit',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx, raw) => {
       const e = ctx.uow.get<Employee>('employees', v.id(v.obj(raw), 'employeeId'));
@@ -146,16 +152,21 @@ defineOps([
       return saved;
     },
   },
-  // ------------------------------------------------------------ 権限（店長専用）
+  // ------------------------------------------------------------ 権限（管理者専用）
   {
     name: 'permissions.catalog',
+    kind: 'read',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     handler: () => ({ permissions: PERMISSIONS, defaults: DEFAULT_STAFF_PERMISSIONS }),
   },
   {
     name: 'permissions.set',
+    kind: 'edit',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
@@ -173,27 +184,50 @@ defineOps([
       return { employeeId, permissions: perms };
     },
   },
-  // ------------------------------------------------------------ 認証情報（店長専用）
+  // ------------------------------------------------------------ 認証情報（管理者専用）
   {
     name: 'credentials.setPin',
+    kind: 'auth',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
       const employeeId = v.id(a, 'employeeId');
       if (!ctx.uow.get<Employee>('employees', employeeId)) throw E.notFound('スタッフ');
       const pin = v.str(a, 'pin', { max: 12, label: 'PIN' });
-      const err = validatePinFormat(pin);
+      const err = validatePinPolicy(pin);
       if (err) throw E.invalid(err);
       setCredential(ctx, employeeId, 'pin', pin, false);
       revokeSessionsWhere(ctx, (s) => s.employeeId === employeeId);
-      audit(ctx, 'credential.set_pin', 'employee', employeeId, 'PIN設定（店長）');
+      audit(ctx, 'credential.set_pin', 'employee', employeeId, 'PIN設定（管理者）');
       return { ok: true };
     },
   },
   {
-    name: 'credentials.setStepUp',
+    // v1.3: PIN の解除（PIN 未設定に戻す）。以後は本人未確認のログインとなり、給与・明細・勤怠詳細は表示されない
+    name: 'credentials.clearPin',
+    kind: 'auth',
     auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
+    mutating: true,
+    handler: (ctx, raw) => {
+      const employeeId = v.id(v.obj(raw), 'employeeId');
+      if (!ctx.uow.get<Employee>('employees', employeeId)) throw E.notFound('スタッフ');
+      const cleared = clearPin(ctx, employeeId);
+      revokeSessionsWhere(ctx, (s) => s.employeeId === employeeId);
+      audit(ctx, 'credential.clear_pin', 'employee', employeeId, cleared ? 'PIN解除（管理者）' : 'PIN解除（未設定のため変更なし）');
+      return { ok: true, cleared };
+    },
+  },
+  {
+    name: 'credentials.setStepUp',
+    kind: 'auth',
+    auth: 'owner',
+    adminAllowed: true,
+    reauth: true,
     mutating: true,
     handler: (ctx, raw) => {
       const a = v.obj(raw);
@@ -203,18 +237,20 @@ defineOps([
       const err = validateStepUpSecret(pass);
       if (err) throw E.invalid(err);
       setCredential(ctx, employeeId, 'stepup', pass, false);
-      audit(ctx, 'credential.set_stepup', 'employee', employeeId, '管理用パスコード設定（店長）');
+      audit(ctx, 'credential.set_stepup', 'employee', employeeId, '管理用パスコード設定（管理者）');
       return { ok: true };
     },
   },
   {
     name: 'credentials.unlock',
+    kind: 'auth',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx, raw) => {
       const employeeId = v.id(v.obj(raw), 'employeeId');
       for (const c of ctx.uow.list<Credential>('credentials').filter((x) => x.employeeId === employeeId)) {
-        ctx.uow.update('credentials', { ...c, failedCount: 0, lockedUntil: null });
+        ctx.uow.update('credentials', { ...c, failedCount: 0, lockedUntil: null, lockCount: 0 });
       }
       audit(ctx, 'credential.unlock', 'employee', employeeId, 'ロック解除');
       return { ok: true };
@@ -223,6 +259,7 @@ defineOps([
   // ------------------------------------------------------------ 雇用条件
   {
     name: 'employment.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,
@@ -234,6 +271,7 @@ defineOps([
   },
   {
     name: 'employment.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['pay_conditions_edit'],
     sensitive: true,

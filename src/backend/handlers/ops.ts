@@ -1,16 +1,18 @@
 /**
  * 出力・人件費分析・予算・通知・バックアップ/復元
- * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ・復元
+ * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ
+ * （アプリ内のデータの復元は v1.3 では提供しない。D-027 B案。Google 所有者の保守作業: handlers/maintenance.ts）
  */
 import { defineOps } from '../api';
-import { audit, has, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
-import { ApiError, E } from '../errors';
+import { actorId, audit, has, isGoogleOwner, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
+import { E } from '../errors';
 import * as v from '../validate';
-import type { BackupHistory, Budget, Credential, Device, Employee, PermissionRow, NotificationRow, PayrollPeriod, PayrollResult, Shift, WorkSession } from '../../shared/types';
+import type { AttendanceCorrection, BackupHistory, Budget, Credential, Employee, OvertimeRequest, NotificationRow, PayrollPeriod, PayrollResult, Shift, WorkSession } from '../../shared/types';
 import { toCsv, type Cell } from '../../shared/csv';
 import { buildXlsx, toBase64, type XSheet } from '../../shared/xlsx';
 import { utf8 } from '../../shared/crypto';
-import { activeEmployees, employeesInPeriod, latestResult, sessionsFor, payrollInput } from '../services';
+import { activeEmployees, correctionDate, durationLabel, employeesInPeriod, latestResult, reviewStatusOf, sessionsFor, payrollInput } from '../services';
+import { applyTimeBasis } from '../../shared/worktime';
 import { sessionView } from './attendance';
 import { addDays, dayOfWeek, formatMinutes, localDateTime, type LocalDate } from '../../shared/time';
 import { computePayroll } from '../../shared/payroll';
@@ -18,10 +20,7 @@ import { allocateLaborCost, budgetStatus, monthRange, shiftToSession } from '../
 import { canSeeIndividualPay } from '../../shared/permissions';
 import { detectAttendanceNotifications, detectLeaveNotifications, newOnly, type NotificationDraft } from '../../shared/notifications';
 import { SCHEMA_VERSION } from '../schema';
-import { revokeSessionsWhere } from '../auth';
-import { integrityCheck } from './system';
 import type { LeaveGrant, LeaveTransaction, WageRule, SalaryRule, TransportRule } from '../../shared/types';
-import { UnitOfWork } from '../store';
 
 // ------------------------------------------------------------------ 出力
 type Format = 'csv' | 'xlsx';
@@ -31,10 +30,10 @@ function deliver(ctx: Ctx, kind: string, baseName: string, format: Format, sheet
   const bytes = format === 'csv' ? utf8(toCsv(sheets[0]!.header, sheets[0]!.rows as Cell[][])) : buildXlsx(sheets);
   const mime = format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const f = ctx.p.files.createFile('03_Exports', fileName, mime, bytes);
-  ctx.uow.insert('exports', { kind, format, driveFileId: f.fileId, requestedBy: isOwner(ctx) ? 'owner' : staff(ctx).employeeId, note: fileName } as never, 'exp');
+  ctx.uow.insert('exports', { kind, format, driveFileId: f.fileId, requestedBy: actorId(ctx), note: fileName } as never, 'exp');
   audit(ctx, 'export', kind, f.fileId, `${fileName}`);
-  // 共用 iPad（スタッフ）には業務データを含むファイルを返さず、店長の Drive に保存するのみ
-  if (!isOwner(ctx)) return { savedToDrive: true, fileName };
+  // 共用 iPad（スタッフ・管理者パスワードの管理者）には業務データを含むファイルを返さず、Google 所有者の Drive に保存するのみ
+  if (!isGoogleOwner(ctx)) return { savedToDrive: true, fileName };
   return { savedToDrive: true, fileName, mimeType: mime, base64: toBase64(bytes) };
 }
 
@@ -58,6 +57,7 @@ function payrollRows(ctx: Ctx, p: PayrollPeriod) {
 defineOps([
   {
     name: 'export.attendance',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['export_attendance'],
     sensitive: true,
@@ -82,6 +82,7 @@ defineOps([
   },
   {
     name: 'export.payroll',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['export_payroll'],
     sensitive: true,
@@ -109,6 +110,7 @@ defineOps([
   },
   {
     name: 'export.shifts',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['shift_edit', 'export_attendance'],
     mutating: true,
@@ -127,6 +129,7 @@ defineOps([
   },
   {
     name: 'export.wageLedger',
+    kind: 'output',
     auth: 'staff_or_owner',
     perms: ['export_payroll'],
     sensitive: true,
@@ -162,11 +165,12 @@ defineOps([
 ]);
 
 // ------------------------------------------------------------------ 人件費分析・予算
-const IGNORE_FOR_COST = new Set(['DEDUCTION_UNENTERED', 'PENDING_CORRECTIONS', 'NEGATIVE_NET_PAY', 'PAYROLL_RULES_UNCONFIRMED', 'AGREEMENT36_NOT_CONCLUDED']);
+const IGNORE_FOR_COST = new Set(['DEDUCTION_UNENTERED', 'PENDING_CORRECTIONS', 'NEGATIVE_NET_PAY', 'PAYROLL_RULES_UNCONFIRMED', 'AGREEMENT36_NOT_CONCLUDED', 'OVERTIME_REQUEST_PENDING', 'BREAK_DECLARATION_PENDING']);
 
 function costFor(ctx: Ctx, e: Employee, from: LocalDate, to: LocalDate, sessionsOverride?: WorkSession[]) {
   const pseudo: PayrollPeriod = { id: `analytics-${from}`, periodKey: from.slice(0, 7), from, to, payDate: to, status: 'uncomputed', createdAt: '', updatedAt: '', version: 0 };
-  const input = payrollInput(ctx, e, pseudo);
+  // 人件費の実績・予測は勤怠の実績（修正後）で概算する。シフト外の確認待ちの勤務も含める（給与確定前の過少計上を防ぐ。Codex 監査2 #10）
+  const input = payrollInput(ctx, e, pseudo, 'actual');
   if (sessionsOverride) input.sessions = sessionsOverride;
   input.deduction = null;
   const out = computePayroll(input);
@@ -177,6 +181,7 @@ function costFor(ctx: Ctx, e: Employee, from: LocalDate, to: LocalDate, sessions
 defineOps([
   {
     name: 'analytics.laborCost',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['labor_cost_view'],
     sensitive: true,
@@ -277,6 +282,7 @@ defineOps([
   },
   {
     name: 'budgets.get',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['budget_manage', 'labor_cost_view'],
     mutating: false,
@@ -287,6 +293,7 @@ defineOps([
   },
   {
     name: 'budgets.upsert',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['budget_manage'],
     mutating: true,
@@ -322,6 +329,29 @@ export function scanNotifications(ctx: Ctx): number {
     ...detectAttendanceNotifications({ now: ctx.now, today: d, employees: emps, sessionsByEmployee, publishedShifts: shifts, lateGraceMinutes: 1, absenceGraceMinutes: 30 }),
     ...detectLeaveNotifications(emps, ctx.uow.list<LeaveGrant>('leave_grants'), ctx.uow.list<LeaveTransaction>('leave_transactions'), d),
   ];
+  // v1.3: 未処理の早出・残業申請／未確認の本人修正／未確認のシフト外時間（アプリ内通知のみ。外部通知は行わない）
+  const names = new Map(emps.map((e) => [e.id, e.displayName]));
+  for (const r of ctx.uow.list<OvertimeRequest>('overtime_requests').filter((x) => x.status === 'pending'))
+    drafts.push({ kind: 'overtime_request_pending', dedupeKey: `overtime_request_pending:${r.id}`, audience: 'managers', employeeId: r.employeeId, title: '未処理の早出・残業申請があります', body: `${names.get(r.employeeId) ?? ''}さん ${r.workDate} の申請${r.identityVerified ? '' : '（本人未確認）'}`, severity: 'warning', relatedDate: r.workDate });
+  const groups = new Map<string, AttendanceCorrection>();
+  for (const c of ctx.uow.list<AttendanceCorrection>('attendance_corrections')) {
+    const rs = reviewStatusOf(c);
+    if (c.actorKind === 'staff' && (rs === 'pending' || rs === 'unreviewed')) groups.set(c.groupId ?? c.id, c);
+  }
+  for (const [g, c] of groups)
+    drafts.push({ kind: 'self_correction_unreviewed', dedupeKey: `self_correction_unreviewed:${g}`, audience: 'managers', employeeId: c.employeeId, title: reviewStatusOf(c) === 'pending' ? '承認待ちの勤怠修正があります' : 'スタッフ本人による勤怠修正があります', body: `${names.get(c.employeeId) ?? ''}さんの勤怠修正を確認してください`, severity: reviewStatusOf(c) === 'pending' ? 'warning' : 'info', relatedDate: correctionDate(c) });
+  if (s.payrollTimeBasis === 'shift') {
+    const reqs = ctx.uow.list<OvertimeRequest>('overtime_requests');
+    for (const e of emps) {
+      const tb = applyTimeBasis(sessionsByEmployee[e.id] ?? [], ctx.uow.list<Shift>('shifts').filter((x) => x.employeeId === e.id), reqs, 'shift');
+      for (const det of tb.details)
+        if (det.unresolvedMs > 0)
+          drafts.push({ kind: 'off_shift_unconfirmed', dedupeKey: `off_shift_unconfirmed:${det.sessionKey}`, audience: 'managers', employeeId: e.id, title: 'シフト外の勤務時間が未確認です', body: `${e.displayName}さん ${det.laborDate}: シフト外 ${durationLabel(det.unresolvedMs)}（実労働かどうかを確認してください）`, severity: 'warning', relatedDate: det.laborDate });
+    }
+  }
+  for (const c of ctx.uow.list<Credential>('credentials'))
+    if ((c.lockCount ?? 0) >= 2 && c.hash !== '')
+      drafts.push({ kind: 'credential_locked', dedupeKey: `credential_locked:${c.employeeId}:${c.kind}:${c.lockCount}`, audience: 'owner', employeeId: c.employeeId, title: 'PIN の入力失敗によるロックが続いています', body: `${names.get(c.employeeId) ?? ''}さんの${c.kind === 'pin' ? 'PIN' : '管理用パスコード'}で連続ロック ${c.lockCount}回（不正な試行の可能性。本人に確認してください）`, severity: 'warning', relatedDate: d });
   // 未入力の給与条件
   for (const e of emps) {
     const hasWage = e.payType === 'hourly' ? ctx.uow.list<WageRule>('wage_rules').some((w) => w.employeeId === e.id && w.kind === 'base') : ctx.uow.list<SalaryRule>('salary_rules').some((w) => w.employeeId === e.id);
@@ -348,7 +378,7 @@ export function scanNotifications(ctx: Ctx): number {
   return fresh.length;
 }
 
-const ATTENDANCE_KINDS = new Set(['missing_clock_in', 'missing_clock_out', 'missing_break_end', 'late', 'early_leave', 'absence', 'abnormal_hours', 'insufficient_break']);
+const ATTENDANCE_KINDS = new Set(['missing_clock_in', 'missing_clock_out', 'missing_break_end', 'late', 'early_leave', 'absence', 'abnormal_hours', 'insufficient_break', 'overtime_request_pending', 'self_correction_unreviewed', 'off_shift_unconfirmed']);
 
 function visibleTo(ctx: Ctx, n: NotificationRow): boolean {
   if (isOwner(ctx)) return true;
@@ -367,6 +397,7 @@ function visibleTo(ctx: Ctx, n: NotificationRow): boolean {
 defineOps([
   {
     name: 'notifications.list',
+    kind: 'read',
     auth: 'staff_or_owner',
     perms: ['notifications_view'],
     mutating: false,
@@ -381,6 +412,7 @@ defineOps([
   },
   {
     name: 'notifications.update',
+    kind: 'edit',
     auth: 'staff_or_owner',
     perms: ['notifications_view'],
     mutating: true,
@@ -394,7 +426,9 @@ defineOps([
   },
   {
     name: 'notifications.scan',
+    kind: 'internal',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     handler: (ctx) => ({ created: scanNotifications(ctx) }),
   },
@@ -432,91 +466,23 @@ function pruneBackups(ctx: Ctx, kind: BackupHistory['kind']) {
   }
 }
 
-const APPEND_ONLY_TABLES = ['attendance_events', 'attendance_corrections', 'manual_breaks', 'audit_logs'] as const;
-
 defineOps([
   {
     name: 'backup.run',
+    kind: 'system',
     auth: 'owner',
+    adminAllowed: true,
     mutating: true,
     allowInMaintenance: true,
     handler: (ctx, raw) => runBackup(ctx, v.oneOf(v.obj(raw), 'kind', ['daily', 'monthly', 'pre_update', 'manual'] as const), 'manual request'),
   },
   {
     name: 'backup.list',
+    kind: 'read',
     auth: 'owner',
+    adminAllowed: true,
     mutating: false,
     allowInMaintenance: true,
     handler: (ctx) => ctx.uow.list<BackupHistory>('backup_history').sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
-  },
-  {
-    name: 'backup.restore',
-    auth: 'owner',
-    mutating: true,
-    allowInMaintenance: true,
-    handler: (ctx, raw) => {
-      const a = v.obj(raw);
-      const b = ctx.uow.get<BackupHistory>('backup_history', v.id(a, 'backupId'));
-      if (!b || b.status !== 'ok' || !b.driveFileId) throw E.notFound('バックアップ');
-      if (v.str(a, 'confirmText', { max: 20 }) !== '復元する') throw E.invalid('確認のため「復元する」と入力してください');
-      if (b.schemaVersion > SCHEMA_VERSION) throw E.invalid('新しいバージョンのバックアップは復元できません（アプリを更新してください）');
-      // 1) 復元前バックアップ
-      const pre = runBackup(ctx, 'manual', `復元前の自動バックアップ（復元元 ${b.id}）`);
-      if (pre.status !== 'ok') throw E.conflict('復元前のバックアップに失敗したため中止しました');
-      ctx.uow.flush();
-      // 2) 復元候補を作成（稼働中の DB はまだ切り替えない）
-      const cand = ctx.p.database.prepareRestoreCopy(b.driveFileId);
-      const uowC = new UnitOfWork(cand.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
-      const ctxC: Ctx = { ...ctx, uow: uowC };
-      let restored = 0;
-      try {
-        // 3) 追記専用データ（打刻原本・修正・手動休憩・監査ログ）は、時刻ではなく ID で突合し、候補にない行をすべて再投入
-        //    （バックアップと同じ秒に保存された打刻も取りこぼさない）
-        for (const t of APPEND_ONLY_TABLES) {
-          const have = new Set(uowC.list<{ id: string }>(t).map((r) => r.id));
-          for (const r of ctx.uow.list<Record<string, unknown>>(t)) {
-            if (!have.has(r.id as string)) {
-              uowC.insert(t, r as never);
-              restored++;
-            }
-          }
-        }
-        // 4) スタッフ・認証情報・権限・端末は現行の状態を引き継ぐ（PIN・管理用パスコード・委任権限・退職・端末失効を巻き戻さない）
-        const carry = <T extends { id: string; version: number }>(t: 'employees' | 'credentials' | 'permissions' | 'devices', key: (r: T) => string) => {
-          const candRows = new Map(uowC.list<T>(t).map((r) => [key(r), r]));
-          for (const cur of ctx.uow.list<T>(t)) {
-            const c = candRows.get(key(cur));
-            if (c) uowC.update(t, { ...cur, id: c.id, version: c.version } as never);
-            else uowC.insert(t, cur as never);
-          }
-        };
-        carry<Employee & { version: number }>('employees', (r) => r.id);
-        carry<Credential>('credentials', (r) => `${r.employeeId}|${r.kind}`);
-        carry<PermissionRow>('permissions', (r) => r.employeeId);
-        carry<Device>('devices', (r) => r.id);
-        // 5) 全セッション失効・バックアップ履歴は現行を引き継ぐ
-        revokeSessionsWhere(ctxC, () => true);
-        for (const h of ctx.uow.list<BackupHistory>('backup_history')) if (!uowC.get<BackupHistory>('backup_history', h.id)) uowC.insert('backup_history', h as never);
-        uowC.flush();
-        // 6) 候補の整合性を確認してから切り替える。不合格なら稼働中の DB はそのまま
-        const check = integrityCheck(ctxC);
-        if (!check.ok) throw new ApiError('RESTORE_INTEGRITY_FAILED', `復元候補の整合性確認に失敗したため、復元を中止しました（稼働中のデータは変更していません）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
-      } catch (e) {
-        try {
-          ctx.p.database.discard(cand.candidateId);
-        } catch {
-          /* 候補の破棄に失敗しても稼働中の DB には影響しない */
-        }
-        throw e;
-      }
-      // 7) 切替（候補は検証済み）。切替後は新 DB に対して読み書きする
-      const sw = ctx.p.database.activate(cand.candidateId);
-      ctx.uow.adapter.reset?.();
-      const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
-      const ctx2: Ctx = { ...ctx, uow: uow2 };
-      audit(ctx2, 'backup.restore', 'backup', b.id, `復元 新DB=${cand.candidateId} 旧DB=${sw.previousId} 再投入=${restored}`);
-      uow2.flush();
-      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフのセッションを失効しました。スタッフ・PIN・権限・端末は復元前の状態を引き継いでいます' };
-    },
   },
 ]);

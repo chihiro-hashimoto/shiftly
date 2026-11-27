@@ -16,6 +16,9 @@ export function DashboardPage() {
   const cost = useLoad(() => client.call<{ actual: { total: number; incomplete: unknown[] }; forecast: { total: number }; budget: { budget: number | null; consumptionRate: number | null; forecastRate: number | null; over: boolean } }>('analytics.laborCost', { month }), [month]);
   const notes = useLoad(() => client.call<Array<{ id: string; title: string; body: string; severity: string; status: string }>>('notifications.list'), []);
   const periods = useLoad(() => client.call<{ periods: Array<{ id: string; periodKey: string; status: string; payDate: string }> }>('payroll.periods'), []);
+  const reqs = useLoad(() => client.call<{ overtimePending: number; correctionsPending: number; correctionsUnreviewed: number; breakDeclarationsPending: number; offShiftUnresolvedSessions: number }>('requests.summary'), []);
+  const r = reqs.data;
+  const reqTotal = r ? r.overtimePending + r.correctionsPending + r.correctionsUnreviewed + r.breakDeclarationsPending + r.offShiftUnresolvedSessions : null;
 
   const working = today.data?.filter((r) => r.state === 'working' || r.state === 'on_break') ?? [];
   const unread = notes.data?.filter((n) => n.status === 'unread') ?? [];
@@ -36,6 +39,11 @@ export function DashboardPage() {
           <div className="label">予算消化率</div>
           <div className="value">{cost.data?.budget.consumptionRate != null ? `${Math.round(cost.data.budget.consumptionRate * 100)}%` : '—'}</div>
           <div className="sub">{cost.data?.budget.budget ? <>予算 <Yen v={cost.data.budget.budget} />{cost.data.budget.over ? '（予測が予算超過）' : ''}</> : '予算が未設定です'}</div>
+        </div>
+        <div className="kpi">
+          <div className="label">要確認の申請・勤怠</div>
+          <div className="value">{reqTotal ?? '—'}<span className="small muted"> 件</span></div>
+          <div className="sub">{r ? `早出・残業申請 ${r.overtimePending}／シフト外の未確認 ${r.offShiftUnresolvedSessions}／本人修正・休憩 ${r.correctionsPending + r.correctionsUnreviewed + r.breakDeclarationsPending}` : '「申請・確認」で処理します'}</div>
         </div>
         <div className="kpi">
           <div className="label">未読の通知</div>

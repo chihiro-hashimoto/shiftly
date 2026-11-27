@@ -1,6 +1,6 @@
 /**
- * Shiftly-Admin（店長用）GAS エントリ
- * - Web アプリ: 実行=デプロイユーザー（店長）、アクセス=自分のみ → Google が店長本人を認証
+ * Shiftly-Admin（管理者用）GAS エントリ
+ * - Web アプリ: 実行=デプロイユーザー（管理者）、アクセス=自分のみ → Google が管理者本人を認証
  * - 業務データには直接アクセスせず、Core へ HMAC 署名付きリクエストを転送（更新経路を Core に一本化）
  * - ブラウザに OAuth トークン・HMAC 鍵を渡さない
  */
@@ -55,29 +55,34 @@ function ensurePaired(): string {
   }
   const r = postCore({ kind: 'pair', role: 'admin', pairingCode: SHIFTLY_ADMIN_BOOTSTRAP.pairingCode, clientKey: pending });
   let key: string | null = null;
+  let checkCode: string | null = null;
   if (r.ok) key = (r.data as { key: string }).key;
   else if (r.error?.code === 'CONFLICT') {
     // 登録済み: 前回の応答が失われた可能性。保存済みの鍵で署名した呼び出しが通れば、その鍵が登録されている
     const env = signOwnerEnvelope(createGasPlatform(), fromHex(pending), JSON.stringify({ op: 'settings.get', requestId: undefined }), 'admin');
-    if (postCore({ kind: 'owner', envelope: env }).ok) key = pending;
+    const chk = postCore({ kind: 'owner', envelope: env });
+    if (chk.ok) key = pending;
+    else checkCode = chk.error?.code ?? 'unknown';
   }
   if (!key)
     throw new Error(
-      r.error?.code === 'CONFLICT'
-        ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Kiosk のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
-        : `Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`,
+      r.error?.code !== 'CONFLICT'
+        ? `Core とのペアリングに失敗しました（${r.error?.code ?? 'unknown'}）`
+        : checkCode === 'UNAUTHENTICATED'
+          ? '管理画面の接続がすでに別の鍵で登録されています。Shiftly-Staff（旧名称 Shiftly-Kiosk）のエディタで shiftlyResetAdminPairing を実行してから、もう一度 shiftlyAuthorize を実行してください'
+          : `登録済みの接続を確認できませんでした（${checkCode}）。時間をおいて、もう一度 shiftlyAuthorize を実行してください`,
     );
   props.setProperty(KEY_PROP, key);
   props.deleteProperty(PENDING_KEY_PROP);
   return key;
 }
 
-/** 店長画面からの API 呼び出し（google.script.run） */
+/** 管理者画面からの API 呼び出し（google.script.run） */
 export function adminApi(reqJson: string): string {
   try {
-    const parsed = JSON.parse(reqJson) as { op?: unknown; args?: unknown; requestId?: unknown };
-    // ブラウザ由来のフィールドは op / args / requestId のみ転送
-    const body = JSON.stringify({ op: parsed.op, args: parsed.args, requestId: parsed.requestId });
+    const parsed = JSON.parse(reqJson) as { op?: unknown; args?: unknown; requestId?: unknown; epoch?: unknown };
+    // ブラウザ由来のフィールドは op / args / requestId / epoch（画面がデータを取得した時点の復元世代。D-026）のみ転送
+    const body = JSON.stringify({ op: parsed.op, args: parsed.args, requestId: parsed.requestId, ...(typeof parsed.epoch === 'number' ? { epoch: parsed.epoch } : {}) });
     const key = fromHex(ensurePaired());
     const env = signOwnerEnvelope(createGasPlatform(), key, body, 'admin');
     return JSON.stringify(postCore({ kind: 'owner', envelope: env }));
@@ -86,7 +91,7 @@ export function adminApi(reqJson: string): string {
   }
 }
 
-/** 店長の Google アカウント（表示・取り違え確認用。他者へは送らない） */
+/** 管理者の Google アカウント（表示・取り違え確認用。他者へは送らない） */
 export function adminWhoAmI(): string {
   return JSON.stringify({ email: Session.getEffectiveUser().getEmail(), envId: SHIFTLY_ADMIN_BOOTSTRAP.envId });
 }

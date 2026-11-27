@@ -18,7 +18,7 @@ describe('Codex 監査1 #10: 月初に直前月のセッション・冪等性キ
     h.login(a, '482913');
     h.setNow('2026-12-01', '00:00');
     h.advance(2_000);
-    expect(code(h.kiosk('auth.me'))).toBe('OK');
+    expect(code(h.staff('auth.me'))).toBe('OK');
   });
 
   it('11/30 に保存した打刻を 12/1 に同じ requestId で再送しても二重登録しない', () => {
@@ -27,10 +27,10 @@ describe('Codex 監査1 #10: 月初に直前月のセッション・冪等性キ
     const a = h.addStaff('山田', '482913');
     h.setNow('2026-11-30', '23:59');
     h.login(a, '482913');
-    const r1 = h.kioskOk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' });
+    const r1 = h.staffOk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' });
     h.setNow('2026-12-01', '00:00');
     h.advance(10_000);
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' }) as any;
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'req_month_end_01' }) as any;
     expect(r2.ok).toBe(true);
     expect(r2.data.eventId).toBe(r1.eventId);
     expect(r2.data.replayed).toBe(true);
@@ -166,70 +166,72 @@ describe('Codex 監査1 #6・#7: 手当を含む割増算定基礎', () => {
   });
 });
 
-describe('Codex 監査1 #1・#2: 復元', () => {
-  it('#1 バックアップと同じ秒に保存した退勤、バックアップ後に追加したスタッフの打刻も復元後に残る', () => {
+/**
+ * Codex 監査1 #1・#2・#13 は、アプリ内の復元・自動更新の結果を確かめるテストだった。v1.3 ではそれらを提供しないため（D-027 B案）、
+ * 同じ保護（バックアップの後の打刻・PIN・権限・退職を失わない／整合性が不合格なら再開しない）を、保守作業の経路で確かめる
+ * （全表の網羅は maintenance.test.ts）。旧版のテストは git の履歴（コミット b8ab444 まで）に残している
+ */
+describe('Codex 監査1 #1・#2（D-027: アプリ内の復元は提供しない。保守作業で同じ保護を確かめる）', () => {
+  it('アプリ内の復元は拒否し、データを変えない', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913');
     h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
-    h.setNow('2026-11-02', '18:00');
     const bk = h.ownerOk('backup.run', { kind: 'manual' });
-    h.advance(400); // 同じ秒（18:00:00.400）
-    h.login(a, '482913');
-    expect(h.punch('clock_out').ok).toBe(true);
-    h.kiosk('auth.logout');
-    h.session = '';
-    h.setNow('2026-11-02', '18:30');
-    const b = h.addStaff('佐藤', '582914');
-    h.punchAt(b, '582914', '2026-11-02', '19:00', 'clock_in');
-    h.setNow('2026-11-02', '19:10');
-    const r = h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
-    expect(r.integrity.ok).toBe(true);
-    const detA = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
-    expect(detA.originals.map((x: any) => x.type)).toEqual(['clock_in', 'clock_out']);
-    const detB = h.ownerOk('attendance.detail', { employeeId: b, from: '2026-11-02', to: '2026-11-02' });
-    expect(detB.originals.map((x: any) => x.type)).toEqual(['clock_in']);
+    h.punchAt(a, '482913', '2026-11-02', '18:00', 'clock_out');
+    expect(code(h.owner('backup.restore', { backupId: bk.id, confirmText: '復元する' }))).toBe('NOT_IN_THIS_RELEASE');
+    const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
+    expect(det.originals.map((x: any) => x.type)).toEqual(['clock_in', 'clock_out']);
   });
 
-  it('#2 復元しても変更後の PIN・取り消した権限・退職状態はバックアップ時点に戻らない', () => {
+  it('#1 の保護: 保守作業で、バックアップの後の打刻を消した場合は再開しない（元に戻すと再開できる）', () => {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913');
+    h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
+    h.punchAt(a, '482913', '2026-11-02', '18:00', 'clock_out');
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+    const before = h.env.adapter.snapshot();
+    // 打刻のシートをバックアップ（出勤だけ）の内容で上書きした
+    for (const [name, rows] of h.env.adapter.sheets) if (name.startsWith('attendance_events')) h.env.adapter.sheets.set(name, rows.slice(0, 1));
+    expect(code(h.owner('maintenance.finish', { confirmText: '保守を終了する' }))).toBe('MAINTENANCE_CHECK_FAILED');
+    h.env.adapter.restore(before);
+    expect(code(h.owner('maintenance.finish', { confirmText: '保守を終了する' }))).toBe('OK');
+  });
+
+  it('#2 の保護: 保守作業で、変更後の PIN・取り消した権限・退職状態をバックアップの時点に戻した場合は再開しない', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913', { perms: ['punch_self', 'payslip_view_self', 'payslip_view_others'] });
     const c = h.addStaff('鈴木', '682915');
-    h.setNow('2026-11-02', '10:00');
-    const bk = h.ownerOk('backup.run', { kind: 'manual' });
-    h.setNow('2026-11-02', '11:00');
+    const atBackup = h.env.adapter.snapshot();
     h.ownerOk('credentials.setPin', { employeeId: a, pin: '739154' });
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'payslip_view_self'] });
     h.ownerOk('employees.retire', { employeeId: c, retireDate: '2026-11-02', reason: '退職' });
-    h.setNow('2026-11-02', '12:00');
-    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
-    expect(code(h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).not.toBe('OK');
-    h.setNow('2026-11-02', '12:01');
-    h.login(a, '739154');
-    const perms = h.ownerOk<any[]>('employees.list').find((e: any) => e.id === a);
-    expect(JSON.stringify(perms)).not.toContain('payslip_view_others');
-    expect(h.ownerOk<any[]>('employees.list', { includeRetired: true }).find((e: any) => e.id === c).status).toBe('retired');
+    for (const t of ['credentials', 'permissions', 'employees']) {
+      h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+      const now = h.env.adapter.snapshot();
+      h.env.adapter.sheets.set(t, atBackup[t]!.map((r) => [...r]));
+      expect(code(h.owner('maintenance.finish', { confirmText: '保守を終了する' })), t).toBe('MAINTENANCE_CHECK_FAILED');
+      h.env.adapter.restore(now);
+      h.ownerOk('maintenance.finish', { confirmText: '保守を終了する' });
+    }
   });
 });
 
-describe('Codex 監査1 #13: 整合性 NG での更新完了', () => {
-  it('整合性チェックが不合格ならメンテナンスを継続し、店長の明示的な承認があれば完了する', () => {
+describe('Codex 監査1 #13 の保護（D-027: 自動更新は提供しない）: 整合性が不合格なら保守作業を終了しない', () => {
+  it('整合性チェックが不合格なら保守中のままで打刻を止め、承認で再開する経路はない', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913');
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
     // 存在しないスタッフを参照する行（不整合）を直接書き込む
     const raw = new UnitOfWork(h.env.adapter, { now: () => h.env.clock.now, newId: (p) => `${p}_orphan01` });
     raw.insert('permissions', { employeeId: 'emp_missing0001', permissions: [] } as never);
     raw.flush();
-    h.login(a, '482913');
-    h.ownerOk('system.prepareUpdate', { targetVersion: '0.2.0' });
-    h.ownerOk('system.migrate', {});
-    expect(code(h.owner('system.finishUpdate'))).toBe('UPDATE_INTEGRITY_FAILED');
-    expect(code(h.punch('clock_in'))).toBe('MAINTENANCE');
-    const r = h.ownerOk('system.finishUpdate', { acceptIntegrityIssues: true });
-    expect(r.integrity.ok).toBe(false);
-    expect(code(h.punch('clock_in'))).toBe('OK');
+    expect(code(h.owner('maintenance.finish', { confirmText: '保守を終了する', acceptIntegrityIssues: true }))).toBe('MAINTENANCE_CHECK_FAILED');
+    expect(code(h.owner('system.finishUpdate', { acceptIntegrityIssues: true }))).toBe('NOT_IN_THIS_RELEASE');
+    expect(code(h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).toBe('MAINTENANCE');
   });
 });
 
@@ -242,11 +244,11 @@ describe('Codex 監査1 #11: 保存結果が不明な打刻の再送', () => {
     h.login(a, '482913');
     const ad = h.env.adapter as any;
     ad.failOnWrite = ad.writes + 2; // ジャーナル（started）の次＝業務データの書き込みで失敗
-    const r1 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' });
+    const r1 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' });
     expect(code(r1)).toBe('INTERNAL');
     ad.failOnWrite = null;
     h.advance(5_000);
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' }) as any;
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'req_unknown_0001' }) as any;
     expect(r2.ok).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     expect(det.originals.filter((x: any) => x.type === 'clock_in')).toHaveLength(1);

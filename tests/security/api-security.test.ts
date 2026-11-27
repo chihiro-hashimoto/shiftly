@@ -26,16 +26,16 @@ describe('認証', () => {
   it('public 操作は限定（status / enroll）で、未登録端末に店舗名を返さない', () => {
     const { h } = setup();
     const pub = listOps().filter((o) => o.auth === 'public').map((o) => o.name).sort();
-    expect(pub).toEqual(['kiosk.enroll', 'system.status']);
+    expect(pub).toEqual(['staff.enroll', 'system.status']); // v1.3: kiosk.enroll → staff.enroll（名称変更。公開操作は 2 件のまま）
     const r: any = handleRequest(h.be, { op: 'system.status' });
     expect(r.data.storeName).toBeNull();
   });
-  it('店長専用操作は登録端末＋スタッフセッションからは実行できない（全 owner 操作）', () => {
+  it('管理者専用操作は登録端末＋スタッフセッションからは実行できない（全 owner 操作）', () => {
     const { h, a } = setup();
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'staff_manage', 'payroll_view_all', 'payroll_confirm', 'attendance_edit'] });
     h.login(a, '482913');
     for (const op of listOps().filter((o) => o.auth === 'owner')) {
-      const r = h.kiosk(op.name, {});
+      const r = h.staff(op.name, {});
       expect(code(r), op.name).toBe('FORBIDDEN');
     }
   });
@@ -47,45 +47,45 @@ describe('認証', () => {
   it('失効した端末・ログアウト済み・期限切れセッションは拒否', () => {
     const { h, a } = setup();
     h.login(a, '482913');
-    expect(h.kiosk('auth.me').ok).toBe(true);
+    expect(h.staff('auth.me').ok).toBe(true);
     h.advance(10 * 60_000); // 無操作 60 秒（+猶予）を超過
-    expect(code(h.kiosk('auth.me'))).toBe('UNAUTHENTICATED');
+    expect(code(h.staff('auth.me'))).toBe('UNAUTHENTICATED');
     h.login(a, '482913');
-    h.kioskOk('auth.logout');
-    expect(code(h.kiosk('auth.me'))).toBe('UNAUTHENTICATED');
+    h.staffOk('auth.logout');
+    expect(code(h.staff('auth.me'))).toBe('UNAUTHENTICATED');
     h.login(a, '482913');
     const dev = h.ownerOk<any[]>('devices.list')[0];
     h.ownerOk('devices.revoke', { deviceId: dev.id });
-    expect(code(h.kiosk('auth.me'))).toBe('DEVICE_NOT_REGISTERED');
-    expect(code(h.kiosk('kiosk.bootstrap'))).toBe('DEVICE_NOT_REGISTERED');
+    expect(code(h.staff('auth.me'))).toBe('DEVICE_NOT_REGISTERED');
+    expect(code(h.staff('kiosk.bootstrap'))).toBe('DEVICE_NOT_REGISTERED');
   });
   it('セッションは発行端末に紐づく（別端末のトークンでは使えない）', () => {
     const { h, a } = setup();
     h.login(a, '482913');
     const sess = h.session;
     const en = h.ownerOk('devices.createEnrollment', { deviceName: '2台目' });
-    const d2 = h.kioskOk('kiosk.enroll', { code: en.code }, { device: '' }).deviceToken;
-    expect(code(h.kiosk('auth.me', undefined, { device: d2, session: sess }))).toBe('UNAUTHENTICATED');
+    const d2 = h.staffOk('staff.enroll', { code: en.code }, { device: '' }).deviceToken;
+    expect(code(h.staff('auth.me', undefined, { device: d2, session: sess }))).toBe('UNAUTHENTICATED');
   });
   it('登録コードは使い捨て・期限付き', () => {
     const { h } = setup();
     const en = h.ownerOk('devices.createEnrollment', { deviceName: 'x' });
-    expect(h.kiosk('kiosk.enroll', { code: en.code }, { device: '' }).ok).toBe(true);
-    expect(h.kiosk('kiosk.enroll', { code: en.code }, { device: '' }).ok).toBe(false);
+    expect(h.staff('staff.enroll', { code: en.code }, { device: '' }).ok).toBe(true);
+    expect(h.staff('staff.enroll', { code: en.code }, { device: '' }).ok).toBe(false);
     const en2 = h.ownerOk('devices.createEnrollment', { deviceName: 'y' });
     h.advance(16 * 60_000);
-    expect(h.kiosk('kiosk.enroll', { code: en2.code }, { device: '' }).ok).toBe(false);
+    expect(h.staff('staff.enroll', { code: en2.code }, { device: '' }).ok).toBe(false);
   });
 });
 
 describe('PIN 総当たり対策', () => {
   it('連続失敗で一時ロック、ロック中は正しい PIN でも拒否、時間経過で解除', () => {
     const { h, a } = setup();
-    for (let i = 0; i < 4; i++) expect(code(h.kiosk('auth.login', { employeeId: a, pin: '000001' }, { session: '' }))).toBe('INVALID_INPUT');
-    expect(code(h.kiosk('auth.login', { employeeId: a, pin: '000001' }, { session: '' }))).toBe('LOCKED');
-    expect(code(h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).toBe('LOCKED');
+    for (let i = 0; i < 4; i++) expect(code(h.staff('auth.login', { employeeId: a, pin: '000001' }, { session: '' }))).toBe('INVALID_INPUT');
+    expect(code(h.staff('auth.login', { employeeId: a, pin: '000001' }, { session: '' }))).toBe('LOCKED');
+    expect(code(h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).toBe('LOCKED');
     h.advance(16 * 60_000);
-    expect(h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '' }).ok).toBe(true);
+    expect(h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' }).ok).toBe(true);
   });
   it('端末単位の失敗上限（複数スタッフへの横断的な試行）', () => {
     const { h, a, b } = setup();
@@ -93,9 +93,9 @@ describe('PIN 総当たり対策', () => {
     const d = h.addStaff('高橋', '782916');
     const e = h.addStaff('田中', '882917');
     // 各スタッフ 4 回ずつ（個人ロック未満）× 5 名 = 20 回失敗（端末上限 20 回）
-    for (const id of [a, b, c, d, e]) for (let i = 0; i < 4; i++) expect(code(h.kiosk('auth.login', { employeeId: id, pin: '000001' }, { session: '' }))).toBe('INVALID_INPUT');
+    for (const id of [a, b, c, d, e]) for (let i = 0; i < 4; i++) expect(code(h.staff('auth.login', { employeeId: id, pin: '000001' }, { session: '' }))).toBe('INVALID_INPUT');
     // 21 回目以降は端末単位で制限（正しい PIN でも拒否）
-    expect(code(h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).toBe('RATE_LIMITED');
+    expect(code(h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' }))).toBe('RATE_LIMITED');
   });
   it('PIN は平文保存しない（DB に PIN 文字列が現れない）', () => {
     const { h } = setup();
@@ -116,63 +116,63 @@ describe('認可・IDOR・なりすまし', () => {
     const slips = h.ownerOk<any[]>('payslips.list', { periodId: p.id });
     const bSlip = slips.find((s) => s.employeeId === b);
     h.login(a, '482913');
-    expect(code(h.kiosk('payslips.view', { payslipId: bSlip.id }))).toBe('FORBIDDEN');
+    expect(code(h.staff('payslips.view', { payslipId: bSlip.id }))).toBe('FORBIDDEN');
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'payslip_view_self', 'payslip_view_others'] });
-    expect(code(h.kiosk('payslips.view', { payslipId: bSlip.id }))).toBe('STEP_UP_REQUIRED');
+    expect(code(h.staff('payslips.view', { payslipId: bSlip.id }))).toBe('STEP_UP_REQUIRED');
     h.ownerOk('credentials.setStepUp', { employeeId: a, passcode: 'Kanri2026pass' });
-    expect(code(h.kiosk('auth.stepUp', { passcode: 'wrongpass99' }))).toBe('INVALID_INPUT');
-    h.kioskOk('auth.stepUp', { passcode: 'Kanri2026pass' });
-    expect(h.kiosk('payslips.view', { payslipId: bSlip.id }).ok).toBe(true);
+    expect(code(h.staff('auth.stepUp', { passcode: 'wrongpass99' }))).toBe('INVALID_INPUT');
+    h.staffOk('auth.stepUp', { passcode: 'Kanri2026pass' });
+    expect(h.staff('payslips.view', { payslipId: bSlip.id }).ok).toBe(true);
     h.advance(50_000);
-    h.kioskOk('auth.me');
+    h.staffOk('auth.me');
     h.advance(50_000);
-    h.kioskOk('auth.me');
+    h.staffOk('auth.me');
     h.advance(50_000);
-    h.kioskOk('auth.me');
+    h.staffOk('auth.me');
     h.advance(50_000);
-    h.kioskOk('auth.me');
+    h.staffOk('auth.me');
     h.advance(50_000);
-    h.kioskOk('auth.me');
+    h.staffOk('auth.me');
     h.advance(50_000);
     // 追加認証は 5 分で失効
-    expect(code(h.kiosk('payslips.view', { payslipId: bSlip.id }))).toBe('STEP_UP_REQUIRED');
+    expect(code(h.staff('payslips.view', { payslipId: bSlip.id }))).toBe('STEP_UP_REQUIRED');
   });
-  it('payslips.pdf（ダウンロード）は店長専用で共用 iPad からは不可', () => {
+  it('payslips.pdf（ダウンロード）は管理者専用で共用 iPad からは不可', () => {
     const { h, a } = setup();
     h.login(a, '482913');
-    expect(code(h.kiosk('payslips.pdf', { payslipId: 'slp_x' }))).toBe('FORBIDDEN');
+    expect(code(h.staff('payslips.pdf', { payslipId: 'slp_x' }))).toBe('FORBIDDEN');
   });
   it('権限変更は既存セッションの次の操作から反映', () => {
     const { h, a } = setup();
     h.login(a, '482913');
-    expect(h.kiosk('attendance.mine', { from: '2026-11-01', to: '2026-11-30' }).ok).toBe(true);
+    expect(h.staff('attendance.mine', { from: '2026-11-01', to: '2026-11-30' }).ok).toBe(true);
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self'] });
-    expect(code(h.kiosk('attendance.mine', { from: '2026-11-01', to: '2026-11-30' }))).toBe('FORBIDDEN');
+    expect(code(h.staff('attendance.mine', { from: '2026-11-01', to: '2026-11-30' }))).toBe('FORBIDDEN');
   });
   it('スタッフ管理権限でも権限変更・PIN変更・自己の給与条件変更はできない（昇格・なりすまし防止）', () => {
     const { h, a, b } = setup();
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'staff_manage', 'pay_conditions_edit', 'attendance_edit', 'payroll_confirm'] });
     h.ownerOk('credentials.setStepUp', { employeeId: a, passcode: 'Kanri2026pass' });
     h.login(a, '482913');
-    h.kioskOk('auth.stepUp', { passcode: 'Kanri2026pass' });
-    expect(code(h.kiosk('permissions.set', { employeeId: a, permissions: ['payroll_view_all'] }))).toBe('FORBIDDEN');
-    expect(code(h.kiosk('credentials.setPin', { employeeId: b, pin: '123987' }))).toBe('FORBIDDEN');
-    expect(code(h.kiosk('payconf.upsertWageRule', { employeeId: a, kind: 'base', hourlyRate: 9999, effectiveFrom: '2026-11-01', priority: 99 }))).toBe('FORBIDDEN');
-    expect(code(h.kiosk('attendance.correct', { employeeId: a, action: 'add', type: 'clock_in', at: '2026-11-01T09:00', reason: '自分の修正' }))).toBe('FORBIDDEN');
-    expect(code(h.kiosk('payroll.confirm', { periodId: 'x', employeeIds: [a] }))).not.toBe('OK');
-    expect(h.kiosk('payconf.upsertWageRule', { employeeId: b, kind: 'base', hourlyRate: 1300, effectiveFrom: '2026-11-01', priority: 1 }).ok).toBe(true);
+    h.staffOk('auth.stepUp', { passcode: 'Kanri2026pass' });
+    expect(code(h.staff('permissions.set', { employeeId: a, permissions: ['payroll_view_all'] }))).toBe('FORBIDDEN');
+    expect(code(h.staff('credentials.setPin', { employeeId: b, pin: '123987' }))).toBe('FORBIDDEN');
+    expect(code(h.staff('payconf.upsertWageRule', { employeeId: a, kind: 'base', hourlyRate: 9999, effectiveFrom: '2026-11-01', priority: 99 }))).toBe('FORBIDDEN');
+    expect(code(h.staff('attendance.correct', { employeeId: a, action: 'add', type: 'clock_in', at: '2026-11-01T09:00', reason: '自分の修正' }))).toBe('FORBIDDEN');
+    expect(code(h.staff('payroll.confirm', { periodId: 'x', employeeIds: [a] }))).not.toBe('OK');
+    expect(h.staff('payconf.upsertWageRule', { employeeId: b, kind: 'base', hourlyRate: 1300, effectiveFrom: '2026-11-01', priority: 1 }).ok).toBe(true);
   });
   it('機密操作はスタッフの場合ステップアップ必須', () => {
     const { h, a, b } = setup();
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'pay_conditions_edit'] });
     h.login(a, '482913');
-    expect(code(h.kiosk('payconf.get', { employeeId: b }))).toBe('STEP_UP_REQUIRED');
+    expect(code(h.staff('payconf.get', { employeeId: b }))).toBe('STEP_UP_REQUIRED');
   });
   it('本人用操作で他人の employeeId を指定しても自分のデータしか返らない', () => {
     const { h, a, b } = setup();
     h.punchAt(b, '582914', '2026-11-02', '09:00', 'clock_in');
     h.login(a, '482913');
-    const r = h.kioskOk('attendance.mine', { from: '2026-11-01', to: '2026-11-30', employeeId: b });
+    const r = h.staffOk('attendance.mine', { from: '2026-11-01', to: '2026-11-30', employeeId: b });
     expect(r.sessions).toHaveLength(0);
   });
   it('人件費分析: 給与閲覧権限がなければスタッフ別内訳・1名のみの日を返さない', () => {
@@ -182,8 +182,8 @@ describe('認可・IDOR・なりすまし', () => {
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'labor_cost_view'] });
     h.ownerOk('credentials.setStepUp', { employeeId: a, passcode: 'Kanri2026pass' });
     h.login(a, '482913');
-    h.kioskOk('auth.stepUp', { passcode: 'Kanri2026pass' });
-    const r = h.kioskOk('analytics.laborCost', { month: '2026-11' });
+    h.staffOk('auth.stepUp', { passcode: 'Kanri2026pass' });
+    const r = h.staffOk('analytics.laborCost', { month: '2026-11' });
     expect(r.individualVisible).toBe(false);
     expect(r.actual.byEmployee).toEqual([]);
     expect(r.actual.byDate['2026-11-02'].amount).toBeNull();
@@ -196,8 +196,8 @@ describe('認可・IDOR・なりすまし', () => {
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'labor_cost_view', 'budget_manage'] });
     h.ownerOk('credentials.setStepUp', { employeeId: a, passcode: 'Kanri2026pass' });
     h.login(a, '482913');
-    h.kioskOk('auth.stepUp', { passcode: 'Kanri2026pass' });
-    const r = h.kioskOk('analytics.laborCost', { month: '2026-11' });
+    h.staffOk('auth.stepUp', { passcode: 'Kanri2026pass' });
+    const r = h.staffOk('analytics.laborCost', { month: '2026-11' });
     // 人件費が発生したのは佐藤さん 1 名のみ → 合計は佐藤さんの給与そのものになるため非表示
     expect(r.actual.total).toBeNull();
     expect(r.planned.total).toBeNull();
@@ -208,16 +208,16 @@ describe('認可・IDOR・なりすまし', () => {
     expect(r.budget.over).toBeNull();
     expect(r.actual.byWeekday.every((c: any) => c.amount === null)).toBe(true);
     expect(JSON.stringify(r)).not.toContain('"amount":4');
-    // 店長は全額を見られる
+    // 管理者は全額を見られる
     expect(h.ownerOk('analytics.laborCost', { month: '2026-11' }).actual.total).toBeGreaterThan(0);
   });
-  it('スタッフ端末からの出力はファイル本体を返さず店長の Drive に保存のみ', () => {
+  it('スタッフ端末からの出力はファイル本体を返さず管理者の Drive に保存のみ', () => {
     const { h, a } = setup();
     h.ownerOk('permissions.set', { employeeId: a, permissions: ['punch_self', 'export_attendance'] });
     h.ownerOk('credentials.setStepUp', { employeeId: a, passcode: 'Kanri2026pass' });
     h.login(a, '482913');
-    h.kioskOk('auth.stepUp', { passcode: 'Kanri2026pass' });
-    const r = h.kioskOk('export.attendance', { from: '2026-11-01', to: '2026-11-30', format: 'csv' });
+    h.staffOk('auth.stepUp', { passcode: 'Kanri2026pass' });
+    const r = h.staffOk('export.attendance', { from: '2026-11-01', to: '2026-11-30', format: 'csv' });
     expect(r.savedToDrive).toBe(true);
     expect(r.base64).toBeUndefined();
   });
@@ -227,15 +227,15 @@ describe('認可・IDOR・なりすまし', () => {
   });
   it('kiosk.bootstrap は氏名以外（給与・勤怠詳細）を返さない', () => {
     const { h } = setup();
-    const r = h.kioskOk('kiosk.bootstrap');
+    const r = h.staffOk('kiosk.bootstrap');
     for (const s of r.staff) expect(Object.keys(s).sort()).toEqual(['displayName', 'id', 'kana']);
   });
   it('requestId の他人への流用・別操作での再利用は拒否', () => {
     const { h, a, b } = setup();
     h.login(a, '482913');
-    h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'shared_rid_0001' });
+    h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'shared_rid_0001' });
     h.login(b, '582914');
-    expect(code(h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'shared_rid_0001' }))).toBe('CONFLICT');
+    expect(code(h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'shared_rid_0001' }))).toBe('CONFLICT');
   });
 });
 
@@ -289,9 +289,9 @@ describe('秘密値の非保存（レビュー指摘 #3 の回帰テスト）', 
   });
   it('秘密値を返す操作の再送は保存済み応答を返さない', () => {
     const { h, a } = setup();
-    const r1 = h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '', requestId: 'login_rid_0001' });
+    const r1 = h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '', requestId: 'login_rid_0001' });
     expect(r1.ok).toBe(true);
-    const r2 = h.kiosk('auth.login', { employeeId: a, pin: '482913' }, { session: '', requestId: 'login_rid_0001' });
+    const r2 = h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '', requestId: 'login_rid_0001' });
     expect(r2.ok).toBe(false);
   });
 });
@@ -303,9 +303,9 @@ describe('シフトの自己編集禁止（レビュー指摘 #9）', () => {
     const own = h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 60, applyFixedBreak: true, fixedBreakStart: '20:00' });
     h.ownerOk('shifts.upsert', { employeeId: b, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 0 });
     h.login(a, '482913');
-    expect(code(h.kiosk('shifts.upsert', { id: own.id, employeeId: a, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 0 }))).toBe('FORBIDDEN');
-    expect(code(h.kiosk('shifts.delete', { id: own.id }))).toBe('FORBIDDEN');
-    const pub = h.kioskOk('shifts.publish', { from: '2026-11-01', to: '2026-11-30' });
+    expect(code(h.staff('shifts.upsert', { id: own.id, employeeId: a, date: '2026-11-05', start: '18:00', end: '24:00', breakMinutes: 0 }))).toBe('FORBIDDEN');
+    expect(code(h.staff('shifts.delete', { id: own.id }))).toBe('FORBIDDEN');
+    const pub = h.staffOk('shifts.publish', { from: '2026-11-01', to: '2026-11-30' });
     expect(pub.published).toBe(1);
     expect(pub.skippedOwn).toBe(1);
   });

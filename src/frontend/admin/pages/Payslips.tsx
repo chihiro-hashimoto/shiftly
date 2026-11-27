@@ -41,7 +41,7 @@ table.data tr.ps-sel td { background: var(--board-soft); }
 
 export function PayslipsPage() {
   const client = useClient();
-  const isKiosk = client.transport.mode === 'kiosk';
+  const isSharedDevice = client.transport.mode === 'staff';
   const toast = useToast();
   const periods = useLoad(() => client.call<{ periods: PayrollPeriod[] }>('payroll.periods'), []);
   const [selected, setSelected] = useState<string | null>(null);
@@ -52,7 +52,7 @@ export function PayslipsPage() {
   const view = useLoad(() => (viewId ? client.call<SlipView>('payslips.view', { payslipId: viewId }) : Promise.resolve(null)), [viewId]);
   const { busy, run } = useAction();
   const pdf = useAction();
-  const settings = useLoad(() => (isKiosk ? Promise.resolve(null) : client.call<{ payslipDelivery: 'paper' | 'electronic_with_consent' }>('settings.get')), [isKiosk]);
+  const settings = useLoad(() => (isSharedDevice ? Promise.resolve(null) : client.call<{ payslipDelivery: 'paper' | 'electronic_with_consent' }>('settings.get')), [isSharedDevice]);
 
   const issue = async () => {
     if (!period) return;
@@ -169,7 +169,7 @@ export function PayslipsPage() {
             actions={
               view.data && (
                 <span className="no-print row">
-                  {!isKiosk && (
+                  {!isSharedDevice && (
                     <>
                       <button className="btn btn-sm" onClick={() => window.print()}>
                         印刷
@@ -200,7 +200,7 @@ export function PayslipsPage() {
                     {view.data.confirmedAt && `　確定日 ${view.data.confirmedAt.slice(0, 10)}`}
                   </p>
                 </div>
-                {isKiosk && <p className="small muted no-print" style={{ margin: 0 }}>印刷・PDF のダウンロードは店長の管理画面からのみ行えます（共用端末にはファイルを保存しません）。</p>}
+                {isSharedDevice && <p className="small muted no-print" style={{ margin: 0 }}>印刷・PDF のダウンロードは Google 所有者の管理画面（PC）からのみ行えます（共用端末にはファイルを保存しません。この画面を印刷・保存しないでください）。</p>}
               </div>
             )}
           </Panel>

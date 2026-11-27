@@ -94,28 +94,6 @@ export class MemoryFiles implements FileStore, DatabaseControl {
   currentId() {
     return this.dbId;
   }
-  private readonly candidates = new Map<string, MemoryAdapter>();
-  prepareRestoreCopy(backupFileId: string) {
-    const f = this.files.get(backupFileId);
-    if (!f || !f.dbSnapshot || f.trashed) throw new Error('バックアップが見つかりません');
-    const adapter = new MemoryAdapter();
-    adapter.restore(f.dbSnapshot);
-    const candidateId = `db_${this.rnd()}`;
-    this.candidates.set(candidateId, adapter);
-    return { candidateId, adapter };
-  }
-  activate(candidateId: string) {
-    const c = this.candidates.get(candidateId);
-    if (!c) throw new Error('復元候補が見つかりません');
-    const prev = this.dbId;
-    this.adapter.restore(c.snapshot());
-    this.candidates.delete(candidateId);
-    this.dbId = candidateId;
-    return { previousId: prev };
-  }
-  discard(candidateId: string) {
-    this.candidates.delete(candidateId);
-  }
 }
 
 function randomBytes(n: number): Uint8Array {
@@ -132,6 +110,8 @@ export interface MockEnv {
   cache: MemoryCache;
   clock: { now: number; auto: boolean };
   logs: Array<{ level: string; message: string; meta?: unknown }>;
+  /** 保管先の点検（storageReport）に返す問題（テストで注入する） */
+  storageIssues: string[];
 }
 
 export function createMockEnv(opts: { now?: number; autoClock?: boolean; kind?: 'mock' | 'test' } = {}): MockEnv {
@@ -142,6 +122,7 @@ export function createMockEnv(opts: { now?: number; autoClock?: boolean; kind?: 
   const cache = new MemoryCache(now);
   const rnd = () => toHex(randomBytes(8));
   const files = new MemoryFiles(adapter, now, rnd);
+  const storageIssues: string[] = [];
   const logs: MockEnv['logs'] = [];
   const platform: Platform = {
     kind: opts.kind ?? 'test',
@@ -156,9 +137,11 @@ export function createMockEnv(opts: { now?: number; autoClock?: boolean; kind?: 
     files,
     database: files,
     effectiveUserEmail: () => 'owner@example.invalid',
+    // モック（テスト・プレビュー）: Google ドライブの構成物はない。点検の結果はテストが storageIssues で注入する（既定は問題なし。実環境の点検は GAS の実装）
+    storageReport: () => ({ ok: storageIssues.length === 0, issues: [...storageIssues], items: [] }),
     log: (level, message, meta) => {
       logs.push({ level, message, meta });
     },
   };
-  return { platform, adapter, files, secrets, cache, clock, logs };
+  return { platform, adapter, files, secrets, cache, clock, logs, storageIssues };
 }

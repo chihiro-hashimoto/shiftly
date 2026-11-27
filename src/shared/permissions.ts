@@ -1,8 +1,8 @@
 /**
  * 権限定義
- * - 店長（owner）は全権限を固定で保持（削除不可）
+ * - 管理者（owner）は全権限を固定で保持（削除不可）
  * - スタッフは個別付与。初期値は必要最小限
- * - 権限管理・端末登録・バックアップ復元・システム更新は店長専用（スタッフへ付与不可）
+ * - 権限管理・端末登録・バックアップ復元・システム更新は管理者専用（スタッフへ付与不可）
  */
 import type { PermissionKey } from './types';
 
@@ -43,7 +43,7 @@ export const ALL_PERMISSION_KEYS: PermissionKey[] = PERMISSIONS.map((p) => p.key
 export const DEFAULT_STAFF_PERMISSIONS: PermissionKey[] = PERMISSIONS.filter((p) => p.defaultForStaff).map((p) => p.key);
 export const SENSITIVE_PERMISSIONS = new Set<PermissionKey>(PERMISSIONS.filter((p) => p.sensitive).map((p) => p.key));
 
-/** 店長専用操作（スタッフには付与不可） */
+/** 管理者専用操作（スタッフには付与不可） */
 export type OwnerOnlyCapability = 'permission_manage' | 'device_manage' | 'backup_restore' | 'system_update' | 'store_settings';
 
 export function isPermissionKey(x: unknown): x is PermissionKey {

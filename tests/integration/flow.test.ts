@@ -46,11 +46,11 @@ describe('初期化・端末登録・打刻（F01/F02/F03/F06/F07）', () => {
     h.setupStore();
     const a = h.addStaff('山田', '482913');
     h.login(a, '482913');
-    const r1 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
+    const r1 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'punch_retry_0001' });
     expect(r1.ok && r2.ok).toBe(true);
     if (r1.ok && r2.ok) expect((r2.data as any).eventId).toBe((r1.data as any).eventId);
-    expect((h.kioskOk('attendance.lookup', { requestId: 'punch_retry_0001' }) as any).saved).toBe(true);
+    expect((h.staffOk('attendance.lookup', { requestId: 'punch_retry_0001' }) as any).saved).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     expect(det.originals).toHaveLength(1);
   });
@@ -95,7 +95,7 @@ describe('勤怠修正（F09）', () => {
     h.punchAt(a, '482913', '2026-11-02', '18:00', 'clock_out');
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     const inEv = det.originals[0];
-    h.ownerOk('attendance.correct', { employeeId: a, action: 'replace', targetEventId: inEv.id, type: 'clock_in', at: '2026-11-02T09:00', reason: '打刻忘れ（本人申告・店長確認）' });
+    h.ownerOk('attendance.correct', { employeeId: a, action: 'replace', targetEventId: inEv.id, type: 'clock_in', at: '2026-11-02T09:00', reason: '打刻忘れ（本人申告・管理者確認）' });
     h.ownerOk('attendance.correct', { employeeId: a, action: 'add', type: 'break_start', at: '2026-11-02T12:00', reason: '休憩打刻漏れ' });
     h.ownerOk('attendance.correct', { employeeId: a, action: 'add', type: 'break_end', at: '2026-11-02T13:00', reason: '休憩打刻漏れ' });
     const det2 = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
@@ -124,11 +124,11 @@ describe('シフト（F10/F11）', () => {
     const a = h.addStaff('山田', '482913');
     h.ownerOk('shifts.upsert', { employeeId: a, date: '2026-11-02', start: '18:00', end: '26:00', breakMinutes: 60, applyFixedBreak: false });
     h.login(a, '482913');
-    expect(h.kioskOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(0);
+    expect(h.staffOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(0);
     expect(h.ownerOk('shifts.copyWeek', { fromWeekStart: '2026-11-01', toWeekStart: '2026-11-08' }).created).toBe(1);
     expect(h.ownerOk('shifts.publish', { from: '2026-11-01', to: '2026-11-14' }).published).toBe(2);
-    expect(h.kioskOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(2);
-    h.kiosk('auth.logout');
+    expect(h.staffOk<any[]>('shifts.published', { from: '2026-11-01', to: '2026-11-30' })).toHaveLength(2);
+    h.staff('auth.logout');
     h.punchAt(a, '482913', '2026-11-02', '18:20', 'clock_in');
     h.punchAt(a, '482913', '2026-11-03', '02:00', 'clock_out');
     const cmp = h.ownerOk('attendance.compareShifts', { from: '2026-11-02', to: '2026-11-02' });
@@ -156,7 +156,7 @@ describe('有給（F20）', () => {
     h.ownerOk('leave.take', { employeeId: a, date: '2026-11-05', days: 1, scheduledMinutes: 480 });
     expect(h.owner('leave.take', { employeeId: a, date: '2026-11-06', days: 0.5 }).ok).toBe(false); // 半日は未許可
     h.login(a, '482913');
-    expect(h.kioskOk('leave.mine').balance).toBe(9);
+    expect(h.staffOk('leave.mine').balance).toBe(9);
   });
   it('既存残日数は根拠なしでは登録できない', () => {
     const h = new Harness();
@@ -213,9 +213,9 @@ describe('給与（F14/F18/F19）', () => {
     // 明細発行・本人閲覧
     expect(h.ownerOk('payslips.issue', { periodId: p.id }).issued).toBe(1);
     h.login(a, '482913');
-    const mine = h.kioskOk<any[]>('payslips.mine');
+    const mine = h.staffOk<any[]>('payslips.mine');
     expect(mine).toHaveLength(1);
-    const view = h.kioskOk('payslips.view', { payslipId: mine[0].id });
+    const view = h.staffOk('payslips.view', { payslipId: mine[0].id });
     expect(view.net).toBe(res2.find((x) => x.status === 'issued' || x.status === 'confirmed')?.totals.netPay ?? view.net);
     expect(view.employeeName).toBe('山田');
   });
@@ -278,46 +278,35 @@ describe('出力・分析・通知（F21/F22/F23/F24）', () => {
   });
 });
 
-describe('バックアップ・復元・更新（F26/F35/F36/F37）', () => {
-  it('復元後もバックアップ後の打刻は失われず、失効端末は失効のまま、セッションは失効', () => {
+describe('バックアップ・保守作業（F26。アプリ内の復元・自動更新は v1.3 では提供しない。D-027）', () => {
+  it('保守作業: 業務の更新を止め、終了でセッションを失効して再開する。バックアップの後の打刻は残る', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913');
     h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
     h.setNow('2026-11-02', '10:00');
-    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    h.ownerOk('backup.run', { kind: 'manual' });
     h.punchAt(a, '482913', '2026-11-02', '18:00', 'clock_out');
     h.setNow('2026-11-02', '18:05');
     h.login(a, '482913');
     const sessionBefore = h.session;
     h.setNow('2026-11-02', '18:10');
-    const r = h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
-    expect(r.preservedRowsReinserted).toBeGreaterThan(0);
-    expect(r.integrity.ok).toBe(true);
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+    const r = h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe('MAINTENANCE');
+    const f = h.ownerOk('maintenance.finish', { confirmText: '保守を終了する' });
+    expect(f.resumed).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
     expect(det.originals.map((x: any) => x.type)).toEqual(['clock_in', 'clock_out']);
-    expect(h.kiosk('auth.me', undefined, { session: sessionBefore }).ok).toBe(false);
+    expect(h.staff('auth.me', undefined, { session: sessionBefore }).ok).toBe(false);
   });
-  it('復元には確認文字列が必要', () => {
+  it('アプリ内の復元・自動更新の操作は提供しない（確認文字列を送っても拒否する）', () => {
     const h = new Harness();
     h.setupStore();
     const bk = h.ownerOk('backup.run', { kind: 'manual' });
-    expect(h.owner('backup.restore', { backupId: bk.id, confirmText: 'yes' }).ok).toBe(false);
-  });
-  it('更新: 準備（メンテナンス＋更新前バックアップ）中はスタッフの打刻を拒否し、完了で解除', () => {
-    const h = new Harness();
-    h.setupStore();
-    const a = h.addStaff('山田', '482913');
-    h.login(a, '482913');
-    const prep = h.ownerOk('system.prepareUpdate', { targetVersion: '0.2.0' });
-    expect(prep.maintenance).toBe(true);
-    const r = h.punch('clock_in');
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.code).toBe('MAINTENANCE');
-    expect(h.ownerOk('system.migrate', {}).requiresApproval).toEqual([]);
-    expect(h.ownerOk('system.finishUpdate').integrity.ok).toBe(true);
-    expect(h.punch('clock_in').ok).toBe(true);
-    expect(h.ownerOk<any[]>('backup.list').some((b) => b.kind === 'pre_update')).toBe(true);
+    expect(h.owner('backup.restore', { backupId: bk.id, confirmText: '復元する' }).ok).toBe(false);
+    expect(h.owner('system.prepareUpdate', { targetVersion: '0.2.0' }).ok).toBe(false);
   });
   it('日次ジョブ: バックアップ世代管理', () => {
     const h = new Harness();
@@ -339,11 +328,11 @@ describe('書き込み途中失敗からの復旧（ジャーナル）', () => {
     h.login(a, '482913');
     // flush 内の 2 回目の write（業務データ本体）で失敗させる
     h.env.adapter.failOnWrite = (h.env.adapter as any).writes + 2;
-    const r = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
+    const r = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
     expect(r.ok).toBe(false);
     h.env.adapter.failOnWrite = null;
     // 次の更新系処理の開始時にジャーナルから再適用され、同じ requestId の再送は保存済み結果を返す
-    const r2 = h.kiosk('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
+    const r2 = h.staff('attendance.punch', { type: 'clock_in' }, { requestId: 'jnl_test_0001' });
     expect(r2.ok).toBe(true);
     if (r2.ok) expect((r2.data as any).replayed).toBe(true);
     const det = h.ownerOk('attendance.detail', { employeeId: a, from: '2026-11-02', to: '2026-11-02' });
@@ -372,7 +361,7 @@ describe('大きな書き込み（給与確定・訂正）の途中失敗から�
     h.env.adapter.failOnWrite = (h.env.adapter as any).writes + 2;
     expect(h.owner('payroll.correct', { periodId: p.id, employeeId: ids[0], reason: '再計算' }).ok).toBe(false);
     h.env.adapter.failOnWrite = null;
-    h.ownerOk('system.setMaintenance', { on: false }); // 任意の更新系処理でジャーナル再適用
+    h.ownerOk('backup.run', { kind: 'manual' }); // 任意の更新系処理でジャーナル再適用（v1.3 で system.setMaintenance を提供しないため、別の更新系の操作に変更。D-027）
     const res = h.ownerOk<any[]>('payroll.results', { periodId: p.id }).filter((r) => r.employeeId === ids[0]);
     expect(res.find((r) => r.status === 'confirmed')?.revision).toBe(2);
     expect(res.find((r) => r.status === 'superseded')?.revision).toBe(1);
