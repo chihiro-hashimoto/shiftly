@@ -83,6 +83,16 @@
 10. 時間主導トリガー（日次 4 時台）の実行と 90 分/日の上限に対する実行時間
 11. Setup をホスト型（実行=アクセスしたユーザー）で運用する場合の OAuth 同意画面（未確認アプリ表示・100人上限）の実際の表示
 
+## 4.5 v1.3.0 初回リリースの時点の状態（2026-11-27）
+
+| 区分 | 状態 |
+|---|---|
+| 自動テスト（モック・GAS エミュレーション・Chromium の E2E） | 合格（PR #2 の CI。件数は docs/HANDOFF.md「テスト結果」） |
+| 給与の手計算シナリオ（live-verification.md「2.5」） | **モックで一致を確認**（tests/integration/release-scenario.test.ts）。実環境は未 |
+| Google 実環境（Apps Script・Sheets・Drive・承認） | **未実施**（live-verification.md「0.1」の 14 項目と L24〜L26 が公開前に必須） |
+| iPad 実機（Safari・ホーム画面） | **未実施** |
+| 依存関係の脆弱性（`npm audit`） | 実行時の依存（react・react-dom・qrcode-generator）は 0 件（`npm audit --omit=dev`）。moderate 8 件は開発時だけの依存（eslint・typescript-eslint が使う minimatch）で、配布物（GAS のバンドル・画面）には含まれない。無関係な依存の一括更新はしない |
+
 ## 5. 実環境検証の手順（ユーザー承認後に実施）
 
 本番アカウントと区別した**検証用 Google アカウント**で、`docs/installer-guide.md` の手順に沿って Setup を実行し、上記 1〜11 を確認して本書に「実測結果」を追記する。検証用環境には実在スタッフの情報を登録しないこと。

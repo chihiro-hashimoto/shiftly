@@ -2,7 +2,7 @@
 
 店舗勤怠・給与・シフト・人件費管理 Web アプリ。Google Apps Script（GAS）をバックエンド、Google スプレッドシートを DB、Google ドライブをファイル保管に使い、**管理者本人の Google アカウント内で、月額無料**で動作することを目標としています。
 
-> 状態: 開発中（Google 実環境・iPad 実機は未検証）。v1.3（1 台の iPad での管理者モード、PIN 任意化、本人の勤怠修正、予定休憩の取得確認、シフト基準の給与計算、早出・残業申請）を実装済み（モック・エミュレーションで検証）。本番利用・実在スタッフの登録・正式な給与支払いへの利用は、検証と並行運用の後に管理者の判断で行ってください。詳細は `docs/implementation-status.md`。
+> 状態: **v1.3.0 初回リリースの準備中（限定先行運用版。docs/release-notes-v1.3.0.md・D-028）**。Google 実環境・iPad 実機は未検証（公開前の必須検証は docs/live-verification.md「0.1」）。v1.3（1 台の iPad での管理者モード、PIN 任意化、本人の勤怠修正、予定休憩の取得確認、シフト基準の給与計算、早出・残業申請）を実装済み（モック・エミュレーションで検証）。本番利用・実在スタッフの登録・正式な給与支払いへの利用は、検証と並行運用の後に管理者の判断で行ってください。詳細は `docs/implementation-status.md`。
 >
 > **v1.3 のリリース範囲（B案。docs/decisions.md D-027）: 正常時は自動・異常時は手動。** 日常業務・初回の自動構築・安全な再開・自動／手動のバックアップは対象。アプリ内のデータの自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・自動ロールバックは次期以降に延期し、サーバー側でどの経路からも拒否します。データの復元・更新は Google 所有者の保守作業（docs/operations-guide.md「9」）。41 機能の分類は docs/requirements.md
 
@@ -55,7 +55,9 @@ npm run dev
 | docs/security.md | セキュリティ設計と残存リスク |
 | docs/technical-verification.md / research/official-sources.md | 成立性検証と公式資料 |
 | docs/google-api-setup.md / installer-guide.md / deployment-guide.md | 準備・導入・デプロイ |
-| docs/update-rollback.md / operations-guide.md | 更新（v1.3 では自動で行わない）・保守作業（データの復元）・日常運用 |
+| docs/update-rollback.md / operations-guide.md | 更新（自動で行わない。公開後の手動アップデートは update-rollback.md「2」）・保守作業（データの復元）・日常運用 |
+| docs/incident-response.md | 障害発生時の対応（紙のタイムカード・DB のファイルの消失の個別対応・連絡） |
+| docs/release-notes-v1.3.0.md | v1.3.0 のリリースノート |
 | docs/test-plan.md | テスト計画・結果 |
 
 ## ライセンス

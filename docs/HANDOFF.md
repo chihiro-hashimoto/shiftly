@@ -9,7 +9,8 @@
 - **v1.3（2026-11-25）**: 実装・テスト・文書更新を完了（F38〜F41 を追加。docs/requirements.md「v1.3 の変更」）。Codex 監査 C-2（累計 2 回目）は docs/review-log.md を参照
 - **B案（2026-11-27、D-027）**: v1.3 は「正常時は自動・異常時は手動」。アプリ内の自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・自動ロールバックを v1.3 から除外（処理を削除、DEFERRED_OPS で全経路を拒否）。データの復元は Google 所有者の保守作業（maintenance.begin / finish）。C-24 の A1・A3・A4 は機能を修正、A2 は仕様変更で実行経路を除外（docs/review-log.md「C-24 の対応」）。41 機能の分類: 初回 37・一部手動 2（F26・F35）・延期 2（F36・F37）
 - **D-027 追補（2026-11-27）**: 残存リスクの整理。停止中の給与期間はアプリの外の例外的な手動訂正（運用手順「9.1」）、保守の「開始のやり直し」を廃止（記録を失ったら保守中のまま。紙のタイムカードと開発者への個別の依頼。「9.2」）、終了前に数式のセルを確認。実環境検証に L24〜L26 と初めて GAS を扱う人向けの構築手順（live-verification.md「1.6」）を追加
-- 残: Google 実環境・iPad 実機での検証（ユーザーの実機・検証用アカウントが必要。docs/live-verification.md「1.5 v1.3（B案）の検証の進め方」）
+- **初回リリース（2026-11-27、D-028）**: v1.3 を v1.3.0 として初回リリースする（限定先行運用）。版を 1.3.0 に変更。工程 A（最終確認）・C（導入手順 installer-guide.md「0.5」、手動アップデート update-rollback.md「2」、障害対応 incident-response.md（DB のファイルの消失の個別対応を含む）、リリースノート release-notes-v1.3.0.md）を実施。給与の手計算シナリオ（live-verification.md「2.5」）をモックで確認（tests/integration/release-scenario.test.ts）
+- **現在の工程: B（最低限の Google 実環境検証）のユーザーの操作待ち**。docs/live-verification.md「0.1 公開前の必須検証」14 項目と L24〜L26。その後 D（ユーザーの最終のマージの承認 → PR #2 を PR #1 のブランチへ → PR #1 を main へ）→ E（ユーザーによる所有権の移譲）→ F（v1.3.0 の GitHub Release）→ G（本番の構築）→ H（限定先行運用）
 
 ## リポジトリ / ブランチ / PR / CI
 - リポジトリ: https://github.com/chihiro-hashimoto/shiftly（Private）
@@ -42,7 +43,8 @@
 5. v1.3 で追加した確認待ちの事項: 管理者パスワードの初期設定（Google 所有者が Shiftly-Admin で設定）、既存店舗の時間基準（既定はシフト基準。実績基準に戻す場合は店舗設定）
 
 ## テスト結果（直近の実行）
-- `npm ci` → `npm run verify`（2026-11-27、D-027 追補の後に実行、exit 0）: lint・typecheck・単体 101・統合 439・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし
+- `npm ci` → `npm run verify`（2026-11-27、v1.3.0 の版の変更・給与の手計算シナリオの追加の後に実行、exit 0）: lint・typecheck・単体 101・統合 440・セキュリティ 58・E2E 92 件すべて合格（計 691）。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。`npm audit --omit=dev` は 0 件（moderate 8 件は開発時だけの依存）
+- （以前の記録）`npm ci` → `npm run verify`（2026-11-27、D-027 追補の後に実行、exit 0）: lint・typecheck・単体 101・統合 439・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし
 - （以前の記録）`npm ci` → `npm run verify`（2026-11-27、B案の実装・独立した点検 2 回の対応の後に実行、exit 0）: lint・typecheck・単体 101・統合 435・セキュリティ 58・E2E 92 件すべて合格。`npm run docs` の再生成で差分なし。`git diff --check origin/main` 問題なし。npm audit の 8 件（moderate）は既存の依存関係のもの（依存関係は変更していない）
 - （以前の記録）`npm ci` → `npm run verify`（2026-11-26、C-23 の構造的な対応・独立した点検 2 回の対応の後に実行、exit 0。対象 9429da3 のコード。権限表・DB 定義は再生成して差分なし。`git diff --check origin/main` 問題なし）: lint・typecheck 合格／単体 101・統合 429・セキュリティ 39・E2E 88 件すべて合格。`npm audit` は既存の依存（minimatch）の中程度 8 件（今回は依存を変更していない）
   - 統合に v1.3（v13.test.ts 47 件: §9.2 の期待値を含む）・Codex 監査2〜6 の回帰（codex-audit-2.test.ts・codex-audit-3.test.ts・codex-audit-6.test.ts・codex-audit-8.test.ts・codex-audit-9.test.ts・codex-audit-10.test.ts・codex-audit-17.test.ts・installer.test.ts・restore-policy.test.ts）・GAS エミュレーション（v1.2 の 32 列シートの読み込みと移行を含む）
@@ -51,9 +53,9 @@
 - いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
 
 ## 次に実行する作業
-1. ユーザーが B案の結果（docs/review-log.md「C-24 の対応」、PR #2）を確認する。Codex の再監査（25 回目）は未承認（実施する場合はユーザーの承認が必要）
+1. 工程 B: ユーザーが検証用アカウントで docs/live-verification.md「0.1」の 14 項目と L24〜L26 を実施し、結果を共有する（NG があれば、公開前に直すべき問題（D-028）だけを最小限に修正）。Codex の再監査（25 回目）は実施しない（新たな承認が必要）
 2. ユーザーから実環境検証の記録（docs/live-verification.md の表。L1〜L10・L13〜L16・L18〜L26）を受け取り、technical-verification.md に反映・NG を修正
-3. PR の統合方法をユーザーが決定（上記）
+3. 工程 D〜F（D-028）: ユーザーの最終のマージの承認 → PR #2 を PR #1 のブランチへマージ → PR #1 を main へマージ → ユーザーが Settings → General → Danger Zone → Transfer ownership で `chihirohashimotoac-coder` へ移譲 → 移譲後の main から v1.3.0 の GitHub Release（配布物 shiftly-gas-bundle.zip・shiftly-preview.zip・SHA-256・リリースノート）
 4. 次期以降の候補（約束しない）: アプリ内の復元（稼働中の DB の切替）・Setup による更新・ロールバック・更新に伴う DB の移行（docs/update-rollback.md「2」）
 
 ## レビュー
