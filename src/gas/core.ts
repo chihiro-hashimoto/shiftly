@@ -3,7 +3,7 @@
  * - Web アプリ: 実行=デプロイユーザー（Google 所有者）、アクセス=全員（匿名）
  * - 店舗 iPad の画面（スタッフ画面・管理者モード）と業務データへの唯一の更新経路（Core API）を持つ
  * - doPost: Google 所有者用 Admin からの署名付きリクエスト／Admin との初回ペアリング／死活確認
- * - 公開関数: doGet, doPost, staffApi（互換: kioskApi）, shiftlyAuthorize, shiftlyDailyJob（ビルド時にトップレベル関数として生成）
+ * - 公開関数: doGet, doPost, staffApi（互換: kioskApi）, shiftlyAuthorize, shiftlyWebInitialize, shiftlyDailyJob（ビルド時にトップレベル関数として生成）
  */
 import { handleRequest, verifyEnvelope, SECRET_KEYS, APP_VERSION, type Backend } from '../backend/index';
 import { clearStorageCreatingMarkers, createGasPlatform, provisionStorage, writeEnvironmentFile } from '../backend/gas/platform';
@@ -19,6 +19,8 @@ interface BootstrapConfig {
   adminPairingHash: string;
   /** Shiftly Setup とのペアリングコードの SHA-256（平文は Setup 側のみ） */
   setupPairingHash: string;
+  /** ブラウザでの初期化の確認コードの SHA-256（A案・D-029。平文は Setup 側のみ。以前の Setup で配置した場合はない） */
+  initCodeHash?: string;
 }
 declare const SHIFTLY_BOOTSTRAP: BootstrapConfig;
 
@@ -128,6 +130,46 @@ function pair(b: Backend, role: 'admin' | 'setup', code: unknown, clientKey?: un
 export function shiftlyAuthorize() {
   // 匿名の Web アプリ訪問者が google.script.run で呼ぶことを拒否（エディタから Google 所有者が実行した場合のみ）
   if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  return initializeCore();
+}
+
+/** ブラウザでの初期化が完了したことの記録（Script Properties。以後のブラウザからの初期化を受け付けない） */
+const WEB_INIT_DONE = 'SHIFTLY_WEB_INIT_DONE';
+
+/**
+ * ブラウザでの初期化（A案・D-029）。Google 所有者が Shiftly-Staff のテスト用 URL（/dev。編集者だけが開ける）を開き、Google の権限を
+ * 承認したうえで、初期設定の画面から google.script.run で呼ぶ。スクリプトエディタを開かずに shiftlyAuthorize と同じ初期化を行う。
+ * 次をすべて満たす場合だけ実行する（実効ユーザーだけに依存しない）:
+ *  1) 操作している Google アカウント（getActiveUser）が空でなく、実行するアカウント（getEffectiveUser）と一致する
+ *     （匿名の公開 URL からの呼び出しは getActiveUser が空になるため拒否）
+ *  2) Setup が発行した確認コード（平文は Setup の UserProperties にだけある）が、配置時に bootstrap に入れたハッシュと一致する
+ *  3) ブラウザでの初期化がまだ完了していない（完了後は受け付けない。エディタの shiftlyAuthorize は引き続き使える）
+ * 失敗が続く場合は 1 時間あたりの回数で止める。応答に秘密情報・個人情報を含めない
+ */
+export function shiftlyWebInitialize(code: unknown): string {
+  const deny = (message: string) => JSON.stringify({ ok: false, error: { code: 'FORBIDDEN', message } });
+  try {
+    const b = be();
+    if (!isOwnerExecution()) return deny('この操作は、Shiftly を構築した Google アカウントで、Setup が案内した画面から行ってください');
+    const expected = SHIFTLY_BOOTSTRAP.initCodeHash;
+    if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) return deny('この環境はブラウザでの初期化に対応していません。スクリプトエディタで shiftlyAuthorize を実行してください');
+    if (b.p.secrets.get(WEB_INIT_DONE) === '1') return JSON.stringify({ ok: true, data: { already: true } });
+    if (windowCount(b.p, 'web-init-fail') >= 10) return deny('確認に続けて失敗したため、しばらく受け付けません。1 時間ほどおいてから、Setup の画面からやり直してください');
+    if (typeof code !== 'string' || !/^[0-9a-f]{64}$/.test(code) || !timingSafeEqualHex(b.p.sha256Hex(code), expected)) {
+      windowBump(b.p, 'web-init-fail', 3600);
+      return deny('確認コードが一致しません。Setup の画面の「Google の権限を承認して初期化」から開き直してください');
+    }
+    const r = initializeCore();
+    if (r.ok) b.p.secrets.set(WEB_INIT_DONE, '1');
+    return JSON.stringify(r.ok ? { ok: true, data: { created: r.created } } : { ok: false, error: { code: 'INIT_FAILED', message: '初期化を完了できませんでした。時間をおいて、Setup の画面からやり直してください' } });
+  } catch (e) {
+    // 「前回の作成の結果を確認できません」等の案内はそのまま返す（個人情報・秘密情報を含まない文言のみ。D-026 S1）
+    return JSON.stringify({ ok: false, error: { code: 'INIT_FAILED', message: e instanceof Error ? e.message.slice(0, 300) : '初期化に失敗しました' } });
+  }
+}
+
+/** 初期化の本体（shiftlyAuthorize・shiftlyWebInitialize の共通。呼び出し側で Google 所有者の実行を確かめる） */
+function initializeCore() {
   const b = be();
   const cfg = SHIFTLY_BOOTSTRAP;
   // ロックは入れ子にしない（handleRequest 内で再度ロックを取得するため）

@@ -94,6 +94,11 @@ export interface Registry {
   /** ペアリングコードのハッシュ（非秘密）。平文コードは SecretRegistry に保持 */
   adminPairingHash: string;
   setupPairingHash: string;
+  /**
+   * ブラウザでの初期化の確認コードのハッシュ（A案・D-029。Core の bootstrap に入れる）。平文は SecretRegistry に保持し、
+   * 所有者が Shiftly-Staff のテスト用 URL（/dev）を開くときだけ URL のフラグメントで渡す。ない場合はエディタでの実行だけを案内する
+   */
+  initCodeHash?: string;
 }
 
 /** 秘密情報（UserProperties のみ。Drive のレジストリファイルには書かない） */
@@ -103,6 +108,8 @@ export interface SecretRegistry {
   setupKey: string | null;
   /** ペアリング送信前に保存する鍵（応答喪失時の再開用。成功後に削除） */
   pendingSetupKey?: string;
+  /** ブラウザでの初期化の確認コード（A案・D-029。Registry.initCodeHash の平文） */
+  initCode?: string;
 }
 
 /**
@@ -157,9 +164,25 @@ export interface InstallerDeps {
 export interface StepResult {
   state: PublicState;
   /** 利用者の操作待ち（権限承認など） */
-  waitingFor: null | { step: StepId; instructions: string[]; openUrl?: string };
-  error: null | { step: StepId; message: string; fix: string; confirm?: string };
+  waitingFor: null | {
+    step: StepId;
+    instructions: string[];
+    /** スクリプトエディタ（ブラウザでの初期化がうまくいかない場合の代わりの方法） */
+    openUrl?: string;
+    /** ブラウザでの権限承認・初期化の URL（テスト用 URL /dev。A案・D-029）。ない場合はエディタでの実行だけを案内する */
+    initUrl?: string;
+  };
+  error: null | { step: StepId; message: string; fix: string; confirm?: string; code?: SetupErrorCode };
 }
+
+/**
+ * 画面が案内を切り替えるための失敗の分類（A案・D-029）。USER_API_DISABLED のときだけ「Google の設定画面を開く」
+ * 「設定が完了したので再確認」を表示する（401・403 をすべて API の無効とは扱わない）
+ */
+export type SetupErrorCode = 'USER_API_DISABLED' | 'PROJECT_API_DISABLED' | 'UNAUTHENTICATED' | 'SCOPE' | 'PERMISSION' | 'QUOTA';
+
+/** 利用者が Apps Script API をオンにする Google の設定画面 */
+export const USER_SETTINGS_URL = 'https://script.google.com/home/usersettings';
 
 export interface PublicState {
   envId: string | null;
@@ -169,6 +192,8 @@ export interface PublicState {
   /** 構築の完了前の検証の記録（自動で確かめた項目／自動では確かめられない項目／所有者が確認した項目。D-026 S1・D-027） */
   verification: Verification | null;
   complete: boolean;
+  /** いま Setup を開いている Google アカウント（構築先の確認の表示用。本人の画面にだけ返す。A案・D-029） */
+  currentEmail: string | null;
   /** 店舗 iPad（Shiftly-Staff）の URL */
   staffUrl: string | null;
   adminUrl: string | null;
@@ -185,6 +210,8 @@ export class InstallerError extends Error {
     readonly fix: string,
     /** 再実行の前に利用者が確認すべきこと（画面は確認のチェックがあるまで「再実行」を押せない） */
     readonly confirm?: string,
+    /** 画面の案内を切り替えるための分類（A案・D-029） */
+    readonly code?: SetupErrorCode,
   ) {
     super(message);
   }
@@ -226,8 +253,10 @@ export class Installer {
    */
   private recoverSecrets() {
     const code = this.d.randomHex(32);
-    this.sec = { adminPairingCode: '', setupPairingCode: code, setupKey: null };
+    const initCode = this.d.randomHex(32);
+    this.sec = { adminPairingCode: '', setupPairingCode: code, setupKey: null, initCode };
     this.reg!.setupPairingHash = this.d.sha256Hex(code);
+    this.reg!.initCodeHash = this.d.sha256Hex(initCode);
     for (const s of ['core.upload', 'core.deploy', 'setup.pair', 'verify'] as StepId[]) delete this.reg!.steps[s];
     this.persist();
   }
@@ -245,6 +274,7 @@ export class Installer {
       storeName: r?.storeName || null,
       steps: STEPS.map((s) => ({ id: s.id, label: s.label, manual: s.manual, status: r?.steps[s.id]?.status ?? 'pending', message: r?.steps[s.id]?.message })),
       complete: !!r && STEPS.every((s) => r.steps[s.id]?.status === 'done'),
+      currentEmail: this.d.userEmail(),
       verification: r?.verification ?? null,
       staffUrl: r?.core.url ?? null,
       adminUrl: r?.admin.url ?? null,
@@ -311,7 +341,7 @@ export class Installer {
         }
       }
       if (this.reg) this.mark(next.id, 'error', err.message);
-      return { state: this.state(), waitingFor: null, error: { step: err.step, message: err.message, fix: err.fix, ...(err.confirm ? { confirm: err.confirm } : {}) } };
+      return { state: this.state(), waitingFor: null, error: { step: err.step, message: err.message, fix: err.fix, ...(err.confirm ? { confirm: err.confirm } : {}), ...(err.code ? { code: err.code } : {}) } };
     }
   }
 
@@ -334,6 +364,7 @@ export class Installer {
           const now = d.now();
           const adminCode = d.randomHex(32);
           const setupCode = d.randomHex(32);
+          const initCode = d.randomHex(32);
           this.reg = {
             schema: 1,
             envId: `env_${d.randomHex(10)}`,
@@ -347,19 +378,16 @@ export class Installer {
             admin: {},
             adminPairingHash: d.sha256Hex(adminCode),
             setupPairingHash: d.sha256Hex(setupCode),
+            initCodeHash: d.sha256Hex(initCode),
           };
-          this.sec = { adminPairingCode: adminCode, setupPairingCode: setupCode, setupKey: null };
+          this.sec = { adminPairingCode: adminCode, setupPairingCode: setupCode, setupKey: null, initCode };
           this.persist();
         }
         return null;
       }
       case 'api': {
         const p = d.api.probe();
-        if (!p.ok) {
-          if (p.reason === 'API_DISABLED')
-            throw new InstallerError(step, 'Apps Script API が無効です', 'https://script.google.com/home/usersettings を開き「Google Apps Script API」をオンにしてから再実行してください（Shiftly Setup を提供する Cloud プロジェクト側で API が無効な場合は導入手順書の事前準備を確認）');
-          throw new InstallerError(step, `Apps Script API を利用できません（${p.message}）`, 'Shiftly Setup の権限（スクリプトの作成・デプロイ）を承認したか確認してください');
-        }
+        if (!p.ok) throw apiFailure(step, p.reason, p.message);
         return null;
       }
       case 'store': {
@@ -390,6 +418,18 @@ export class Installer {
         const ping = this.ping();
         if (ping && ping.initialized && ping.envId === this.reg!.envId) return null;
         if (ping && ping.envId !== this.reg!.envId) throw new InstallerError(step, '接続先の環境IDが一致しません', 'Shiftly Setup のサポート情報を確認してください');
+        const dev = this.reg!.initCodeHash && this.sec!.initCode ? this.devUrl('core') : null;
+        if (dev)
+          return {
+            step,
+            initUrl: `${dev}#shiftly-init=${this.sec!.initCode}`,
+            openUrl: editorUrl(this.reg!.core.scriptId) ?? undefined,
+            instructions: [
+              '「Google の権限を承認して初期化」を押すと、新しいタブで Shiftly-Staff の初期設定の画面が開きます（あなたの Google アカウントの中のプロジェクトです）。',
+              'Google の確認画面が表示されたら、アカウントと権限の内容を確認して「許可」を押します（Shiftly が作成したファイルのみ操作する権限です）。',
+              '初期設定の画面で「初期化する」を押し、「完了しました」と表示されたら、この画面に戻って「確認して続行」を押してください。',
+            ],
+          };
         return {
           step,
           openUrl: editorUrl(this.reg!.core.scriptId) ?? undefined,
@@ -404,6 +444,18 @@ export class Installer {
       case 'admin.authorize': {
         const ping = this.ping();
         if (ping?.adminPaired) return null;
+        const adminDev = this.devUrl('admin');
+        if (adminDev)
+          return {
+            step,
+            initUrl: `${adminDev}#shiftly-init=admin`,
+            openUrl: editorUrl(this.reg!.admin.scriptId) ?? undefined,
+            instructions: [
+              '「Google の権限を承認して接続」を押すと、新しいタブで Shiftly-Admin（管理画面）の接続の画面が開きます。',
+              'Google の確認画面が表示されたら、内容を確認して「許可」を押します。',
+              '接続の画面で「接続する」を押し、「完了しました」と表示されたら、この画面に戻って「確認して続行」を押してください。',
+            ],
+          };
         return {
           step,
           openUrl: editorUrl(this.reg!.admin.scriptId) ?? undefined,
@@ -627,6 +679,19 @@ export class Installer {
     return null;
   }
 
+  /**
+   * ブラウザでの権限承認・初期化に使うテスト用 URL（/dev）。照会に失敗した場合は null（エディタでの実行を案内する。A案・D-029）
+   */
+  private devUrl(which: 'core' | 'admin'): string | null {
+    const id = this.reg![which].scriptId;
+    if (!id) return null;
+    try {
+      return this.d.api.headDevUrl(id);
+    } catch {
+      return null;
+    }
+  }
+
   /** 配布物の完全性確認とブートストラップ（環境固有の設定）付きのファイル一式 */
   private filesFor(which: 'core' | 'admin'): ScriptFile[] {
     const rel = this.d.release;
@@ -637,9 +702,16 @@ export class Installer {
         throw new InstallerError(which === 'core' ? 'core.upload' : 'admin.upload', `配布ファイル ${f.name} の検証に失敗しました（破損または改ざんの可能性）`, 'Shiftly Setup を正規の配布物で更新してから再実行してください');
     }
     const r = this.reg!;
+    if (which === 'core' && (!r.initCodeHash || !this.sec!.initCode)) {
+      // 以前の Setup で始めた構築（確認コードがない）: Core の配置の前に発行する（A案・D-029）
+      const initCode = this.d.randomHex(32);
+      this.sec!.initCode = initCode;
+      r.initCodeHash = this.d.sha256Hex(initCode);
+      this.persist();
+    }
     const bootstrap: ScriptFile =
       which === 'core'
-        ? { name: 'bootstrap', type: 'SERVER_JS', source: `var SHIFTLY_BOOTSTRAP = ${JSON.stringify({ envId: r.envId, storeName: r.storeName, adminPairingHash: r.adminPairingHash, setupPairingHash: r.setupPairingHash })};\n` }
+        ? { name: 'bootstrap', type: 'SERVER_JS', source: `var SHIFTLY_BOOTSTRAP = ${JSON.stringify({ envId: r.envId, storeName: r.storeName, adminPairingHash: r.adminPairingHash, setupPairingHash: r.setupPairingHash, initCodeHash: r.initCodeHash })};\n` }
         : { name: 'bootstrap', type: 'SERVER_JS', source: `var SHIFTLY_ADMIN_BOOTSTRAP = ${JSON.stringify({ envId: r.envId, coreUrl: r.core.url, pairingCode: this.sec!.adminPairingCode })};\n` };
     return [bootstrap, ...files];
   }
@@ -881,12 +953,47 @@ export function maskEmail(e: string): string {
   return `${u.slice(0, 2)}***@${dmn}`;
 }
 
-function toInstallerError(step: StepId, e: unknown): InstallerError {
-  if (e instanceof AppsScriptApiError) {
-    if (e.reason === 'API_DISABLED') return new InstallerError(step, 'Apps Script API が無効です', 'https://script.google.com/home/usersettings で Google Apps Script API をオンにしてください');
-    if (e.reason === 'PERMISSION') return new InstallerError(step, `権限がありません（${e.message}）`, 'Shiftly Setup の権限を承認し直してください（再認証）');
-    if (e.reason === 'QUOTA') return new InstallerError(step, 'Google の利用上限に達しました', '時間をおいて再実行してください');
-    return new InstallerError(step, `Google API エラー（${e.message}）`, '時間をおいて再実行してください。解決しない場合は導入手順書のトラブルシューティングを参照');
+/**
+ * Apps Script API の失敗を、利用者が取るべき対処ごとに分ける（A案・D-029）。401・403 をすべて「API が無効」とは扱わない
+ */
+export function apiFailure(step: StepId, reason: AppsScriptApiError['reason'], message: string): InstallerError {
+  switch (reason) {
+    case 'USER_API_DISABLED':
+      return new InstallerError(
+        step,
+        'Google Apps Script API がオフになっています',
+        `「Google の設定画面を開く」を押し、表示された画面で「Google Apps Script API」をオンにしてから、この画面に戻って「設定が完了したので再確認」を押してください（${USER_SETTINGS_URL}。反映まで数分かかることがあります）`,
+        undefined,
+        'USER_API_DISABLED',
+      );
+    case 'PROJECT_API_DISABLED':
+      return new InstallerError(
+        step,
+        'Shiftly Setup の提供側の Google Cloud の設定で、Apps Script API が有効になっていません',
+        'あなたの操作では解決できません。Shiftly Setup の提供者（開発者）に、この表示の全文を伝えてください（自分で Setup を配置した場合は、docs/google-api-setup.md の開発者向けの準備を確認）',
+        undefined,
+        'PROJECT_API_DISABLED',
+      );
+    case 'UNAUTHENTICATED':
+      return new InstallerError(step, 'Google の承認を確認できませんでした（承認の期限切れの可能性）', '画面を再読み込みし、Google の確認画面が表示されたら内容を確認して許可してから、もう一度実行してください', undefined, 'UNAUTHENTICATED');
+    case 'SCOPE':
+      return new InstallerError(
+        step,
+        'Shiftly Setup に必要な権限の一部が許可されていません',
+        '画面を再読み込みし、Google の確認画面ですべての項目を許可してから、もう一度実行してください（一部の権限だけでは構築できません）',
+        undefined,
+        'SCOPE',
+      );
+    case 'PERMISSION':
+      return new InstallerError(step, `Google が操作を許可しませんでした（${message}）`, '画面を再読み込みして Shiftly Setup の権限を承認し直してから、もう一度実行してください。解決しない場合は、この表示の全文を開発者に伝えてください', undefined, 'PERMISSION');
+    case 'QUOTA':
+      return new InstallerError(step, 'Google の利用上限に達しました', '時間をおいて再実行してください', undefined, 'QUOTA');
+    default:
+      return new InstallerError(step, `Google API エラー（${message}）`, '時間をおいて再実行してください。解決しない場合は導入手順書のトラブルシューティングを参照');
   }
+}
+
+function toInstallerError(step: StepId, e: unknown): InstallerError {
+  if (e instanceof AppsScriptApiError) return apiFailure(step, e.reason, e.message);
   return new InstallerError(step, e instanceof Error ? e.message : '不明なエラー', '再実行してください');
 }

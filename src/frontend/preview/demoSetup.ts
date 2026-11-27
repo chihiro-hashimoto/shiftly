@@ -16,12 +16,20 @@ const rnd = (n: number) => {
   return toHex(b);
 };
 
-export function createDemoSetupTransport(): SetupTransport {
+/**
+ * opts.apiOffOnce: 最初の確認で「Apps Script API がオフ」を返す（オンにした後の「再確認」の流れの画面確認用。A案・D-029）
+ */
+export function createDemoSetupTransport(opts: { apiOffOnce?: boolean } = {}): SetupTransport {
+  let apiOff = opts.apiOffOnce ?? false;
   const projects = new Map<string, { title: string; files: ScriptFile[]; v: number; deps: Map<string, number>; desc: Map<string, string> }>();
   let seq = 0;
   const http: Http = (method, url, body) => {
     const m = url.match(/\/projects(?:\/([^/?]+))?(?:\/(content|versions|deployments)(?:\/([^/?]+))?)?/)!;
     const [, id, sub, depId] = m;
+    if (apiOff) {
+      apiOff = false; // デモ: 次の「再確認」までに利用者がオンにしたものとして扱う
+      return { status: 403, body: JSON.stringify({ error: { message: 'User has not enabled the Apps Script API. Enable it by visiting https://script.google.com/home/usersettings', status: 'PERMISSION_DENIED' } }) };
+    }
     if (method === 'POST' && !id) {
       const sid = `demo_script_${++seq}`;
       projects.set(sid, { title: (body as { title: string }).title, files: [], v: 0, deps: new Map(), desc: new Map() });
@@ -32,7 +40,9 @@ export function createDemoSetupTransport(): SetupTransport {
     const dep = (d: string, v: number) => ({ deploymentId: d, deploymentConfig: { versionNumber: v, description: p.desc.get(d) }, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/${d}/exec` } }] });
     if (method === 'GET' && !sub) return { status: 200, body: JSON.stringify({ scriptId: id, title: p.title }) };
     if (method === 'GET' && sub === 'content') return { status: 200, body: JSON.stringify({ files: p.files }) };
-    if (method === 'GET' && sub === 'deployments' && !depId) return { status: 200, body: JSON.stringify({ deployments: [...p.deps.entries()].map(([d, v]) => dep(d, v)) }) };
+    // HEAD（最新のコード）のデプロイ（テスト用 URL /dev）も一覧に含める（実際の形式は Google の実環境で確認する。L43）
+    const head = { deploymentId: `HEAD${id}`, deploymentConfig: {}, entryPoints: [{ entryPointType: 'WEB_APP', webApp: { url: `https://script.google.com/macros/s/HEAD${id}/dev` } }] };
+    if (method === 'GET' && sub === 'deployments' && !depId) return { status: 200, body: JSON.stringify({ deployments: [head, ...[...p.deps.entries()].map(([d, v]) => dep(d, v))] }) };
     if (method === 'PUT' && sub === 'content') {
       p.files = (body as { files: ScriptFile[] }).files;
       return { status: 200, body: '{}' };

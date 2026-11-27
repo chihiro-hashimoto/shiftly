@@ -10,15 +10,17 @@ import { AdminApp } from '../admin/AdminApp';
 import { startPreviewBackend } from '../preview/mockBackend';
 import { SetupApp } from '../setup/SetupApp';
 import { createDemoSetupTransport } from '../preview/demoSetup';
+import { WebInitPanel } from '../components/webInit';
+import '../setup/setup.css';
 
 const NOTICE = 'プレビュー: 架空のサンプルデータで動作しています（Google には接続していません。再読み込みで初期状態に戻ります）';
 
 function Preview() {
   const be = useMemo(() => startPreviewBackend(), []);
-  const setupT = useMemo(() => createDemoSetupTransport(), []);
-  const [mode, setMode] = useState<'staff' | 'admin' | 'setup'>(() => {
+  const setupT = useMemo(() => createDemoSetupTransport({ apiOffOnce: new URLSearchParams(location.search).get('apiOff') === '1' }), []);
+  const [mode, setMode] = useState<'staff' | 'admin' | 'setup' | 'webinit-staff' | 'webinit-admin'>(() => {
     const v = new URLSearchParams(location.search).get('view');
-    return v === 'admin' || v === 'setup' ? v : 'staff';
+    return v === 'admin' || v === 'setup' || v === 'webinit-staff' || v === 'webinit-admin' ? v : 'staff';
   });
   return (
     <>
@@ -39,6 +41,10 @@ function Preview() {
       </div>
       {mode === 'staff' && <StaffApp transport={be.staff} injectedDeviceToken={be.deviceToken} sampleNotice={NOTICE} />}
       {mode === 'admin' && <AdminApp transport={be.owner} sampleNotice={NOTICE} />}
+      {/* ブラウザでの初期化・接続の画面（A案・D-029）のデモ: Google には接続しない */}
+      {(mode === 'webinit-staff' || mode === 'webinit-admin') && (
+        <WebInitPanel role={mode === 'webinit-staff' ? 'staff' : 'admin'} code="demo" run={() => new Promise((r) => setTimeout(() => r({ ok: true }), 300))} />
+      )}
       {mode === 'setup' && <SetupApp transport={setupT} notice="デモ: Google には接続していません。権限承認の工程は「確認して続行」で承認済みとして扱います" />}
     </>
   );

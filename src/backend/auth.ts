@@ -425,7 +425,7 @@ export interface OwnerEnvelope {
  */
 export const SETUP_ALLOWED_OPS = new Set(['system.info', 'system.integrityCheck', 'backup.list', 'system.storageCheck']);
 
-export function signOwnerEnvelope(p: Platform, key: Uint8Array, body: string, role: EnvelopeRole = 'admin'): OwnerEnvelope {
+export function signOwnerEnvelope(p: Pick<Platform, 'now' | 'randomHex' | 'hmacSha256'>, key: Uint8Array, body: string, role: EnvelopeRole = 'admin'): OwnerEnvelope {
   const ts = p.now();
   const nonce = p.randomHex(16);
   const sig = toHex(p.hmacSha256(key, utf8(`1.${role}.${ts}.${nonce}.${body}`)));
