@@ -190,12 +190,12 @@ test('管理者ページ: 誤ったパスワードは拒否、正しいパスワ
   await page.getByRole('button', { name: '管理者モードに入る' }).click();
   await expect(page.getByRole('region', { name: '管理者モード' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'ダッシュボード', level: 1 })).toBeVisible();
-  // Google 所有者に限定した「システム・更新」と、廃止した「給与条件」は表示しない
+  // Google 所有者に限定した「システム・保守」と、廃止した「給与条件」は表示しない
   const menu = page.getByRole('button', { name: 'メニュー' });
   if (await menu.isVisible()) await menu.click();
   const nav = page.getByRole('navigation', { name: '管理メニュー' });
   await expect(nav.getByRole('button', { name: '申請・確認', exact: true })).toBeVisible();
-  await expect(nav.getByRole('button', { name: 'システム・更新', exact: true })).toHaveCount(0);
+  await expect(nav.getByRole('button', { name: 'システム・保守', exact: true })).toHaveCount(0);
   await expect(nav.getByRole('button', { name: '給与条件', exact: true })).toHaveCount(0);
   if (await menu.isVisible()) await menu.click();
   await page.getByRole('button', { name: 'スタッフ画面へ戻る' }).click();

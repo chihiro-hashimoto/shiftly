@@ -194,7 +194,7 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
             </div>
           </div>
         )}
-        {st?.complete && <UpdatePanel transport={transport} onChanged={load} />}
+        {st?.complete && <MaintenanceNote />}
       </main>
     </div>
   );
@@ -213,14 +213,13 @@ function Complete({ st }: { st: PublicState }) {
             ))}
           </ul>
           {st.verification.unverified.length > 0 && (
-            <div className="callout callout-warn" style={{ marginTop: 8 }}>
-              <strong>自動では確認していない項目（ご自身で確認してください）</strong>
+            <div className="callout" style={{ marginTop: 8 }}>
+              <strong>自動では確認できない項目（所有者が確認済み）</strong>
               <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
                 {st.verification.unverified.map((c) => (
-                  <li key={c}>{c}</li>
+                  <li key={c}>{(st.verification?.ownerConfirmed ?? []).includes(c) ? '所有者が確認: ' : '未確認: '}{c}</li>
                 ))}
               </ul>
-              <div>同じ名前のプロジェクトが 2 つ以上ある場合は、使われていないほう（Setup の記録にない ID）を削除せずに残したまま、管理者に相談してください。</div>
             </div>
           )}
         </div>
@@ -246,92 +245,17 @@ function Complete({ st }: { st: PublicState }) {
   );
 }
 
-function UpdatePanel({ transport, onChanged }: { transport: SetupTransport; onChanged: () => void }) {
-  const [info, setInfo] = useState<{ installed: string | null; available: string; needsUpdate: boolean; pending?: string | null } | null>(null);
-  const [msg, setMsg] = useState('');
-  const [approval, setApproval] = useState<string[] | null>(null);
-  const [agree, setAgree] = useState(false);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    transport.call<typeof info>('checkUpdate').then(setInfo).catch(() => setInfo(null));
-  }, [transport]);
-  const apply = async (approveDestructive: boolean) => {
-    setBusy(true);
-    try {
-      const r = await transport.call<{ ok: boolean; message: string; requiresApproval?: string[] }>('applyUpdate', { approveDestructive });
-      setMsg(r.message);
-      setApproval(r.requiresApproval ?? null);
-      onChanged();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : '更新に失敗しました');
-    } finally {
-      setBusy(false);
-    }
-  };
+/** v1.3 では Setup からのアプリの更新・ロールバックを提供しない（D-027 B案）。案内だけを表示する */
+function MaintenanceNote() {
   return (
     <section className="panel" style={{ marginTop: 20 }}>
       <div className="panel-head">
-        <h2>アップデート</h2>
+        <h2>アップデート・保守</h2>
       </div>
       <div className="panel-body stack">
-        {!info && <p className="muted">バージョンを確認しています…</p>}
-        {info && (
-          <p>
-            現在のバージョン: <strong>{info.installed ?? '不明'}</strong>　／　この Setup に含まれるバージョン: <strong>{info.available}</strong>
-          </p>
-        )}
-        {info?.needsUpdate && (
-          <>
-            {info.pending && (
-              <div className="callout callout-warn" role="status">
-                <strong>未完了の更新があります。</strong> {info.pending}
-              </div>
-            )}
-            <div className="callout">
-              更新では次の順に処理します: 更新前バックアップ → メンテナンス（スタッフの打刻を一時停止） → コード更新 → 既存 URL のまま切替 → データベース更新 → 動作・整合性確認。失敗した場合はコードを以前のバージョンへ戻します。営業時間外に実施してください。
-            </div>
-            <label className="check">
-              <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
-              <span>営業時間外であること、スタッフが打刻中でないことを確認しました</span>
-            </label>
-            <button className="btn btn-primary" disabled={!agree || busy} onClick={() => void apply(false)}>
-              {busy ? '更新中…' : info.pending ? `バージョン ${info.available} への更新を再開` : `バージョン ${info.available} に更新`}
-            </button>
-          </>
-        )}
-        {info && !info.needsUpdate && <p className="muted">最新のバージョンです。</p>}
-        {msg && <div className="callout">{msg}</div>}
-        {approval && approval.length > 0 && (
-          <div className="callout callout-warn">
-            <strong>データベースの破壊的な変更が含まれます</strong>
-            <ul className="small">{approval.map((a) => <li key={a}>{a}</li>)}</ul>
-            <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => void apply(true)}>
-              内容を確認したうえで承認して続行
-            </button>
-          </div>
-        )}
-        <details>
-          <summary className="small">更新を元に戻す（ロールバック）</summary>
-          <p className="small muted" style={{ margin: '6px 0' }}>
-            アプリのコードを直前のバージョンへ戻します（URL は変わりません）。先にメンテナンス（スタッフの打刻の一時停止）を開始し、戻したプログラムとデータベースの構造が一致する場合のみ解除します。一致しない場合はメンテナンスを継続するため、管理画面「バックアップ」から更新前バックアップを復元してから解除してください（docs/update-rollback.md）。
-          </p>
-          <button
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                setMsg((await transport.call<{ message: string }>('rollback')).message);
-              } catch (e) {
-                setMsg(e instanceof Error ? e.message : 'ロールバックに失敗しました');
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            直前のバージョンに戻す
-          </button>
-        </details>
+        <p className="small">
+          v1.3 では、構築済みの環境のアプリの更新・ロールバックを Setup から行いません。データの復元・アプリの更新は、安全性確保のため Google 所有者による保守作業として行います（導入手順書・運用手順書「保守作業」）。
+        </p>
       </div>
     </section>
   );

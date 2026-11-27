@@ -153,7 +153,7 @@ function assertNoRestoreLock(ctx: Ctx, p: PayrollPeriod) {
   if (l)
     throw new ApiError(
       'PAYROLL_BLOCKED',
-      `${p.periodKey} は、バックアップの復元（${l.restoredAt.slice(0, 16).replace('T', ' ')}）で確定済みの給与を引き継いだ期間です。復元後の給与条件（時給・手当・控除など）が確定時と異なる可能性があるため、条件を確認して「復元後の確認を完了」するまで、確定・訂正・明細の発行はできません`,
+      `${p.periodKey} は、Google 所有者の保守作業（データの復元など。${l.restoredAt.slice(0, 16).replace('T', ' ')} 終了）の前に給与を確定した期間です。保守作業の後の給与条件・勤怠（時給・手当・控除など）が確定時と異なる可能性があるため、条件を確認して「復元後の確認を完了」するまで、確定・訂正・明細の発行はできません`,
       409,
     );
 }

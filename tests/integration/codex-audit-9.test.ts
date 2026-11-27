@@ -1,6 +1,8 @@
 /**
  * Codex 独立監査 9 回目（docs/reviews/codex-audit-9.md）の指摘に対する回帰テスト
- * （#3 は Setup の更新処理のため tests/integration/installer.test.ts にある。#2 は旧版 v1.2 の運用のため手順書で対応）
+ * （#3 は Setup の更新処理のテストだった。v1.3 では Setup による更新を提供しないため削除した。#2 は旧版 v1.2 の運用のため手順書で対応）
+ * #1 は、アプリ内の復元を v1.3 では提供しないため（D-027 B案）、「バックアップの時点の時給に戻す」操作を保守作業の中の手作業として行う形に置き換えた
+ * （停止・照合・解除の確認内容は同じ。R2）
  * 期待値は指摘の再現条件から手計算したもの（実装の出力を写したものではない）
  */
 import { describe, expect, it } from 'vitest';
@@ -18,7 +20,7 @@ function scenario() {
   h.ownerOk('deductions.upsert', { employeeId: a, periodId: p.id, status: 'explicit_none' });
   h.setNow('2026-12-01', '06:00');
   // バックアップ時点の時給は 1,200 円
-  const bk = h.ownerOk('backup.run', { kind: 'manual' });
+  const atBackup = h.env.adapter.snapshot();
   // バックアップの後に、対象日に適用される時給を 1,400 円に変更して確定（5 時間 × 1,400 円 = 7,000 円）
   h.setNow('2026-12-01', '06:10');
   h.ownerOk('payconf.upsertWageRule', { employeeId: a, kind: 'base', hourlyRate: 1400, effectiveFrom: '2026-11-01', priority: 1 });
@@ -27,13 +29,16 @@ function scenario() {
   const r1 = h.ownerOk('payroll.confirm', { periodId: p.id, acknowledgements: acks });
   expect(r1.confirmed[0].netPay).toBe(7000);
   h.setNow('2026-12-01', '06:20');
-  h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+  // 保守作業で、時給ルールの表をバックアップの時点（1,200 円）に戻す
+  h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+  h.env.adapter.sheets.set('wage_rules', atBackup['wage_rules']!.map((r) => [...r]));
+  h.ownerOk('maintenance.finish', { confirmText: '保守を終了する' });
   h.setNow('2026-12-01', '06:30');
   return { h, a, p, acks };
 }
 
-describe('Codex 監査9 #1: 復元で引き継いだ確定済みの給与は、給与条件の確認まで訂正・明細の発行をしない', () => {
-  it('バックアップ後に 1,400 円で確定（7,000 円）→ 時給 1,200 円のバックアップを復元 → 訂正・明細の発行は停止し、確定結果は 7,000 円のまま', () => {
+describe('Codex 監査9 #1: 保守作業の前に確定した給与は、給与条件の確認まで訂正・明細の発行をしない', () => {
+  it('1,400 円で確定（7,000 円）→ 保守作業で時給を 1,200 円（バックアップの時点）に戻す → 訂正・明細の発行は停止し、確定結果は 7,000 円のまま', () => {
     const { h, a, p, acks } = scenario();
     const per = h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id);
     expect(per.restoreLock).toBeTruthy();
@@ -62,14 +67,17 @@ describe('Codex 監査9 #1: 復元で引き継いだ確定済みの給与は、�
     expect(code(h.owner('payslips.issue', { periodId: p.id }))).toBe('OK');
   });
 
-  it('バックアップの後に確定・訂正・発行していない期間は、復元しても停止しない', () => {
+  it('確定・訂正・発行していない期間は、保守作業で内容を戻しても停止しない', () => {
     const h = new Harness();
     h.setupStore();
-    h.addStaff('山田', '482913', { rate: 1200 });
+    const a = h.addStaff('山田', '482913', { rate: 1200 });
     const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
     h.setNow('2026-12-01', '06:00');
-    const bk = h.ownerOk('backup.run', { kind: 'manual' });
-    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    const atBackup = h.env.adapter.snapshot();
+    h.ownerOk('payconf.upsertWageRule', { employeeId: a, kind: 'base', hourlyRate: 1400, effectiveFrom: '2026-11-01', priority: 1 });
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+    h.env.adapter.sheets.set('wage_rules', atBackup['wage_rules']!.map((r) => [...r]));
+    h.ownerOk('maintenance.finish', { confirmText: '保守を終了する' });
     expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeNull();
   });
 });

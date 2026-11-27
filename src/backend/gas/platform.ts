@@ -13,7 +13,6 @@
 import type { Cache, DatabaseControl, FileStore, FolderKey, Platform, SecretStore } from '../platform';
 import { FOLDER_KEYS } from '../platform';
 import { toHex, type Bytes } from '../../shared/crypto';
-import { SheetsAdapter } from './sheets-adapter';
 
 declare const Drive: any;
 declare const Sheets: any;
@@ -128,44 +127,6 @@ class GasFiles implements FileStore, DatabaseControl {
     if (!id) throw new Error('DB が未作成です');
     return id;
   }
-  prepareRestoreCopy(backupFileId: string) {
-    // 復元の候補には「候補」の目印を付ける（切替のときに DB の目印へ付け替える。D-026 S1）
-    const f = Drive.Files.copy({ name: `Shiftly Database (restore candidate ${new Date().toISOString().slice(0, 19)})`, parents: [folders()['01_Database']], appProperties: { shiftly: 'restore_candidate' } }, backupFileId, { fields: 'id' });
-    const id = f.id as string;
-    return { candidateId: id, adapter: new SheetsAdapter(() => id) };
-  }
-  activate(candidateId: string) {
-    const prev = this.currentId();
-    // 旧 DB は削除せず名前と目印を変更して保持（ロールバック可能）。DB の目印（shiftly=database）は常に稼働中の 1 つだけにする
-    // （保管先の点検で、置き換え済みの DB・候補を DB と数えない。D-026 S1）。途中で止まった場合は 0 件になり、点検で検出される
-    const prevName = (Drive.Files.get(prev, { fields: 'name' }) as { name?: string }).name ?? 'Shiftly Database';
-    try {
-      Drive.Files.update({ name: `Shiftly Database (replaced ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'replaced_database' } }, prev);
-      Drive.Files.update({ name: `Shiftly Database (restored ${new Date().toISOString().slice(0, 19)})`, appProperties: { shiftly: 'database' } }, candidateId);
-      PropertiesService.getScriptProperties().setProperty(PROP.dbId, candidateId);
-    } catch (e) {
-      // 切替の途中で失敗した: 稼働中の DB がまだ旧 DB なら、旧 DB の名前と目印を元に戻し、候補の目印も候補に戻す
-      // （稼働中の DB が「置き換え済み」と表示されて誤って整理されること・点検が失敗し続けることを防ぐ。再点検 #2）
-      if (this.currentId() === prev) {
-        try {
-          Drive.Files.update({ name: prevName, appProperties: { shiftly: 'database' } }, prev);
-        } catch {
-          /* 戻せない場合も保管先の点検で検出される */
-        }
-        try {
-          Drive.Files.update({ appProperties: { shiftly: 'restore_candidate' } }, candidateId);
-        } catch {
-          /* 候補はこの後破棄する */
-        }
-      }
-      throw e;
-    }
-    return { previousId: prev };
-  }
-  discard(candidateId: string) {
-    if (candidateId === this.currentId()) throw new Error('稼働中の DB は破棄できません');
-    this.trashFile('01_Database', candidateId);
-  }
 }
 
 export function createGasPlatform(): Platform {
@@ -216,9 +177,24 @@ export function createGasPlatform(): Platform {
 const STORAGE_CREATING = 'SHIFTLY_STORAGE_CREATING';
 
 /** 検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる（S1、D-025） */
+/**
+ * Google ドライブの検索の全ページを取得する（D-027。Codex 監査24 A4）。1 ページ目だけで判断しない。
+ * 途中のページで失敗した場合は例外のまま止める（一部の結果で「見つからない」「1 つだけ」と判断しない）。ページ数の上限を超えた場合も止める
+ */
+export function listAllDriveFiles<T = { id: string }>(q: string, fields = 'id'): T[] {
+  const out: T[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const r = Drive.Files.list({ q, fields: `nextPageToken, files(${fields})`, pageSize: 100, ...(pageToken ? { pageToken } : {}) });
+    out.push(...((r.files ?? []) as T[]));
+    pageToken = typeof r.nextPageToken === 'string' && r.nextPageToken ? r.nextPageToken : undefined;
+    if (!pageToken) return out;
+  }
+  throw new Error('Google ドライブの検索の結果が多すぎるため、確認できませんでした');
+}
+
 function findAll(q: string): string[] {
-  const r = Drive.Files.list({ q: `${q} and trashed = false`, fields: 'files(id)', pageSize: 10 });
-  return (r.files ?? []).map((f: { id: string }) => f.id);
+  return listAllDriveFiles(`${q} and trashed = false`).map((f) => f.id);
 }
 
 /** Core の Drive の構成物（一度だけ作るもの）。キー・表示名・検索条件・保存先 */

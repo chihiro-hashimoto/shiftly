@@ -221,7 +221,7 @@ function RestoreLockNotice({ periodId, lock, onReleased }: { periodId: string; l
     <div className="callout callout-warn" role="alert">
       <strong>復元後の給与条件の確認が必要です</strong>
       <p className="small" style={{ margin: '6px 0' }}>
-        この期間は、バックアップの復元（{lock.restoredAt.slice(0, 16).replace('T', ' ')}）で確定済みの給与を引き継ぎました。復元後の給与条件（時給・月給・手当・控除など）は、確定したときと異なる可能性があります。条件を確認するまで、確定・訂正・明細の発行は停止しています。
+        この期間は、Google 所有者の保守作業（データの復元など。{lock.restoredAt.slice(0, 16).replace('T', ' ')} 終了）の前に給与を確定しています。保守作業の後の給与条件・勤怠（時給・月給・手当・控除など）は、確定したときと異なる可能性があります。条件を確認するまで、確定・訂正・明細の発行は停止しています。
       </p>
       {review.loading && !r && <Loading />}
       {review.error && <ErrorBox message={review.error} onRetry={review.reload} />}

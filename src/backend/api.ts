@@ -12,7 +12,7 @@
 import type { Platform } from './platform';
 import { UnitOfWork, ConflictError, type TableAdapter } from './store';
 import { ApiError, E } from './errors';
-import { audit, currentEpoch, type Ctx, type Principal } from './context';
+import { audit, currentEpoch, maintenanceActive, type Ctx, type Principal } from './context';
 import { EPOCH_EXEMPT } from './epoch-exemptions';
 import { authenticateAdminSession, authenticateDevice, authenticateSession, touchDevice } from './auth';
 import type { PermissionKey, RequestIdempotency } from '../shared/types';
@@ -78,9 +78,31 @@ export type ApiResponse = { ok: true; data: unknown; epoch?: number | null } | {
 
 const registry = new Map<string, OpDef>();
 
+/**
+ * v1.3 で提供しない操作（D-027 B案）。アプリ内の自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・
+ * 自動ロールバックは次の版以降に延期した。処理は配布物に含めず（登録もしない）、旧画面・直接の API 呼び出し・Google 所有者・
+ * Setup・定期処理のどの経路から呼ばれても、ここで明示的に拒否する（隠し設定・画面の表示の切り替えには頼らない）。
+ * データの復元は Google 所有者の保守作業（maintenance.begin → 手作業 → maintenance.finish。docs/operations-guide.md）として行う
+ */
+export const DEFERRED_OPS: Readonly<Record<string, string>> = {
+  'backup.restore': 'アプリ内のデータの復元（稼働中の DB の切替）',
+  'system.prepareUpdate': 'アプリの自動更新（更新の準備）',
+  'system.migrate': '更新に伴う DB の自動移行',
+  'system.finishUpdate': 'アプリの自動更新（更新の完了）',
+  'system.setMaintenance': '更新の工程のメンテナンスの切り替え（保守作業の開始・終了は maintenance.begin・maintenance.finish）',
+};
+export function deferredOpError(op: string): ApiError {
+  return new ApiError(
+    'NOT_IN_THIS_RELEASE',
+    `この操作（${DEFERRED_OPS[op] ?? op}）は v1.3 では提供していません。データの復元・アプリの更新は、安全性確保のため Google 所有者による保守作業として行います`,
+    403,
+  );
+}
+
 export function defineOps(defs: OpDef[]) {
   for (const d of defs) {
     if (registry.has(d.name)) throw new Error(`op 重複: ${d.name}`);
+    if (Object.prototype.hasOwnProperty.call(DEFERRED_OPS, d.name)) throw new Error(`v1.3 で提供しない操作は登録できません: ${d.name}`);
     // 分類と更新の有無の整合（読み取りはデータを変えない／読み取り以外は更新系としてロック内で実行する）
     if ((d.kind === 'read') === d.mutating) throw new Error(`op の分類と mutating が一致しません: ${d.name}`);
     // 世代の照合を適用しない更新系の操作は、理由の登録を必須にする（D-026。登録漏れ・理由のない除外を防ぐ）
@@ -112,6 +134,7 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
     const r = req as ApiRequest;
     if (typeof r.op !== 'string' || r.op.length > 64) throw E.invalid('操作が不正です');
     opName = r.op;
+    if (Object.prototype.hasOwnProperty.call(DEFERRED_OPS, r.op)) throw deferredOpError(r.op);
     const def = registry.get(r.op);
     if (!def) throw new ApiError('UNKNOWN_OP', '不明な操作です', 404);
     if (r.requestId !== undefined && (typeof r.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(r.requestId))) throw E.invalid('requestId が不正です');
@@ -136,13 +159,16 @@ export function handleRequest(be: Backend, req: unknown, trusted: 'owner' | 'sys
       ctx.principal = resolvePrincipal(ctx, def, r, trusted);
       authorize(ctx, def);
       if (!def.allowInMaintenance && isMaintenance(ctx) && ctx.principal.kind !== 'owner' && ctx.principal.kind !== 'system') throw E.maintenance();
+      // Google 所有者の保守作業の間（D-027。記録は業務 DB の外の Script Properties）は、Google 所有者・定期処理を含む全員の更新系を止める。
+      // 保守の開始・終了と初期化（既存の環境ではデータを変えない）だけを許可する（開始時のバックアップは maintenance.begin が作る）。記録を読み取れない場合も止める
+      if (def.mutating && !MAINTENANCE_ALLOWED_OPS.has(def.name) && maintenanceActive(p)) throw E.maintenanceWork();
       // 画面からの業務更新は、画面がデータを取得した時点の復元世代を照合する（D-026。ロックの内側で照合し、復元と競合しない）。
       // 世代がない・古い要求は拒否する。世代の記録がない・壊れている場合も、古い要求を受け入れないよう更新を止める
       if (def.kind === 'edit' || (def.editWhen && def.editWhen(r.args))) {
         const cur = currentEpoch(p);
-        if (cur === null) throw new ApiError('EPOCH_UNAVAILABLE', 'データの世代情報を確認できないため、更新を停止しています。Google 所有者が Shiftly-Staff のエディタで shiftlyAuthorize を実行してください', 409);
+        if (cur === null) throw new ApiError('EPOCH_UNAVAILABLE', '画面の世代の記録を確認できないため、データの更新を停止しています。Google 所有者が保守作業（Shiftly-Staff のエディタで shiftlyMaintenanceBegin → 確認 → shiftlyMaintenanceFinish）を行うと再開します', 409);
         if (typeof r.epoch !== 'number' || r.epoch !== cur)
-          throw new ApiError('STALE_VIEW', '画面の情報が、データの復元より前に読み込んだものです。画面を読み込み直し、最新の内容を確認してから、もう一度操作してください', 409);
+          throw new ApiError('STALE_VIEW', '画面の情報が、保守作業（データの復元など）より前に読み込んだものです。画面を読み込み直し、最新の内容を確認してから、もう一度操作してください', 409);
       }
       // 管理者モードでの更新操作は監査ログに記録（内容は記録しない。各操作の個別の監査ログに加えて記録）
       if (ctx.principal.kind === 'admin' && def.mutating) audit(ctx, 'admin.op', 'op', def.name, '管理者モードでの操作');
@@ -243,6 +269,9 @@ function principalKey(pr: Principal): string {
       return pr.kind;
   }
 }
+
+/** 保守作業の間も実行できる更新系の操作（D-027） */
+export const MAINTENANCE_ALLOWED_OPS: ReadonlySet<string> = new Set(['maintenance.begin', 'maintenance.finish', 'system.initialize']);
 
 function isMaintenance(ctx: Ctx): boolean {
   try {

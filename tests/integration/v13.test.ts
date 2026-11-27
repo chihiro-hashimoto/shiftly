@@ -317,8 +317,11 @@ describe('管理者パスワード認証（店舗 iPad の管理者モード）'
     const t = adminLogin(h);
     expect(code(asAdmin(h, t, 'employees.list'))).toBe('OK');
     expect(code(asAdmin(h, t, 'settings.get'))).toBe('OK');
-    for (const op of ['adminAuth.setPassword', 'adminAuth.unlock', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.setMaintenance', 'system.initialize', 'system.resetSetupPairing', 'payslips.pdf'])
+    // v1.3 で提供しない操作（更新・移行・メンテナンスの切替）は一覧から除き、下で拒否を確かめる（D-027。入力の変更のみ）
+    for (const op of ['adminAuth.setPassword', 'adminAuth.unlock', 'system.initialize', 'system.resetSetupPairing', 'payslips.pdf', 'maintenance.begin', 'maintenance.finish'])
       expect(code(asAdmin(h, t, op, {}))).toBe('FORBIDDEN');
+    for (const op of ['system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.setMaintenance', 'backup.restore'])
+      expect(code(asAdmin(h, t, op, {})), op).toBe('NOT_IN_THIS_RELEASE');
     // スタッフ本人用の操作は管理者モードでは不可
     expect(code(asAdmin(h, t, 'payroll.mine'))).not.toBe('OK');
     void a;

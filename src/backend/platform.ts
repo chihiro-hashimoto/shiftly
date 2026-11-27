@@ -3,7 +3,6 @@
  * すべて同期 API（GAS が同期実行のため）。
  */
 import type { Bytes } from '../shared/crypto';
-import type { TableAdapter } from './store';
 
 export interface SecretStore {
   /** Script Properties 等、業務DB・バックアップと分離されたサーバー側の保存場所 */
@@ -35,19 +34,13 @@ export interface FileStore {
 export type FolderKey = '00_System' | '01_Database' | '02_Payslips' | '03_Exports' | '04_Audit' | '05_Backup';
 export const FOLDER_KEYS: FolderKey[] = ['00_System', '01_Database', '02_Payslips', '03_Exports', '04_Audit', '05_Backup'];
 
-/** DB の切替（バックアップからの復元用） */
+/**
+ * 稼働中の DB の識別（D-027 B案）。v1.3 では稼働中の DB を切り替える処理（復元の候補の作成・切替・破棄）を提供しない
+ * （アプリ内の自動復元・稼働中の DB の自動切替は次の版以降に延期。データの復元は Google 所有者の保守作業として行う）
+ */
 export interface DatabaseControl {
   /** 現在の DB 識別子 */
   currentId(): string;
-  /**
-   * 復元候補の作成: バックアップ（fileId）を複製し、稼働中の DB を切り替えずに読み書き用アダプタを返す。
-   * 候補への再投入と整合性確認が終わるまで稼働先は変えない（バックアップ自体は変更しない）
-   */
-  prepareRestoreCopy(backupFileId: string): { candidateId: string; adapter: TableAdapter };
-  /** 復元候補を稼働中の DB に切り替える（旧 DB は削除せず保持） */
-  activate(candidateId: string): { previousId: string };
-  /** 使わなかった復元候補を破棄（ゴミ箱へ。アプリ管理フォルダ内のみ） */
-  discard(candidateId: string): void;
 }
 
 export interface Platform {

@@ -14,7 +14,7 @@ export function StaleViewGuard({ onReset }: { onReset: () => void }) {
     <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-labelledby="stale-title" style={{ zIndex: 1000 }}>
       <div className="modal" style={{ maxWidth: 440 }}>
         <h2 id="stale-title" style={{ marginTop: 0 }}>画面を読み込み直してください</h2>
-        <p>この画面を開いた後に、データがバックアップから復元されました。表示中の内容は復元前のものです。</p>
+        <p>この画面を開いた後に、Google 所有者の保守作業（データの復元など）が行われました。表示中の内容は保守作業の前のものです。</p>
         <p>入力中の内容は保存されていません。読み込み直した後に最新の内容を確認し、必要な入力をやり直してください。</p>
         <button
           className="btn btn-primary btn-lg"

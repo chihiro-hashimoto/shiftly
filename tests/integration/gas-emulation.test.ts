@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { GasEmulator } from '../helpers/gas-emulator';
+import { registryReport } from '../../src/gas/setup';
 
 const built = existsSync('dist/gas/core/Code.js');
 /** 最新の画面として現在の復元世代を付ける（D-026。Script Properties に保存された世代） */
@@ -25,7 +26,9 @@ function ownerEnvelope(keyHex: string, body: unknown, role: 'admin' | 'setup' = 
 }
 
 describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () => {
-  it('Codex 監査2 #1: v1.2 の DB（store_settings が 32 列のシート）を v1.3 の Core で読み込み、移行で列とヘッダーを拡張する', () => {
+  // Codex 監査2 #1（v1.2 の DB の移行）は、更新に伴う DB の自動移行を v1.3 では提供しないため（D-027 B案。v1.2 で運用中の店舗もない）、
+  // 移行の操作を拒否し DB を変えないことを確かめる形に置き換えた
+  it('D-027: 更新に伴う DB の自動移行（system.migrate）は、Google 所有者の署名付きの要求でも拒否し、DB を変えない', () => {
     const emu = new GasEmulator();
     const adminCode = randomBytes(32).toString('hex');
     const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_emu2', storeName: 'エミュ店', adminPairingHash: sha(adminCode), setupPairingHash: sha(randomBytes(32).toString('hex')) } });
@@ -34,25 +37,14 @@ describe.skipIf(!built)('GAS バンドルのエミュレーション実行', () 
     core.shiftlyAuthorize();
     const key = post({ kind: 'pair', role: 'admin', pairingCode: adminCode }).data.key as string;
     const owner = (op: string, args?: unknown) => post(ownerEnvelope(key, { op, args, requestId: `emu_${randomBytes(6).toString('hex')}`, ...epochOf(emu) }));
-    expect(owner('settings.update', { storeName: '旧店舗' }).ok).toBe(true);
-    // v1.2 の状態を再現: store_settings のグリッド・ヘッダー・行を 32 列に、スキーマ版を 1 に
     const ss = emu.spreadsheets.get(emu.scriptProps.getProperty('SHIFTLY_DB_ID')!)!;
-    const st = ss.sheets.find((x) => x.title === 'store_settings')!;
-    st.colCount = 32;
-    st.rows = st.rows.map((r) => r.slice(0, 32));
-    const meta = ss.sheets.find((x) => x.title === 'system_metadata')!;
-    for (const r of meta.rows) if (r[4] === 'schemaVersion') r[5] = '1';
-    // 列が少ないシートでも読み込める（範囲外を読まない）。v1 の行は既定値（シフト基準・予定休憩）で補う
-    const g = owner('settings.get');
-    expect(g.ok).toBe(true);
-    expect(g.data.storeName).toBe('旧店舗');
-    expect(g.data.payrollTimeBasis).toBe('shift');
-    // 移行で列幅とヘッダーを拡張
-    expect(owner('system.migrate', {}).ok).toBe(true);
-    expect(st.colCount).toBeGreaterThanOrEqual(34);
-    expect(st.rows[0]!.slice(32, 34)).toEqual(['breakMode', 'payrollTimeBasis']);
-    expect(owner('settings.update', { breakMode: 'punch' }).ok).toBe(true);
-    expect(owner('settings.get').data.breakMode).toBe('punch');
+    const before = JSON.stringify(ss.sheets);
+    for (const op of ['system.migrate', 'system.prepareUpdate', 'system.finishUpdate', 'system.setMaintenance']) {
+      const r = owner(op, { approveDestructive: true, targetVersion: '0.2.0', on: false });
+      expect(r.ok, op).toBe(false);
+      expect(r.error.code, op).toBe('NOT_IN_THIS_RELEASE');
+    }
+    expect(JSON.stringify(ss.sheets)).toBe(before);
     expect(owner('system.info').data.schemaVersion).toBe(2);
   });
 
@@ -512,7 +504,7 @@ describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('S1: Core の�
  * D-026 R1 を GAS のアダプタ（Sheets・Drive・Script Properties）の経路で確かめる（独立した点検 #4）:
  * Shiftly-Admin（adminApi。epoch の転送）→ Core（doPost）→ 復元（Drive の複製・DB の切替）→ 古い世代の拒否・世代の保持・保管先の点検
  */
-describe.skipIf(!built || !existsSync('dist/gas/admin/Code.js'))('R1: GAS のアダプタでの復元世代（D-026）', () => {
+describe.skipIf(!built || !existsSync('dist/gas/admin/Code.js'))('R1: GAS のアダプタでの画面の世代・保守作業（D-026・D-027）', () => {
   function stack() {
     const coreEmu = new GasEmulator();
     const adminEmu = new GasEmulator();
@@ -529,71 +521,217 @@ describe.skipIf(!built || !existsSync('dist/gas/admin/Code.js'))('R1: GAS のア
     return { coreEmu, core, api, epoch };
   }
 
-  it('復元で DB を切り替えても世代は Script Properties に残って進み、復元前の世代の保存は拒否される（Admin は数値の世代だけを転送する）', () => {
-    const { coreEmu, api, epoch } = stack();
+  it('保守作業の終了で世代は Script Properties で新しくなり、保守の前の世代の保存は拒否される（Admin は数値の世代だけを転送する）。DB は切り替えない', () => {
+    const { coreEmu, core, api, epoch } = stack();
     const e0 = epoch();
     expect(e0).toBeGreaterThan(0);
     const got = api({ op: 'settings.get' });
     expect(got.ok).toBe(true);
     expect(got.epoch).toBe(e0);
-    expect(api({ op: 'settings.update', args: { storeName: '復元前' }, epoch: e0 }).ok).toBe(true);
-    const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: e0 });
-    expect(bk.ok).toBe(true);
+    expect(api({ op: 'settings.update', args: { storeName: '保守の前' }, epoch: e0 }).ok).toBe(true);
     const dbBefore = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID');
-    const r = api({ op: 'backup.restore', args: { backupId: bk.data.id, confirmText: '復元する' } });
-    expect(r.ok).toBe(true);
-    expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).not.toBe(dbBefore); // DB は切り替わった
+    // Google 所有者がエディタで保守作業を開始 → 業務の更新は止まる
+    expect(core.shiftlyMaintenanceBegin().ok).toBe(true);
+    expect(api({ op: 'settings.update', args: { storeName: '保守中' }, epoch: e0 }).error?.code).toBe('MAINTENANCE');
+    expect(core.shiftlyMaintenanceStatus().data.maintenanceWork.active).toBe(true);
+    // 終了 → 世代が変わる（DB は同じ）
+    expect(core.shiftlyMaintenanceFinish().ok).toBe(true);
+    expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).toBe(dbBefore);
+    expect(coreEmu.scriptProps.getProperty('SHIFTLY_MAINTENANCE')).toBeNull();
     const e1 = epoch();
-    expect(e1).toBeGreaterThan(e0); // 世代は DB の外にあり、切替をまたいで進む
-    // 復元前の画面（世代 e0）・世代なし・文字列の世代（Admin は転送しない）は拒否
+    expect(e1).not.toBe(e0);
     for (const ep of [e0, undefined, String(e1)]) expect(api({ op: 'settings.update', args: { storeName: '古い画面' }, ...(ep !== undefined ? { epoch: ep } : {}) }).error?.code).toBe('STALE_VIEW');
     expect(api({ op: 'settings.update', args: { storeName: '読み込み直した画面' }, epoch: e1 }).ok).toBe(true);
-    // 保管先の点検: DB の目印は稼働中の 1 つだけ（候補・置き換え済み・バックアップの複製を DB と数えない）
+    // 保管先の点検: 保守の記録（00_System のファイル）・バックアップの複製を DB と数えない
     const sc = api({ op: 'system.storageCheck' });
     expect(sc.ok).toBe(true);
     expect(sc.data.issues).toEqual([]);
-    expect(sc.data.ok).toBe(true);
   });
 
-  // 切替の失敗の地点を列挙する（再点検 #2）。どの地点でも、稼働中の DB の名前・目印は元のまま、保管先の点検は ok、候補は残らない
-  for (const point of ['旧 DB の名前・目印の変更', '候補の目印の変更', 'DB の ID の保存'] as const) {
-    it(`DB の切替の失敗（${point}）: 稼働中の DB の名前・目印を元に戻し、保管先の点検は ok のまま、候補を残さない`, () => {
-      const { coreEmu, api, epoch } = stack();
-      const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: epoch() });
-      const dbBefore = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')!;
-      const nameBefore = coreEmu.files.get(dbBefore)!.name;
-      let once = 1;
-      if (point === '旧 DB の名前・目印の変更') coreEmu.driveFaults.updateFail = (id) => id === dbBefore && once-- > 0;
-      else if (point === '候補の目印の変更') coreEmu.driveFaults.updateFail = (id) => coreEmu.files.get(id)?.appProperties?.shiftly === 'restore_candidate' && once-- > 0;
-      else coreEmu.scriptProps.failSet = (k) => k === 'SHIFTLY_DB_ID' && once-- > 0;
-      const r = api({ op: 'backup.restore', args: { backupId: bk.data.id, confirmText: '復元する' } });
-      coreEmu.driveFaults = {};
-      coreEmu.scriptProps.failSet = undefined;
-      expect(r.ok).toBe(false);
-      expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).toBe(dbBefore);
-      expect(coreEmu.files.get(dbBefore)!.name).toBe(nameBefore);
-      expect(coreEmu.files.get(dbBefore)!.appProperties?.shiftly).toBe('database');
-      expect([...coreEmu.files.values()].filter((f) => !f.trashed && f.appProperties?.shiftly === 'restore_candidate')).toHaveLength(0);
-      const sc = api({ op: 'system.storageCheck' });
-      expect(sc.data.issues).toEqual([]);
-      expect(sc.data.ok).toBe(true);
-    });
-  }
+  it('保守作業中は、日次の定期処理（時間主導トリガー）も業務の更新をしない', () => {
+    const { coreEmu, core } = stack();
+    expect(core.shiftlyMaintenanceBegin().ok).toBe(true);
+    const backups = [...coreEmu.files.values()].filter((f) => f.appProperties?.shiftly === 'backup').length;
+    core.shiftlyDailyJob({ triggerUid: 'trg0' });
+    expect([...coreEmu.files.values()].filter((f) => f.appProperties?.shiftly === 'backup').length).toBe(backups);
+    expect(core.shiftlyMaintenanceFinish().ok).toBe(true);
+    core.shiftlyDailyJob({ triggerUid: 'trg0' });
+    expect([...coreEmu.files.values()].filter((f) => f.appProperties?.shiftly === 'backup').length).toBe(backups + 1);
+  });
 
-  it('DB の切替に失敗した場合は、復元の候補を破棄し、稼働中の DB は変えない（世代は進んでいてもよい）', () => {
+  it('D-027: アプリ内の復元（稼働中の DB の切替）は、Admin（Google 所有者）からも拒否し、DB・ファイルを変えない', () => {
     const { coreEmu, api, epoch } = stack();
-    const e0 = epoch();
-    const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: e0 });
+    const bk = api({ op: 'backup.run', args: { kind: 'manual' }, epoch: epoch() });
+    expect(bk.ok).toBe(true);
     const dbBefore = coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID');
-    let once = 1;
-    coreEmu.scriptProps.failSet = (k) => k === 'SHIFTLY_DB_ID' && once-- > 0;
+    const filesBefore = JSON.stringify([...coreEmu.files.entries()].map(([id, f]) => [id, f.name, f.appProperties, !!f.trashed]));
+    const e0 = epoch();
     const r = api({ op: 'backup.restore', args: { backupId: bk.data.id, confirmText: '復元する' } });
-    coreEmu.scriptProps.failSet = undefined;
     expect(r.ok).toBe(false);
+    expect(r.error.code).toBe('NOT_IN_THIS_RELEASE');
     expect(coreEmu.scriptProps.getProperty('SHIFTLY_DB_ID')).toBe(dbBefore);
-    const candidates = [...coreEmu.files.values()].filter((f) => !f.trashed && f.appProperties?.shiftly === 'restore_candidate');
-    expect(candidates).toHaveLength(0);
-    expect(api({ op: 'settings.update', args: { storeName: 'x' }, epoch: e0 }).error?.code).toBe('STALE_VIEW'); // 世代は進んだ（安全側）
-    expect(api({ op: 'settings.update', args: { storeName: 'x' }, epoch: epoch() }).ok).toBe(true);
+    expect(JSON.stringify([...coreEmu.files.entries()].map(([id, f]) => [id, f.name, f.appProperties, !!f.trashed]))).toBe(filesBefore);
+    expect(epoch()).toBe(e0);
+  });
+});
+
+/**
+ * Codex 監査24 A3・A4（D-027）: Setup の記録ファイルを、保存している ID で直接照会する／Drive の一覧は全ページを取得する。
+ * 判定はエミュレータ上の実体（記録ファイルの件数・内容）で行う
+ */
+describe.skipIf(!built || !existsSync('dist/gas/setup/Code.js'))('Codex 監査24 A3・A4: Setup の記録ファイルの直接照会・全ページの取得', () => {
+  const sha = (x: string) => createHash('sha256').update(x).digest('hex');
+  const release = { version: '1.3.0', core: [], admin: [], hashes: {} };
+  const registry = (envId = 'env_reg') => ({
+    schema: 1, envId, ownerEmail: 'owner@example.invalid', storeName: '記録店', appVersion: null, createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z',
+    steps: {}, core: { title: `Shiftly-Staff (${envId})`, scriptId: 'scr_core' }, admin: { title: `Shiftly-Admin (${envId})` }, adminPairingHash: sha('a'), setupPairingHash: sha('s'),
+  });
+  const putFile = (emu: GasEmulator, id: string, reg: { envId: string }) =>
+    emu.files.set(id, { name: 'Shiftly Setup Registry.json', mimeType: 'application/json', parents: [], data: Buffer.from(JSON.stringify(reg)), appProperties: { shiftlySetup: 'registry', envId: reg.envId } });
+  const api = (setup: ReturnType<GasEmulator['load']>, action: string, args?: unknown) => JSON.parse(setup.setupApi(JSON.stringify({ action, args })));
+  const regFiles = (emu: GasEmulator) => [...emu.files.entries()].filter(([, f]) => !f.trashed && f.appProperties?.shiftlySetup === 'registry');
+
+  it('A3: 保存している ID の記録ファイルが見つからず（404）、Setup の中の記録もない場合は、新しい環境とは推測せずに止める（検索で別の記録を探さない）', () => {
+    const emu = new GasEmulator();
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_lost');
+    putFile(emu, 'reg_other', registry('env_reg')); // 検索では見つかる記録（同じ環境でも、ID の照会の代わりに使わない）
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    for (const action of ['state', 'run']) {
+      const r = api(setup, action, { storeName: '店' });
+      expect(r.ok, action).toBe(false);
+      expect(r.error.message).toContain('reg_lost');
+    }
+    expect(emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY')).toBeNull();
+    expect(regFiles(emu)).toHaveLength(1);
+  });
+
+  it('A3: 保存している ID の照会が一時的に失敗した（500）場合は止め、回復すると同じ記録で再開する', () => {
+    const emu = new GasEmulator();
+    putFile(emu, 'reg_main', registry());
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_main');
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    emu.driveFaults.metaStatus = 500;
+    expect(api(setup, 'state').ok).toBe(false);
+    emu.driveFaults = {};
+    const st = api(setup, 'state');
+    expect(st.ok).toBe(true);
+    expect(st.data.envId).toBe('env_reg');
+  });
+
+  it('A3: 記録ファイルがゴミ箱にある場合は、新しい環境として扱わずに止める', () => {
+    const emu = new GasEmulator();
+    putFile(emu, 'reg_main', registry());
+    emu.files.get('reg_main')!.trashed = true;
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_main');
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    const r = api(setup, 'state');
+    expect(r.ok).toBe(false);
+    expect(r.error.message).toContain('ゴミ箱');
+  });
+
+  it('A3: 保存している ID のファイルが別の環境の記録の場合は、上書きせずに止める（その記録ファイルは変わらない）', () => {
+    const emu = new GasEmulator();
+    putFile(emu, 'reg_other', registry('env_other'));
+    const before = emu.files.get('reg_other')!.data!.toString('utf8');
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_other');
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY', JSON.stringify(registry('env_reg')));
+    emu.userProps.setProperty('SHIFTLY_SETUP_SECRETS', JSON.stringify({ adminPairingCode: 'a', setupPairingCode: 's', setupKey: null }));
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    for (const [action, args] of [['state', undefined], ['run', { storeName: '別の店' }], ['retry', { step: 'store', storeName: '別の店' }]] as const) {
+      const r = api(setup, action, args);
+      expect(r.ok, action).toBe(false);
+      expect(r.error.message).toContain('一致しません');
+    }
+    expect(emu.files.get('reg_other')!.data!.toString('utf8')).toBe(before);
+    expect(regFiles(emu)).toHaveLength(1);
+  });
+
+  it('A3: 予約した ID でまだ作られていない（Setup の中の記録はある）場合は、同じ ID で作成して続ける', () => {
+    const emu = new GasEmulator();
+    const ids = (emu as unknown as { reservedIds: Set<string> }).reservedIds;
+    ids.add('rsv_pending');
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'rsv_pending');
+    emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY', JSON.stringify(registry()));
+    emu.userProps.setProperty('SHIFTLY_SETUP_SECRETS', JSON.stringify({ adminPairingCode: 'a', setupPairingCode: 's', setupKey: null }));
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    expect(api(setup, 'state').ok).toBe(true);
+    api(setup, 'retry', { step: 'store', storeName: '記録店' });
+    const files = regFiles(emu);
+    expect(files).toHaveLength(1);
+    expect(files[0]![0]).toBe('rsv_pending');
+  });
+
+  it('A4: 検索の 2 ページ目にある別の環境の記録ファイルも検出して止める（1 ページ目だけで判断しない）', () => {
+    const emu = new GasEmulator();
+    emu.maxPageSize = 1;
+    putFile(emu, 'reg_a', registry('env_reg'));
+    putFile(emu, 'reg_b', registry('env_other'));
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    const r = api(setup, 'state');
+    expect(r.ok).toBe(false);
+    expect(r.error.message).toContain('別々の環境');
+  });
+
+  it('A4: 検索の途中のページで失敗した場合は、一部の結果で判断せずに止める', () => {
+    const emu = new GasEmulator();
+    emu.maxPageSize = 1;
+    putFile(emu, 'reg_a', registry('env_reg'));
+    putFile(emu, 'reg_b', registry('env_reg'));
+    emu.driveFaults.listFailPage = (q, page) => q.includes('shiftlySetup') && page === 1;
+    const setup = emu.load('setup', { SHIFTLY_RELEASE: release });
+    expect(api(setup, 'state').ok).toBe(false);
+    expect(emu.userProps.getProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID')).toBeNull();
+  });
+
+  it('A4: 構築の完了前の点検（registryReport）は、全ページで記録ファイルの重複・別の環境・ID の不一致を検出し、途中のページの失敗は例外にする', () => {
+    const emu = new GasEmulator();
+    const g = emu.globals({}) as Record<string, unknown>;
+    const keys = ['PropertiesService', 'Drive', 'UrlFetchApp', 'ScriptApp'] as const;
+    const saved = keys.map((k) => (globalThis as Record<string, unknown>)[k]);
+    try {
+      for (const k of keys) (globalThis as Record<string, unknown>)[k] = g[k];
+      emu.maxPageSize = 1;
+      putFile(emu, 'reg_a', registry('env_reg'));
+      emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_a');
+      expect(registryReport('env_reg')).toEqual({ ok: true, issues: [] });
+      // 同じ環境の 2 つ目（2 ページ目）
+      putFile(emu, 'reg_dup', registry('env_reg'));
+      let r = registryReport('env_reg');
+      expect(r.ok).toBe(false);
+      expect(r.issues.join()).toContain('2 つあります');
+      emu.files.delete('reg_dup');
+      // 別の環境の記録（2 ページ目）
+      putFile(emu, 'reg_other', registry('env_other'));
+      r = registryReport('env_reg');
+      expect(r.ok).toBe(false);
+      expect(r.issues.join()).toContain('別の環境');
+      emu.files.delete('reg_other');
+      // 保存している ID と一致しない
+      emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_x');
+      expect(registryReport('env_reg').issues.join()).toContain('一致しません');
+      emu.userProps.setProperty('SHIFTLY_SETUP_REGISTRY_FILE_ID', 'reg_a');
+      // 途中のページの失敗
+      putFile(emu, 'reg_dup', registry('env_reg'));
+      emu.driveFaults.listFailPage = (_q, page) => page === 1;
+      expect(() => registryReport('env_reg')).toThrow();
+    } finally {
+      keys.forEach((k, i) => ((globalThis as Record<string, unknown>)[k] = saved[i]));
+    }
+  });
+
+  it('A4: Core の保管先の検索も全ページを取得する（2 ページ目にある重複を検出し、作成も関連付けもしない）', () => {
+    const emu = new GasEmulator();
+    const core = emu.load('core', { SHIFTLY_BOOTSTRAP: { envId: 'env_pg', storeName: '頁店', adminPairingHash: sha('a'), setupPairingHash: sha('s') } });
+    expect(core.shiftlyAuthorize().ok).toBe(true);
+    // ルートの記録を失い、同じ目印のルートが 2 つある（2 ページ目に 2 つ目）
+    const rootId = emu.scriptProps.getProperty('SHIFTLY_ROOT_FOLDER')!;
+    const root = emu.files.get(rootId)!;
+    emu.files.set('dup_root', { ...root });
+    emu.scriptProps.deleteProperty('SHIFTLY_ROOT_FOLDER');
+    emu.maxPageSize = 1;
+    const filesBefore = emu.files.size;
+    expect(() => core.shiftlyAuthorize()).toThrow(/2 つあります/);
+    expect(emu.files.size).toBe(filesBefore);
+    expect(emu.scriptProps.getProperty('SHIFTLY_ROOT_FOLDER')).toBeNull();
   });
 });

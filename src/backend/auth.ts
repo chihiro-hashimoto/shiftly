@@ -419,8 +419,11 @@ export interface OwnerEnvelope {
   sig: string; // hex HMAC-SHA256(key(role), `${v}.${role}.${ts}.${nonce}.${body}`)
 }
 
-/** Setup 用の鍵で実行できる操作（最小権限） */
-export const SETUP_ALLOWED_OPS = new Set(['system.info', 'system.integrityCheck', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.setMaintenance', 'backup.list', 'system.storageCheck']);
+/**
+ * Setup 用の鍵で実行できる操作（最小権限。構築の完了前の確認に使う読み取りだけ）。
+ * v1.3 では Setup による既存環境の更新・ロールバックを提供しないため、更新の操作は含めない（D-027）
+ */
+export const SETUP_ALLOWED_OPS = new Set(['system.info', 'system.integrityCheck', 'backup.list', 'system.storageCheck']);
 
 export function signOwnerEnvelope(p: Platform, key: Uint8Array, body: string, role: EnvelopeRole = 'admin'): OwnerEnvelope {
   const ts = p.now();

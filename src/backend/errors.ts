@@ -23,5 +23,6 @@ export const E = {
   locked: (msg: string) => new ApiError('LOCKED', msg, 423),
   rateLimited: (msg: string) => new ApiError('RATE_LIMITED', msg, 429),
   maintenance: () => new ApiError('MAINTENANCE', 'システム更新中のため一時的に利用できません。しばらくしてからお試しください', 503),
+  maintenanceWork: () => new ApiError('MAINTENANCE', 'Google 所有者による保守作業中のため、データの更新を停止しています。保守作業の終了後にお試しください（打刻は紙のタイムカードに記録してください）', 503),
   notInitialized: () => new ApiError('NOT_INITIALIZED', '初期セットアップが完了していません', 503),
 };

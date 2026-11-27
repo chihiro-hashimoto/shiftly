@@ -85,7 +85,9 @@ export function createDemoSetupTransport(): SetupTransport {
         return { ok: false };
       },
       callCoreAsSetup: (_u, _k, req) =>
-        req.op === 'system.integrityCheck' || req.op === 'system.storageCheck' ? { ok: true, data: { ok: true, issues: [], items: [] } } : { ok: true, data: { backupId: 'demo', requiresApproval: [] } },
+        req.op === 'system.integrityCheck' || req.op === 'system.storageCheck' ? { ok: true, data: { ok: true, issues: [], items: [] } } : { ok: false, error: { code: 'FORBIDDEN', message: 'デモでは対応していません' } },
+      // デモ: Google ドライブの記録ファイルはない（本番は全ページを一覧して点検する。src/gas/setup.ts）
+      registryReport: () => ({ ok: true, issues: [] }),
     });
   return {
     demo: true,
@@ -102,15 +104,14 @@ export function createDemoSetupTransport(): SetupTransport {
           error: { step: 'account', message: 'Setup の記録が見つかりません。初めての構築として進めてよいかの確認が必要です', fix: '初めての構築の場合は、確認のチェックを付けて実行してください', confirm: 'この Google アカウントで Shiftly を構築するのは初めてです（以前に構築した環境はありません）' },
         };
       } else if (action === 'run' || action === 'retry') {
-        if (action === 'retry') i.retry(String(args?.step) as never);
+        if (action === 'retry') i.retry(String(args?.step) as never, args?.confirmedNoDuplicate === true);
         r = i.runUntilBlocked({ storeName: typeof args?.storeName === 'string' ? args.storeName : undefined }, 20);
         const w = (r as { waitingFor: { step: string } | null }).waitingFor;
         if (w?.step === 'core.authorize') core.authorizeAsked.core = true;
         if (w?.step === 'admin.authorize') core.authorizeAsked.admin = true;
       } else if (action === 'attach') r = i.attach(String(args?.step) as never, typeof args?.id === 'string' ? args.id : '');
-      else if (action === 'checkUpdate') r = i.checkUpdate();
-      else if (action === 'applyUpdate') r = i.applyUpdate({ approveDestructive: args?.approveDestructive === true });
-      else if (action === 'rollback') r = { message: i.rollbackCode() };
+      // 更新・ロールバックは v1.3 では提供しない（本番の Setup と同じく拒否する。D-027）
+      else if (action === 'checkUpdate' || action === 'applyUpdate' || action === 'rollback') throw new Error('アプリの更新・ロールバックは v1.3 では Setup から行いません（Google 所有者の保守作業）');
       return r as T;
     },
   };

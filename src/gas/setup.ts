@@ -13,7 +13,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { AppsScriptApi, type Http } from '../setup/apps-script-api';
 import { Installer, type InstallerDeps, type Registry, type ReleaseBundle, type SecretRegistry } from '../setup/installer';
-import { createGasPlatform, fromJavaBytes } from '../backend/gas/platform';
+import { createGasPlatform, fromJavaBytes, listAllDriveFiles } from '../backend/gas/platform';
 import { signOwnerEnvelope } from '../backend/auth';
 import { fromHex, toHex } from '../shared/crypto';
 
@@ -51,19 +51,43 @@ function postJson(url: string, body: unknown) {
   }
 }
 
+const REG_QUERY = "appProperties has { key='shiftlySetup' and value='registry' } and trashed = false";
+
 /**
- * Drive 上のレジストリファイル（Setup の記録）を探す。検索に失敗した場合は「存在しない」と見なさず、そのまま失敗させる
- * （既存の環境を新規と取り違えてプロジェクトを二重に作る・レジストリファイルを二重に作ることを防ぐ。S1、D-025）。
- * setupApi がエラーとして画面に返し、利用者は再読み込み・再実行する
+ * Drive 上のレジストリファイル（Setup の記録）を探す。全ページを取得する（D-027。Codex 監査24 A4）。検索に失敗した場合
+ * （途中のページを含む）は「存在しない」と見なさず、そのまま失敗させる（既存の環境を新規と取り違えて二重に作ることを防ぐ。S1）
  */
-function findRegistryFiles(): string[] {
-  const r = Drive.Files.list({ q: "appProperties has { key='shiftlySetup' and value='registry' } and trashed = false", fields: 'files(id)', pageSize: 20 });
-  return (r.files ?? []).map((f: { id: string }) => f.id);
+function findRegistryFiles(): Array<{ id: string; envId: string | null }> {
+  return listAllDriveFiles<{ id: string; appProperties?: Record<string, string> }>(REG_QUERY, 'id, appProperties').map((f) => ({ id: f.id, envId: f.appProperties?.envId ?? null }));
 }
 
-/** レジストリファイルの内容を読む。読めない場合は新規の環境として扱わずに止める（二重作成の防止。S1） */
+function driveGet(url: string) {
+  return UrlFetchApp.fetch(url, { headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` }, muteHttpExceptions: true });
+}
+
+/**
+ * 保存している ID で記録ファイルを直接照会する（検索を使わない。D-027。Codex 監査24 A3）。
+ * 'missing' は応答が 404 の場合だけ。それ以外の失敗（一時的なエラー・権限）は例外で止める。ゴミ箱にある・Setup の記録ファイルでない場合も止める
+ */
+function registryMeta(id: string): { status: 'ok'; envId: string | null } | { status: 'missing' } {
+  const res = driveGet(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed,appProperties`);
+  const code = res.getResponseCode();
+  if (code === 404) return { status: 'missing' };
+  if (code !== 200) throw new Error(`Setup の記録ファイル（ID: ${id}）を確認できませんでした（HTTP ${code}）。時間をおいて再読み込みしてください`);
+  let m: { trashed?: boolean; appProperties?: Record<string, string> };
+  try {
+    m = JSON.parse(res.getContentText()) as typeof m;
+  } catch {
+    throw new Error(`Setup の記録ファイル（ID: ${id}）の情報を読み取れませんでした。時間をおいて再読み込みしてください`);
+  }
+  if (m.trashed) throw new Error(`Setup の記録ファイル（Google ドライブの「${REG_FILE}」、ID: ${id}）がゴミ箱にあります。ゴミ箱から元に戻してから再読み込みしてください（新しい環境としては扱いません）`);
+  if (m.appProperties?.shiftlySetup !== 'registry') throw new Error(`保存している ID（${id}）のファイルは Setup の記録ファイルではありません。Setup の記録の不整合のため停止しました（自動では作り直しません）`);
+  return { status: 'ok', envId: m.appProperties?.envId ?? null };
+}
+
+/** 記録ファイルの内容を読む。読めない場合は新規の環境として扱わずに止める（二重作成の防止。S1） */
 function readRegistryFile(id: string): { id: string; text: string; reg: Registry } {
-  const res = UrlFetchApp.fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, { headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` }, muteHttpExceptions: true });
+  const res = driveGet(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`);
   if (res.getResponseCode() !== 200) throw new Error(`Setup の記録ファイルを読み込めませんでした（HTTP ${res.getResponseCode()}）。時間をおいて再読み込みしてください`);
   const text = res.getContentText();
   let reg: Registry;
@@ -72,20 +96,37 @@ function readRegistryFile(id: string): { id: string; text: string; reg: Registry
   } catch {
     throw new Error('Setup の記録ファイルの内容を読み取れませんでした。Google ドライブの「Shiftly Setup Registry.json」を確認してください');
   }
+  if (!reg || typeof reg.envId !== 'string') throw new Error('Setup の記録ファイルの内容が不正です。Google ドライブの「Shiftly Setup Registry.json」を確認してください');
   return { id, text, reg };
 }
 
 /**
- * Drive 上のレジストリファイルから、最新の記録を選ぶ（独立した点検 S1-3）。
- * Drive の検索への反映の遅れなどで同じ環境の記録ファイルが複数ある場合は、最後に保存したもの（updatedAt が最新）を使う。
- * 別々の環境を指す記録ファイルがある場合は、どちらで再開すべきか分からないため止める
+ * Drive 上のレジストリファイルから、最新の記録を選ぶ（保存している ID がない場合だけ使う。独立した点検 S1-3）。
+ * 同じ環境の記録ファイルが複数ある場合は最後に保存したもの（updatedAt が最新）を使い、構築の完了前の点検（registryReport）で
+ * 重複として所有者に確認を求める（自動では削除しない）。別々の環境を指す記録ファイルがある場合は、どちらで再開すべきか分からないため止める
  */
 function latestRegistryFile(): { id: string; text: string; reg: Registry } | null {
-  const files = findRegistryFiles().map(readRegistryFile);
+  const files = findRegistryFiles().map((f) => readRegistryFile(f.id));
   if (!files.length) return null;
   if (new Set(files.map((f) => f.reg.envId)).size > 1)
     throw new Error('Google ドライブに、別々の環境を指す Setup の記録ファイル（Shiftly Setup Registry.json）が複数あります。使わない環境の記録ファイルをゴミ箱に移動してから、再読み込みしてください');
   return files.reduce((a, b) => (String(b.reg.updatedAt ?? '') > String(a.reg.updatedAt ?? '') ? b : a));
+}
+
+/**
+ * 構築の完了前の Setup の記録ファイルの点検（D-027。Codex 監査24 A4）: 全ページを一覧し、この環境の記録ファイルが 1 つだけで、
+ * 保存している ID と一致すること。一覧の途中の失敗は例外（点検できない＝完了しない）。重複は所有者に確認を求め、自動では削除しない
+ */
+export function registryReport(envId: string): { ok: boolean; issues: string[] } {
+  const files = findRegistryFiles();
+  const known = PropertiesService.getUserProperties().getProperty(REG_FILE_ID_KEY);
+  const mine = files.filter((f) => f.envId === envId);
+  const others = files.filter((f) => f.envId !== envId);
+  const issues: string[] = [];
+  if (mine.length !== 1) issues.push(`Google ドライブに、この環境の Setup の記録ファイル（${REG_FILE}）が ${mine.length} つあります（1 つのはず。保存している ID: ${known ?? 'なし'}。使わないほうは自動では削除しません）`);
+  else if (mine[0]!.id !== known) issues.push(`Google ドライブの Setup の記録ファイル（ID: ${mine[0]!.id}）が、保存している ID（${known ?? 'なし'}）と一致しません`);
+  if (others.length) issues.push(`Google ドライブに、別の環境の Setup の記録ファイルが ${others.length} つあります（二重に構築した可能性。使わない環境の記録ファイルを確認してください）`);
+  return { ok: issues.length === 0, issues };
 }
 
 function deps(): InstallerDeps {
@@ -95,17 +136,36 @@ function deps(): InstallerDeps {
     api: new AppsScriptApi(http),
     release: SHIFTLY_RELEASE,
     load: () => {
-      let reg = up.getProperty(REG_KEY);
+      const local = up.getProperty(REG_KEY);
       const sec = up.getProperty(SEC_KEY);
-      if (!reg) {
-        // UserProperties が空でも Drive のレジストリファイルから既存環境を再検出（複数あれば最新の記録。以後はそのファイルを ID で更新する）
-        const f = latestRegistryFile();
-        if (f) {
-          reg = f.text;
-          up.setProperty(REG_FILE_ID_KEY, f.id);
+      const known = up.getProperty(REG_FILE_ID_KEY);
+      const parsedLocal = local ? (JSON.parse(local) as Registry) : null;
+      if (known) {
+        // 保存している ID があれば、検索ではなく ID で直接照会する（D-027。Codex 監査24 A3）。照会できない場合は止める（例外）
+        const m = registryMeta(known);
+        if (m.status === 'ok') {
+          if (parsedLocal) {
+            // Setup の中の記録とファイルが別々の環境を指す: どちらが正しいか分からないため止める（自動では選ばない）
+            if (m.envId !== parsedLocal.envId)
+              throw new Error(`Setup の記録（環境 ${parsedLocal.envId}）と、Google ドライブの記録ファイル（ID: ${known}、環境 ${m.envId ?? '不明'}）が一致しません。Setup の記録の不整合のため停止しました（自動では作り直しません）`);
+            return { reg: parsedLocal, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
+          }
+          const f = readRegistryFile(known);
+          if (f.reg.envId !== m.envId) throw new Error(`Setup の記録ファイル（ID: ${known}）の内容と目印の環境が一致しません。Setup の記録の不整合のため停止しました`);
+          return { reg: f.reg, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
         }
+        // 404: 予約した ID でまだ作られていない（前回の作成の失敗）なら、Setup の中の記録で続ける（次の保存で同じ ID で作成する）。
+        // Setup の中の記録もない場合は、記録の本体を失っている: 新しい環境とは推測せずに止める
+        if (parsedLocal) return { reg: parsedLocal, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
+        throw new Error(
+          `保存している Setup の記録ファイル（ID: ${known}）が見つかりません。Google ドライブのゴミ箱に「${REG_FILE}」がないか確認し、ある場合は元に戻してから再読み込みしてください（記録の本体がない状態を、新しい環境としては扱いません）`,
+        );
       }
-      return { reg: reg ? (JSON.parse(reg) as Registry) : null, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
+      if (parsedLocal) return { reg: parsedLocal, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
+      // Setup の中に記録も ID もない: Drive の記録ファイルから既存環境を再検出（全ページ。検索の失敗は例外で止める）
+      const f = latestRegistryFile();
+      if (f) up.setProperty(REG_FILE_ID_KEY, f.id);
+      return { reg: f ? f.reg : null, secrets: sec ? (JSON.parse(sec) as SecretRegistry) : null };
     },
     save: (reg, sec) => {
       up.setProperty(REG_KEY, JSON.stringify(reg));
@@ -117,25 +177,27 @@ function deps(): InstallerDeps {
       const createWithId = (id: string) => Drive.Files.create({ id, name: REG_FILE, mimeType: 'application/json', appProperties: { shiftlySetup: 'registry', envId: reg.envId } }, blob, { fields: 'id' });
       const known = up.getProperty(REG_FILE_ID_KEY);
       if (known) {
-        try {
+        // 上書きの前に、そのファイルがこの環境の記録ファイルであることを ID の照会で確かめる（別の環境の記録を上書きしない。Codex 監査24 A3）
+        const m = registryMeta(known);
+        if (m.status === 'ok') {
+          if (m.envId !== reg.envId) throw new Error(`保存している ID（${known}）の記録ファイルは別の環境（${m.envId ?? '不明'}）のものです。上書きせずに停止しました（自動では作り直しません）`);
           Drive.Files.update({}, known, blob);
           return;
+        }
+        // 404: 予約した ID でまだ作られていない（前回の作成が失敗した）。同じ ID で作成する。失敗した場合は ID を消さずに残して止める
+        // （ID を消すと、検索に反映されていない間に新しい ID で二重に作り得る。Codex 監査23 #3、D-026 S1）
+        try {
+          createWithId(known);
+          return;
         } catch {
-          // 更新できない: 予約した ID でまだ作られていない（前回の作成が失敗した）可能性。同じ ID で作成する（作成済みなら失敗する）
-          try {
-            createWithId(known);
-            return;
-          } catch {
-            // どちらもできない（一時的な失敗・作成済みのファイルとの競合など）: 予約・使用した ID は消さずに残し、止める
-            // （ID を消すと、検索に反映されていない間に新しい ID で二重に作り得る。Codex 監査23 #3、D-026 S1）。次の保存でも同じ ID で更新・作成する
-            throw new Error(
-              `Setup の記録ファイル（Google ドライブの「${REG_FILE}」、ID: ${known}）を保存できませんでした。時間をおいて再読み込みし、もう一度実行してください。解決しない場合は、Google ドライブでこのファイルがゴミ箱にないか確認してください（記録は Setup の中にも保存されています）`,
-            );
-          }
+          throw new Error(
+            `Setup の記録ファイル（Google ドライブの「${REG_FILE}」、ID: ${known}）を保存できませんでした。時間をおいて再読み込みし、もう一度実行してください。解決しない場合は、Google ドライブでこのファイルがゴミ箱にないか確認してください（記録は Setup の中にも保存されています）`,
+          );
         }
       }
       const latest = latestRegistryFile();
       if (latest) {
+        if (latest.reg.envId !== reg.envId) throw new Error(`Google ドライブの Setup の記録ファイルは別の環境（${latest.reg.envId}）のものです。上書きせずに停止しました`);
         up.setProperty(REG_FILE_ID_KEY, latest.id);
         Drive.Files.update({}, latest.id, blob);
         return;
@@ -145,6 +207,7 @@ function deps(): InstallerDeps {
       up.setProperty(REG_FILE_ID_KEY, reserved);
       createWithId(reserved);
     },
+    registryReport: (envId) => registryReport(envId),
     userEmail: () => {
       try {
         return Session.getActiveUser().getEmail() || Session.getEffectiveUser().getEmail() || null;
@@ -203,11 +266,10 @@ export function setupApi(reqJson: string): string {
       case 'attach':
         return ok(inst.attach(String(a.step) as never, typeof a.id === 'string' ? a.id : ''));
       case 'checkUpdate':
-        return ok(inst.checkUpdate());
       case 'applyUpdate':
-        return ok(inst.applyUpdate({ approveDestructive: a.approveDestructive === true }));
       case 'rollback':
-        return ok({ message: inst.rollbackCode() });
+        // v1.3 では Setup による既存環境の自動更新・自動ロールバックを提供しない（D-027。処理は配布物に含めない）
+        return JSON.stringify({ ok: false, error: { code: 'NOT_IN_THIS_RELEASE', message: 'アプリの更新・ロールバックは v1.3 では Setup から行いません。安全性確保のため、Google 所有者による保守作業として行います（docs/update-rollback.md）' } });
       default:
         return JSON.stringify({ ok: false, error: { code: 'UNKNOWN', message: '不明な操作です' } });
     }

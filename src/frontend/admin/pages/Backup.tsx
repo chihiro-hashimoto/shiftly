@@ -1,6 +1,6 @@
-/** バックアップ・復元 F26 */
+/** バックアップ F26（アプリ内の復元は v1.3 では提供しない。D-027 B案。復元は Google 所有者の保守作業） */
 import { useState } from 'react';
-import { Empty, ErrorBox, Field, Loading, Modal, Panel, useAction, useClient, useLoad, useToast } from '../../components/ui';
+import { Empty, ErrorBox, Loading, Panel, useAction, useClient, useLoad, useToast } from '../../components/ui';
 import type { BackupHistory, StoreSettings } from '../../../shared/types';
 
 /** 管理画面のグリッド内で横幅を超えないようにする（表は .table-wrap 内でスクロール） */
@@ -19,15 +19,8 @@ const KIND_BADGE: Record<BackupHistory['kind'], string> = {
   manual: 'badge-board',
 };
 
-interface RestoreResult {
-  restoredFrom: string;
-  preservedRowsReinserted: number;
-  previousDatabaseId: string;
-  integrity: { ok: boolean; issues: string[]; checkedAt: string; counts: { employees: number } };
-  note: string;
-}
-
-const CONFIRM_WORD = '復元する';
+/** 画面に表示する復元の案内（D-027。ユーザー指定の文言） */
+export const RESTORE_NOTICE = 'データの復元は安全性確保のため、Google所有者による保守作業として行います。';
 
 function fmtDateTime(iso: string | null | undefined): string {
   return iso ? iso.slice(0, 16).replace('T', ' ') : '—';
@@ -43,19 +36,11 @@ function noteText(b: BackupHistory): string {
   if (b.note === 'manual request') return '管理画面から実行';
   return b.note;
 }
-function restorable(b: BackupHistory): boolean {
-  return b.status === 'ok' && !!b.driveFileId;
-}
-
 export function BackupPage() {
   const client = useClient();
-  // 店舗 iPad の管理者モードでは復元できない（Google 所有者に限定。Codex 監査18 #2）
-  const isSharedDevice = client.transport.mode === 'staff';
   const { busy, run } = useAction();
   const list = useLoad(() => client.call<BackupHistory[]>('backup.list'), []);
   const st = useLoad(() => client.call<StoreSettings>('settings.get'), []);
-  const [target, setTarget] = useState<BackupHistory | null>(null);
-  const [result, setResult] = useState<RestoreResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const toast = useToast();
   const [kindFilter, setKindFilter] = useState<'' | BackupHistory['kind']>('');
@@ -113,17 +98,15 @@ export function BackupPage() {
               <option value="manual">手動</option>
             </select>
             <button className="btn btn-primary btn-sm" onClick={runManual} disabled={busy}>
-              {busy && !target ? 'バックアップ中…' : '今すぐバックアップ'}
+              {busy ? 'バックアップ中…' : '今すぐバックアップ'}
             </button>
           </>
         }
         pad={false}
       >
-        {isSharedDevice && (
-          <div className="callout small" style={{ margin: 12 }}>
-            バックアップからの復元は、稼働中のデータを切り替える操作のため、Google 所有者が管理画面（Shiftly-Admin）から行います。店舗の iPad の管理者モードでは復元できません。
-          </div>
-        )}
+        <div className="callout small" style={{ margin: 12 }} role="note">
+          <strong>{RESTORE_NOTICE}</strong> 復元が必要な場合は、Google 所有者が運用手順書「データの復元（保守作業）」に従って行います（作業中は打刻を紙のタイムカードに切り替えます）。この画面には復元のボタンはありません。
+        </div>
         {runError && (
           <div className="panel-body" style={{ paddingBottom: 0 }}>
             <ErrorBox message={runError} />
@@ -143,7 +126,6 @@ export function BackupPage() {
                   <th className="r">サイズ</th>
                   <th className="r">スキーマ版</th>
                   <th>メモ</th>
-                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -163,13 +145,6 @@ export function BackupPage() {
                     <td className="r num">{fmtBytes(b.sizeBytes)}</td>
                     <td className="r num">v{b.schemaVersion}</td>
                     <td className="small" style={{ minWidth: 160, overflowWrap: 'anywhere' }}>{noteText(b) || <span className="muted">—</span>}</td>
-                    <td className="r">
-                      {restorable(b) && !isSharedDevice && (
-                        <button className="btn btn-sm" onClick={() => setTarget(b)} disabled={busy}>
-                          このバックアップから復元
-                        </button>
-                      )}
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -178,15 +153,14 @@ export function BackupPage() {
         )}
       </Panel>
 
-      {result && <RestoreResultPanel r={result} onClose={() => setResult(null)} />}
-
       <div className="two-col">
         <Panel title="バックアップの仕組み">
           <ul className="small" style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 4 }}>
             <li><strong>日次</strong>: 毎日自動で作成し、設定した世代数（初期値30世代）を超えた古いものから削除します。</li>
             <li><strong>月次</strong>: 毎月1日に自動で作成し、設定した世代数（初期値12世代）を保持します。</li>
-            <li><strong>更新前</strong>: アップデートの直前に自動で作成します（自動削除しません）。</li>
-            <li><strong>手動</strong>: この画面から作成したもの、復元の直前に自動で作成したもの（自動削除しません）。</li>
+            <li><strong>更新前</strong>: 以前の版の更新で作成したもの（v1.3 ではアプリの自動更新を行わないため、新しくは作成されません）。</li>
+            <li><strong>手動</strong>: この画面から作成したもの、Google 所有者の保守作業の開始時に自動で作成したもの（自動削除しません）。</li>
+            <li>バックアップに失敗した場合は、通知（重要）でお知らせします。</li>
             <li>バックアップは管理者の Google ドライブ（Shiftly のバックアップ用フォルダ）に保存されます。</li>
           </ul>
         </Panel>
@@ -199,102 +173,6 @@ export function BackupPage() {
         </Panel>
       </div>
 
-      {target && (
-        <RestoreModal
-          b={target}
-          onClose={() => setTarget(null)}
-          onDone={(r) => {
-            setTarget(null);
-            setResult(r);
-            list.reload();
-          }}
-        />
-      )}
     </div>
-  );
-}
-
-function RestoreModal({ b, onClose, onDone }: { b: BackupHistory; onClose: () => void; onDone: (r: RestoreResult) => void }) {
-  const client = useClient();
-  const { busy, run } = useAction();
-  const [text, setText] = useState('');
-  const ok = text.trim() === CONFIRM_WORD;
-  const submit = async () => {
-    const r = await run(() => client.call<RestoreResult>('backup.restore', { backupId: b.id, confirmText: text.trim() }), 'バックアップから復元しました');
-    if (r) onDone(r);
-  };
-  return (
-    <Modal
-      title="バックアップから復元"
-      onClose={() => !busy && onClose()}
-      footer={
-        <>
-          <button className="btn" onClick={onClose} disabled={busy}>
-            キャンセル
-          </button>
-          <button className="btn btn-danger" onClick={submit} disabled={!ok || busy}>
-            {busy ? '復元中…' : '復元を実行'}
-          </button>
-        </>
-      }
-    >
-      <div className="stack">
-        <div className="callout callout-warn">
-          <strong>{KIND_LABEL[b.kind]}バックアップ（{fmtDateTime(b.createdAt)} 作成・スキーマ v{b.schemaVersion}）</strong>の内容に戻します。
-        </div>
-        <ul className="small" style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 4 }}>
-          <li>復元の直前に、現在のデータの<strong>バックアップが自動で作成</strong>されます（一覧の「手動」）。問題があればそこから戻せます。</li>
-          <li>このバックアップ以降に記録された<strong>打刻・手動の休憩・有給の付与と取得・シフトの変更履歴・出力の履歴・監査ログは保持</strong>され、復元後のデータに再投入されます。</li>
-          <li>
-            <strong>スタッフ・PIN・管理者パスワード・権限・店舗端末・勤怠修正の確認状態・休憩の申告・早出残業申請・確定済みの給与と明細は、現在の状態を引き継ぎます</strong>（巻き戻りません）。
-          </li>
-          <li>店舗設定・雇用条件・給与条件（時給・月給・交通費・手当）・控除・給与調整・シフト・予算は、<strong>バックアップ時点の内容に戻ります</strong>。</li>
-          <li>確定済みの給与がある期間は、復元後に給与の画面で「復元後の確認」を終えるまで、確定・訂正・明細の発行ができません（現在の条件で計算し直した結果が確定時と全項目で一致する必要があります）。</li>
-          <li>復元の前に開いていた画面からは保存できません。画面を更新してから操作してください。</li>
-          <li><strong>全スタッフのログイン（セッション）が失効</strong>します。店舗 iPad では各自が PIN で再度ログインしてください。</li>
-          <li>現在<strong>失効済みの店舗端末は失効のまま</strong>です（バックアップ時点で有効だった端末も復活しません）。</li>
-        </ul>
-        <Field label={`確認のため「${CONFIRM_WORD}」と入力してください`}>
-          <input className="input" value={text} onChange={(e) => setText(e.target.value)} placeholder={CONFIRM_WORD} autoComplete="off" aria-invalid={text !== '' && !ok} />
-        </Field>
-      </div>
-    </Modal>
-  );
-}
-
-function RestoreResultPanel({ r, onClose }: { r: RestoreResult; onClose: () => void }) {
-  return (
-    <Panel
-      title="復元の結果"
-      actions={
-        <button className="btn btn-sm btn-ghost" onClick={onClose}>
-          閉じる
-        </button>
-      }
-    >
-      <div className="stack" style={{ gap: 10 }}>
-        <div className={`callout ${r.integrity.ok ? 'callout-board' : 'callout-bull'}`}>
-          {r.integrity.ok ? '整合性チェック: 問題は見つかりませんでした。' : `整合性チェック: ${r.integrity.issues.length} 件の問題が見つかりました。内容を確認してください。`}
-        </div>
-        {r.integrity.issues.length > 0 && (
-          <ul className="small" style={{ margin: 0, paddingLeft: 20 }}>
-            {r.integrity.issues.map((x, i) => (
-              <li key={i}>{x}</li>
-            ))}
-          </ul>
-        )}
-        <dl className="small" style={{ margin: 0, display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 16px' }}>
-          <dt className="muted">復元元</dt>
-          <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', overflowWrap: 'anywhere' }}>{r.restoredFrom}</dd>
-          <dt className="muted">再投入した記録</dt>
-          <dd style={{ margin: 0 }}>{r.preservedRowsReinserted} 件（バックアップ以降の打刻・修正・監査ログ等）</dd>
-          <dt className="muted">復元前のデータベース</dt>
-          <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', overflowWrap: 'anywhere' }}>{r.previousDatabaseId}</dd>
-          <dt className="muted">チェック日時</dt>
-          <dd style={{ margin: 0 }}>{fmtDateTime(r.integrity.checkedAt)}（スタッフ {r.integrity.counts.employees} 名）</dd>
-        </dl>
-        <p className="small">{r.note}</p>
-      </div>
-    </Panel>
   );
 }

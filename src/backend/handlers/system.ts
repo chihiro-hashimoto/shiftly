@@ -1,9 +1,9 @@
 /**
  * システム・店舗設定・端末・認証・監査ログ
- * F01 初期設定 / F02 店舗端末 / F03 認証 / F25 監査ログ / F27 店舗設定 / F35 DB更新
+ * F01 初期設定 / F02 店舗端末 / F03 認証 / F25 監査ログ / F27 店舗設定 / F35 初回の DB 構造の生成（更新に伴う自動移行は v1.3 では提供しない。D-027）
  */
 import { defineOps } from '../api';
-import { advanceEpoch, audit, currentEpoch, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
+import { audit, currentEpoch, issueEpoch, maintenanceActive, maintenanceState, metaValue, nowIso, setMeta, settings, staff, DEFAULT_SETTINGS, type Ctx } from '../context';
 import { E } from '../errors';
 import * as v from '../validate';
 import { createEnrollment, enrollDevice, ensureSecrets, login, logout, revokeAdminSessions, revokeSessionsWhere, setCredential, stepUp, verifyCredential } from '../auth';
@@ -19,9 +19,11 @@ import { APP_VERSION } from '../version';
 
 export function initialize(ctx: Ctx, args: { storeName: string; envId: string }) {
   ensureSecrets(ctx.p);
-  // 復元世代がなければ発行する（D-026。記録が失われた場合も、過去の世代と重ならない値で作り直す）
-  if (currentEpoch(ctx.p) === null) advanceEpoch(ctx.p);
   const existing = ctx.uow.list<StoreSettings>('store_settings');
+  // 画面の世代は、初めての構築（DB に店舗設定も初期化の記録もない）でだけ発行する（D-027。Codex 監査24 A1）。
+  // 既存の環境で記録が失われた・壊れた場合は作り直さない（業務の更新は止まったまま。Google 所有者の保守作業の終了で再発行する）
+  const firstEnvironment = existing.length === 0 && !metaValue(ctx, 'initializedAt');
+  if (firstEnvironment && currentEpoch(ctx.p) === null) issueEpoch(ctx.p);
   if (existing.length === 0) {
     ctx.uow.insert<StoreSettings>('store_settings', { ...DEFAULT_SETTINGS, storeName: args.storeName } as never, 'set');
   }
@@ -31,6 +33,13 @@ export function initialize(ctx: Ctx, args: { storeName: string; envId: string })
   if (!metaValue(ctx, 'initializedAt')) setMeta(ctx, 'initializedAt', nowIso(ctx));
   audit(ctx, 'system.initialize', 'system', null, '初期化（冪等）');
   return { initialized: true, envId: metaValue(ctx, 'envId') ?? args.envId };
+}
+
+function maintenanceInfo(ctx: Ctx): { active: boolean; startedAt: string | null; readable: boolean } {
+  const m = maintenanceState(ctx.p);
+  if (m === null) return { active: false, startedAt: null, readable: true };
+  if (m === 'broken') return { active: true, startedAt: null, readable: false };
+  return { active: true, startedAt: m.startedAt, readable: true };
 }
 
 function validateSettingsPatch(a: v.Args): Partial<StoreSettings> {
@@ -141,7 +150,7 @@ defineOps([
       } catch {
         initialized = false;
       }
-      return { initialized, version: APP_VERSION, maintenance: metaValue(ctx, 'maintenance') === 'on', deviceRegistered: ctx.principal.kind === 'device', storeName };
+      return { initialized, version: APP_VERSION, maintenance: metaValue(ctx, 'maintenance') === 'on' || maintenanceActive(ctx.p), deviceRegistered: ctx.principal.kind === 'device', storeName };
     },
   },
   {
@@ -178,27 +187,13 @@ defineOps([
       appVersion: metaValue(ctx, 'appVersion'),
       codeVersion: APP_VERSION,
       maintenance: metaValue(ctx, 'maintenance') === 'on',
+      // Google 所有者の保守作業（D-027）の状態と、画面の世代の記録の有無（ない場合は業務の更新が止まっている）
+      maintenanceWork: maintenanceInfo(ctx),
+      epochAvailable: currentEpoch(ctx.p) !== null,
       initializedAt: metaValue(ctx, 'initializedAt'),
       platform: ctx.p.kind,
       storage: ctx.p.files.storageQuota(),
     }),
-  },
-  {
-    name: 'system.setMaintenance',
-    kind: 'system',
-    auth: 'owner',
-    mutating: true,
-    allowInMaintenance: true,
-    handler: (ctx, raw) => {
-      const on = v.bool(v.obj(raw), 'on');
-      // プログラムと DB の構造が一致しない状態では、メンテナンスを解除しない（Codex 監査2 #3）
-      const sv = Number(metaValue(ctx, 'schemaVersion') ?? '0');
-      if (!on && sv !== SCHEMA_VERSION)
-        throw E.conflict(`DB の構造（v${sv}）がこのプログラム（v${SCHEMA_VERSION}）と一致しないため、メンテナンスを解除できません。更新を完了するか、プログラムに合うバックアップを復元してください`);
-      setMeta(ctx, 'maintenance', on ? 'on' : 'off');
-      audit(ctx, 'system.maintenance', 'system', null, on ? 'メンテナンス開始' : 'メンテナンス終了');
-      return { maintenance: on };
-    },
   },
   {
     name: 'system.integrityCheck',

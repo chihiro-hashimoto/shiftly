@@ -22,16 +22,19 @@ describe('管理者モード（管理者パスワード）の権限境界', () =
     const { h } = setup();
     const t = h.staffOk('adminAuth.login', { password: ADMIN_PW }, { session: '' }).adminSessionToken;
     const ownerOnly = listOps().filter((o) => o.auth === 'owner' && !o.adminAllowed);
-    expect(ownerOnly.map((o) => o.name)).toEqual(expect.arrayContaining(['adminAuth.setPassword', 'system.prepareUpdate', 'system.migrate', 'system.finishUpdate', 'system.initialize']));
+    // v1.3 で提供しない操作（更新・移行）は登録しないため一覧から除いた（D-027。拒否は下の「v1.3 で提供しない操作」で確かめる）。保守作業の開始・終了を追加
+    expect(ownerOnly.map((o) => o.name)).toEqual(expect.arrayContaining(['adminAuth.setPassword', 'system.initialize', 'maintenance.begin', 'maintenance.finish']));
     for (const op of ownerOnly) expect(code(handleRequest(h.be, { op: op.name, args: {}, requestId: h.rid(), device: h.device, adminSession: t })), op.name).toBe('FORBIDDEN');
   });
-  it('Codex 監査18 #2: バックアップからの復元は Google 所有者に限定し、管理者モード（再認証の直後でも）では拒否する', () => {
+  it('Codex 監査18 #2 の保護: アプリ内の復元は、管理者モード（再認証の直後でも）・Google 所有者のどちらからも実行できない（v1.3 では提供しない。D-027）', () => {
     const { h } = setup();
     const bk = h.ownerOk('backup.run', { kind: 'manual' });
     const t = h.staffOk('adminAuth.login', { password: ADMIN_PW }, { session: '' }).adminSessionToken;
+    h.staffOk('adminAuth.reauth', { password: ADMIN_PW }, { session: '', adminSession: t });
     const r = handleRequest(h.be, { op: 'backup.restore', args: { backupId: bk.id, confirmText: '復元する' }, requestId: h.rid(), device: h.device, adminSession: t });
-    expect(code(r)).toBe('FORBIDDEN');
-    expect(listOps().find((o) => o.name === 'backup.restore')?.adminAllowed).toBeFalsy();
+    expect(code(r)).toBe('NOT_IN_THIS_RELEASE');
+    expect(code(h.owner('backup.restore', { backupId: bk.id, confirmText: '復元する' }))).toBe('NOT_IN_THIS_RELEASE');
+    expect(listOps().find((o) => o.name === 'backup.restore')).toBeUndefined();
   });
   it('スタッフ本人用の操作（session）は管理者モードでは全件拒否', () => {
     const { h } = setup();
@@ -55,9 +58,9 @@ describe('管理者モード（管理者パスワード）の権限境界', () =
       expect(code(r)).not.toBe('OK');
     }
   });
-  it('重要操作は reauth 指定されている（給与確定・訂正・権限変更・復元・PIN 設定/解除・端末登録/失効）', () => {
+  it('重要操作は reauth 指定されている（給与確定・訂正・権限変更・PIN 設定/解除・端末登録/失効。復元は v1.3 では提供しないため一覧から除いた）', () => {
     const names = new Set(listOps().filter((o) => o.reauth).map((o) => o.name));
-    for (const n of ['payroll.confirm', 'payroll.correct', 'permissions.set', 'backup.restore', 'credentials.setPin', 'credentials.clearPin', 'credentials.setStepUp', 'devices.createEnrollment', 'devices.revoke', 'settings.confirmPayrollRules'])
+    for (const n of ['payroll.confirm', 'payroll.correct', 'permissions.set', 'credentials.setPin', 'credentials.clearPin', 'credentials.setStepUp', 'devices.createEnrollment', 'devices.revoke', 'settings.confirmPayrollRules'])
       expect(names.has(n), n).toBe(true);
   });
   it('管理者の総当たり: 端末単位の上限を超えると正しいパスワードでも一時的に拒否', () => {

@@ -60,6 +60,9 @@ export interface GasFns {
   shiftlyDailyJob: (...a: unknown[]) => any;
   shiftlyResetAdminPairing: (...a: unknown[]) => any;
   shiftlyConfirmStorageNotCreated: (...a: unknown[]) => any;
+  shiftlyMaintenanceBegin: (...a: unknown[]) => any;
+  shiftlyMaintenanceFinish: (...a: unknown[]) => any;
+  shiftlyMaintenanceStatus: (...a: unknown[]) => any;
   adminApi: (...a: unknown[]) => any;
   setupApi: (...a: unknown[]) => any;
 }
@@ -91,7 +94,20 @@ export class GasEmulator {
   scriptLockHeld = 0;
   /** Drive の作成の記録（作成した時点でスクリプトロックを保持していたか） */
   createLog: Array<{ name: string; appProperties?: Record<string, string>; underLock: boolean }> = [];
-  driveFaults: { listFail?: (q: string) => boolean; loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean; mediaStatus?: number; listHide?: (q: string) => boolean; failCreate?: (name: string, appProperties?: Record<string, string>) => boolean; updateFail?: (id: string) => boolean } = {};
+  driveFaults: {
+    listFail?: (q: string) => boolean;
+    /** 検索の指定したページ（0 始まり）だけを例外にする（全ページの取得の途中の失敗。D-027・Codex 監査24 A4） */
+    listFailPage?: (q: string, page: number) => boolean;
+    loseCreate?: (name: string, appProperties?: Record<string, string>) => boolean;
+    mediaStatus?: number;
+    /** ファイルの情報の取得（?fields=）の応答コードを置き換える（ID による直接の照会の失敗。Codex 監査24 A3） */
+    metaStatus?: number;
+    listHide?: (q: string) => boolean;
+    failCreate?: (name: string, appProperties?: Record<string, string>) => boolean;
+    updateFail?: (id: string) => boolean;
+  } = {};
+  /** 検索の 1 ページの最大件数（実際の Drive は要求の pageSize 以下で返す。テストで小さくして複数ページを確かめる） */
+  maxPageSize = 100;
 
   private newId(p: string) {
     return `${p}${++this.seq}`;
@@ -237,14 +253,19 @@ export class GasEmulator {
           if (ss) self.spreadsheets.set(id, structuredClone(ss));
           return { id, size: '1234' };
         },
-        list(q: { q: string }) {
+        list(q: { q: string; pageSize?: number; pageToken?: string }) {
           if (self.driveFaults.listFail?.(q.q)) throw new Error('Drive: 検索に失敗しました（一時的なエラー）');
           if (self.driveFaults.listHide?.(q.q)) return { files: [] };
           const parent = /'([^']+)' in parents/.exec(q.q)?.[1];
           const name = /name = '([^']+)'/.exec(q.q)?.[1];
           const ap = /appProperties has \{ key='([^']+)' and value='([^']+)' \}/.exec(q.q);
-          const files = [...self.files.entries()].filter(([, f]) => !f.trashed && (!parent || f.parents.includes(parent)) && (!name || f.name === name) && (!ap || f.appProperties?.[ap[1]!] === ap[2])).map(([id, f]) => ({ id, name: f.name, createdTime: new Date().toISOString(), size: f.data ? String(f.data.length) : null }));
-          return { files };
+          const all = [...self.files.entries()].filter(([, f]) => !f.trashed && (!parent || f.parents.includes(parent)) && (!name || f.name === name) && (!ap || f.appProperties?.[ap[1]!] === ap[2])).map(([id, f]) => ({ id, name: f.name, createdTime: new Date().toISOString(), size: f.data ? String(f.data.length) : null, appProperties: f.appProperties }));
+          // ページ分け（pageToken は次の先頭の位置）
+          const size = Math.min(q.pageSize ?? 100, self.maxPageSize);
+          const start = q.pageToken ? Number(q.pageToken) : 0;
+          if (self.driveFaults.listFailPage?.(q.q, Math.floor(start / size))) throw new Error('Drive: 検索の途中のページで失敗しました（一時的なエラー）');
+          const files = all.slice(start, start + size);
+          return start + size < all.length ? { files, nextPageToken: String(start + size) } : { files };
         },
         generateIds(opts: { count: number }) {
           const ids = Array.from({ length: opts.count }, () => self.newId('rsv'));
@@ -309,8 +330,16 @@ export class GasEmulator {
       },
       UrlFetchApp: {
         fetch: (url: string) => {
+          // ファイルの情報の取得（ID による直接の照会。?fields=）
+          const metaId = /files\/([^?]+)\?fields=/.exec(url)?.[1];
+          if (metaId) {
+            const m = self.files.get(decodeURIComponent(metaId));
+            const status = self.driveFaults.metaStatus ?? (m ? 200 : 404);
+            const text = m && status === 200 ? JSON.stringify({ id: decodeURIComponent(metaId), trashed: !!m.trashed, appProperties: m.appProperties ?? {} }) : '{"error":{}}';
+            return { getResponseCode: () => status, getContent: () => [], getContentText: () => text };
+          }
           const id = /files\/([^?]+)\?alt=media/.exec(url)?.[1];
-          const f = id ? self.files.get(id) : null;
+          const f = id ? self.files.get(decodeURIComponent(id)) : null;
           return { getResponseCode: () => (f?.data ? (self.driveFaults.mediaStatus ?? 200) : 404), getContent: () => (f?.data ? toSigned(f.data) : []), getContentText: () => f?.data?.toString('utf8') ?? '' };
         },
       },

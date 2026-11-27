@@ -648,7 +648,7 @@ function AdminReauthDialog({ client, onDone }: { client: Client; onDone: (ok: bo
       }
     >
       <p className="small" style={{ marginBottom: 8 }}>
-        給与確定・権限変更・バックアップの復元・PIN の設定などの重要な操作の前に、管理者パスワードをもう一度入力してください（5分間有効）。
+        給与確定・権限変更・PIN の設定などの重要な操作の前に、管理者パスワードをもう一度入力してください（5分間有効）。
       </p>
       <input className="input" type="password" autoComplete="off" value={v} onChange={(e) => setV(e.target.value)} aria-label="管理者パスワード" autoFocus />
       {err && <p style={{ color: 'var(--bull)', marginTop: 8 }}>{err}</p>}

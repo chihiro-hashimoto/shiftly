@@ -26,15 +26,12 @@ export const EPOCH_EXEMPT: Record<string, string> = {
   'staff.enroll': '端末の登録（使い捨ての登録コード。復元でも使用済みのコードは巻き戻らない）',
   'devices.createEnrollment': '端末登録コードの発行（新しいコードを作るだけ）',
   'devices.revoke': '端末の失効（安全側の操作。復元でも失効は巻き戻らない）',
-  // system: 復元・バックアップ・初期化・更新・メンテナンス
-  'backup.restore': '復元そのもの（Google 所有者だけ。確認の入力が必要。実行時に世代を進める）',
+  // system: バックアップ・初期化・保守作業（復元・更新・ロールバックの操作は v1.3 では提供しない。api.ts の DEFERRED_OPS。D-027）
   'backup.run': 'バックアップの作成（現在のデータを複製するだけ）',
   'system.initialize': '初期化（冪等。既存のデータは変えない）',
-  'system.migrate': 'DB の構造の移行（Setup の更新の工程。画面のデータを使わない）',
-  'system.prepareUpdate': '更新の準備（メンテナンスの開始とバックアップ。Setup の工程）',
-  'system.finishUpdate': '更新の完了（整合性の確認と版の記録。Setup の工程）',
-  'system.setMaintenance': 'メンテナンスの切り替え（Setup の工程）',
   'system.resetSetupPairing': 'Setup との接続のリセット（新しい接続の準備だけ）',
+  'maintenance.begin': 'Google 所有者の保守作業の開始（業務の更新を止め、バックアップと内容の記録を作るだけ。画面のデータを使わない）',
+  'maintenance.finish': 'Google 所有者の保守作業の終了（開始時の記録と照合し、全セッションを失効して画面の世代を新しく発行する。画面のデータを使わない）',
   // output: 出力
   'export.attendance': '出力（現在のデータを読み出してファイルを作る。出力の履歴だけを追記する）',
   'export.payroll': '出力（同上）',

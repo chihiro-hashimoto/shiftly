@@ -183,6 +183,38 @@ export function shiftlyResetAdminPairing() {
   return { ok: true, message: '管理画面との接続をリセットしました。Shiftly-Admin のエディタで shiftlyAuthorize を実行してください' };
 }
 
+/**
+ * Google 所有者がスクリプトエディタで実行: Shiftly Setup との接続をリセットする（Setup の接続鍵を失った場合の復旧用。
+ * 構築の途中で「別の鍵で登録済み」と案内された場合に実行し、Setup で接続設定の工程を再実行する）
+ */
+export function shiftlyResetSetupPairing() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  return report('Setup との接続のリセット', handleRequest(be(), { op: 'system.resetSetupPairing' }, 'owner'));
+}
+
+/**
+ * Google 所有者の保守作業（D-027 B案。docs/operations-guide.md「データの復元（Google 所有者の保守作業）」）。
+ * v1.3 ではアプリ内の自動復元・自動更新を提供しない。データを手で直す前に shiftlyMaintenanceBegin を実行して業務の更新を止め、
+ * 作業の後に shiftlyMaintenanceFinish で開始時の記録と照合してから再開する（問題があれば再開しない）
+ */
+export function shiftlyMaintenanceBegin() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  return report('保守作業の開始', handleRequest(be(), { op: 'maintenance.begin', args: { confirmText: '保守を開始する' } }, 'owner'));
+}
+export function shiftlyMaintenanceFinish() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  return report('保守作業の終了', handleRequest(be(), { op: 'maintenance.finish', args: { confirmText: '保守を終了する' } }, 'owner'));
+}
+export function shiftlyMaintenanceStatus() {
+  if (!isOwnerExecution()) throw new Error('この関数はスクリプトエディタから Google 所有者が実行してください');
+  return report('保守作業の状態', handleRequest(be(), { op: 'system.info' }, 'owner'));
+}
+/** 実行ログに結果を出す（応答は表の名前・件数・ID だけで、個人情報を含まない） */
+function report(title: string, r: ReturnType<typeof handleRequest>) {
+  console.log(JSON.stringify({ title, ok: r.ok, ...(r.ok ? { data: r.data } : { error: r.error }) }));
+  return r;
+}
+
 /** エディタ実行（Google 所有者本人）か。匿名アクセスの Web アプリ経由では getActiveUser が空になる */
 function isOwnerExecution(): boolean {
   try {

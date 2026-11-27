@@ -48,5 +48,5 @@ export const PAGES: PageDef[] = [
   { id: 'settings', label: '店舗設定', group: '管理', component: SettingsPage },
   { id: 'audit', label: '監査ログ', group: '管理', component: AuditPage },
   { id: 'backup', label: 'バックアップ', group: '管理', component: BackupPage },
-  { id: 'system', label: 'システム・更新', group: '管理', googleOwnerOnly: true, component: SystemPage },
+  { id: 'system', label: 'システム・保守', group: '管理', googleOwnerOnly: true, component: SystemPage },
 ];

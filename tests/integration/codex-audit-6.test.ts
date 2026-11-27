@@ -1,27 +1,33 @@
 /**
  * Codex 独立監査 6 回目（docs/reviews/codex-audit-6.md。マージ可否の判定）の指摘に対する回帰テスト
- * （#1・#3 は Setup の更新処理のため tests/integration/installer.test.ts にある）
+ * （#1・#3 は Setup の更新処理のテストだった。v1.3 では Setup による更新を提供しないため削除した。D-027・docs/review-log.md C-24）
  * 期待値は指摘の再現条件から手計算したもの（実装の出力を写したものではない）
  */
 import { describe, expect, it } from 'vitest';
 import { Harness } from '../helpers/harness';
 
-describe('Codex 監査6 #2: バックアップの復元で、メンテナンス中の状態を解除しない', () => {
-  it('メンテナンス解除中に取得したバックアップを、メンテナンス中に復元 → メンテナンスは継続し、スタッフの打刻は停止したまま', () => {
+/**
+ * Codex 監査6 #2 は、アプリ内の復元でメンテナンスを解除しないことを確かめるテストだった。v1.3 ではアプリ内の復元を提供しないため
+ * （D-027 B案）、同じ保護（DB の内容を戻しても、確認の前に業務が再開しない）を、保守作業の経路で確かめる
+ */
+describe('Codex 監査6 #2 の保護: 保守作業中に DB の内容（メンテナンス解除中の値）を戻しても、保守中のまま', () => {
+  it('メンテナンス解除中の DB の内容で system_metadata を上書きしても、保守の記録（Script Properties）により打刻は停止したまま', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913');
     h.setNow('2026-11-02', '10:00');
-    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    const atBackup = h.env.adapter.snapshot();
     h.setNow('2026-11-02', '11:00');
-    h.ownerOk('system.setMaintenance', { on: true });
-    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
-    expect(h.ownerOk('system.info').maintenance).toBe(true);
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+    h.env.adapter.sheets.set('system_metadata', atBackup['system_metadata']!.map((r) => [...r]));
+    expect(h.ownerOk('system.info').maintenanceWork.active).toBe(true);
     h.setNow('2026-11-02', '11:05');
-    // スタッフの利用（ログイン・打刻）はメンテナンスで停止したまま
+    // スタッフの利用（ログイン・打刻）は停止したまま
     const login = h.staff('auth.login', { employeeId: a, pin: '482913' }, { session: '' });
     expect(login.ok).toBe(false);
     expect(!login.ok && login.error.code).toBe('MAINTENANCE');
+    // メンテナンスの切替の操作では解除できない（v1.3 では提供しない）
+    expect(!h.owner('system.setMaintenance', { on: false }).ok).toBe(true);
   });
 });
 

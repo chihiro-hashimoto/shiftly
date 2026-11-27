@@ -211,9 +211,12 @@ export function setMeta(ctx: Ctx, key: string, value: string) {
 }
 
 /**
- * 復元世代（restore epoch。D-026）。画面がデータを取得した時点の世代を、画面からの業務更新（kind: 'edit'）で照合する。
- * 業務 DB・バックアップとは別の保存場所（Script Properties。モックでは SecretStore）に置くため、DB の復元で巻き戻らない。
- * 値は「前回の世代 + 1」と「現在時刻（ミリ秒）」の大きいほう。記録が失われて作り直した場合も、過去に発行した世代と重ならない
+ * 画面の世代（epoch。D-026・D-027）。画面がデータを取得した時点の世代を、画面からの業務更新（kind: 'edit'）で照合する。
+ * 業務 DB・バックアップとは別の保存場所（Script Properties。モックでは SecretStore）に置くため、DB の内容の変更で巻き戻らない。
+ * 値は乱数（時刻・前回の値に依存しない。Codex 監査24 A1）。発行するのは次の 2 つの場合だけ:
+ * - 初めての構築の初期化（system.initialize。DB に初期化の記録がない場合）
+ * - Google 所有者の保守作業の終了（maintenance.finish。全セッションの失効と同時に行い、保守の前に開いた画面をすべて無効にする）
+ * 既存の環境で記録が失われた・壊れた場合は、自動では作り直さない（業務の更新は EPOCH_UNAVAILABLE で止まり、保守作業の終了で再発行する）
  */
 export const EPOCH_KEY = 'SHIFTLY_RESTORE_EPOCH';
 export function currentEpoch(p: Platform): number | null {
@@ -222,10 +225,48 @@ export function currentEpoch(p: Platform): number | null {
   const n = Number(raw);
   return /^[1-9][0-9]{0,15}$/.test(raw) && Number.isSafeInteger(n) ? n : null;
 }
-/** 次の世代を発行して保存する（復元の切替の直前・初期化で記録がない場合）。保存できたことを読み直して確かめる */
-export function advanceEpoch(p: Platform): number {
-  const next = Math.max((currentEpoch(p) ?? 0) + 1, p.now());
+/**
+ * 新しい世代を乱数で発行して保存する（現在の値・時刻に依存しない。48 ビットの乱数のため、過去に発行した値と一致する確率は無視できるほど小さい）。
+ * 保存できたことを読み直して確かめる
+ */
+export function issueEpoch(p: Platform): number {
+  const prev = currentEpoch(p);
+  let next = 0;
+  for (let i = 0; i < 4 && (next === 0 || next === prev); i++) next = parseInt(p.randomHex(6), 16) + 1;
+  if (next === prev || !Number.isSafeInteger(next) || next < 1) throw new Error('画面の世代を発行できませんでした');
   p.secrets.set(EPOCH_KEY, String(next));
-  if (currentEpoch(p) !== next) throw new Error('復元世代を保存できませんでした');
+  if (currentEpoch(p) !== next) throw new Error('画面の世代を保存できませんでした');
   return next;
+}
+
+/**
+ * Google 所有者の保守作業の記録（D-027）。業務 DB の外（Script Properties）に置く: 保守の作業で DB の内容（system_metadata を含む）を
+ * 手で戻しても、保守中であることは失われない。記録があれば（内容を読み取れない場合も）保守中として、全員の更新系を止める（api.ts）
+ */
+export const MAINTENANCE_KEY = 'SHIFTLY_MAINTENANCE';
+export interface MaintenanceState {
+  startedAt: string;
+  /** 開始時のバックアップ（backup_history の ID）。開始の途中で失敗した場合は null */
+  backupId: string | null;
+  /** 開始時の DB の内容の記録（Google ドライブの 00_System のファイル）。開始の途中で失敗した場合は null */
+  snapshotFileId: string | null;
+}
+export function maintenanceActive(p: Platform): boolean {
+  try {
+    return p.secrets.get(MAINTENANCE_KEY) !== null;
+  } catch {
+    return true;
+  }
+}
+/** 保守の記録を読む。記録がない場合は null。内容を読み取れない場合は 'broken' */
+export function maintenanceState(p: Platform): MaintenanceState | 'broken' | null {
+  const raw = p.secrets.get(MAINTENANCE_KEY);
+  if (raw === null) return null;
+  try {
+    const o = JSON.parse(raw) as MaintenanceState;
+    if (!o || typeof o !== 'object' || typeof o.startedAt !== 'string') return 'broken';
+    return { startedAt: o.startedAt, backupId: typeof o.backupId === 'string' ? o.backupId : null, snapshotFileId: typeof o.snapshotFileId === 'string' ? o.snapshotFileId : null };
+  } catch {
+    return 'broken';
+  }
 }

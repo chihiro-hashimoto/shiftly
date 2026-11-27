@@ -1,15 +1,17 @@
 /**
  * Codex 独立監査 10 回目（docs/reviews/codex-audit-10.md。C-9 の対応の確認）の指摘に対する回帰テスト
- * （回帰 1 は Setup の更新処理のため tests/integration/installer.test.ts にある。C-9 #2 の残りは手順書で対応）
+ * （回帰 1 は Setup の更新処理のテストだった。v1.3 では Setup による更新を提供しないため削除した。C-9 #2 の残りは手順書で対応）
+ * アプリ内の復元を v1.3 では提供しないため（D-027 B案）、「バックアップの内容に戻す」操作を保守作業の中の手作業として行う形に置き換えた
  * 期待値は指摘の再現条件から手計算したもの（実装の出力を写したものではない）
  */
 import { describe, expect, it } from 'vitest';
 import { Harness } from '../helpers/harness';
+import { UnitOfWork } from '../../src/backend/store';
 
 const code = (r: any) => (r.ok ? 'OK' : r.error.code);
 
-describe('Codex 監査10（C-9 #1 の残り）: 確定結果がバックアップと同じで、給与条件だけが異なる場合も、復元後の訂正を止める', () => {
-  it('1,400 円で確定（7,000 円）→ 1,200 円が適用される状態でバックアップ → 1,400 円に戻す → 復元 → 訂正は停止（6,000 円のリビジョン 2 を作らない）', () => {
+describe('Codex 監査10（C-9 #1 の残り）: 確定結果が同じで、給与条件だけが異なる場合も、保守作業の後の訂正を止める', () => {
+  it('1,400 円で確定（7,000 円）→ 1,200 円が適用される状態でバックアップ → 1,400 円に戻す → 保守作業で 1,200 円の内容に戻す → 訂正は停止（6,000 円のリビジョン 2 を作らない）', () => {
     const h = new Harness();
     h.setupStore();
     const a = h.addStaff('山田', '482913', { rate: 1200 });
@@ -26,11 +28,14 @@ describe('Codex 監査10（C-9 #1 の残り）: 確定結果がバックアッ�
     // 確定の後に時給を 1,200 円に変更してバックアップ（確定結果はバックアップにも含まれる）→ 1,400 円に戻す
     h.setNow('2026-12-01', '06:10');
     h.ownerOk('payconf.upsertWageRule', { ...rule, id: w.id, hourlyRate: 1200 });
-    const bk = h.ownerOk('backup.run', { kind: 'manual' });
+    const atBackup = h.env.adapter.snapshot();
     h.setNow('2026-12-01', '06:20');
     h.ownerOk('payconf.upsertWageRule', { ...rule, id: w.id, hourlyRate: 1400 });
     h.setNow('2026-12-01', '06:30');
-    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    // 保守作業で、時給ルールの表をバックアップの時点（1,200 円）に戻す
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+    h.env.adapter.sheets.set('wage_rules', atBackup['wage_rules']!.map((r) => [...r]));
+    h.ownerOk('maintenance.finish', { confirmText: '保守を終了する' });
     h.setNow('2026-12-01', '06:40');
     expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeTruthy();
     expect(code(h.owner('payroll.correct', { periodId: p.id, employeeId: a, reason: '確認のための訂正', acknowledgements: acks }))).toBe('PAYROLL_BLOCKED');
@@ -40,7 +45,7 @@ describe('Codex 監査10（C-9 #1 の残り）: 確定結果がバックアッ�
   });
 });
 
-describe('Codex 監査10 回帰2: 復元後の確認の完了で、自由記述を監査ログに残さない', () => {
+describe('Codex 監査10 回帰2: 保守作業の後の給与の確認の完了で、自由記述を監査ログに残さない', () => {
   it('確認内容に氏名・時給を書いて送っても、監査ログには定型の確認項目だけが記録される', () => {
     const h = new Harness();
     h.setupStore();
@@ -50,12 +55,16 @@ describe('Codex 監査10 回帰2: 復元後の確認の完了で、自由記述�
     const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
     h.ownerOk('deductions.upsert', { employeeId: a, periodId: p.id, status: 'explicit_none' });
     h.setNow('2026-12-01', '06:00');
-    // バックアップの後に確定（どちらの方式でも復元後に停止される条件）
-    const bk = h.ownerOk('backup.run', { kind: 'manual' });
     const c = h.ownerOk('payroll.compute', { periodId: p.id });
     const acks = c.employees[0].issues.filter((i: any) => i.severity === 'confirm').map((i: any) => i.key);
     h.ownerOk('payroll.confirm', { periodId: p.id, acknowledgements: acks });
-    h.ownerOk('backup.restore', { backupId: bk.id, confirmText: '復元する' });
+    // 確定の後の保守作業で、業務の入力（給与に影響しない予算）を手で戻した（内容の変更があるため、確定済みの期間は停止される）
+    h.ownerOk('maintenance.begin', { confirmText: '保守を開始する' });
+    const u = new UnitOfWork(h.env.adapter, { now: () => h.env.clock.now, newId: (x) => `${x}_maint0001` });
+    u.insert('budgets', { month: '2026-11', monthlyAmount: 100000, dailyAmounts: {}, laborCostAllocation: 'work_date' } as never, 'bud');
+    u.flush();
+    h.ownerOk('maintenance.finish', { confirmText: '保守を終了する' });
+    expect(h.ownerOk<any>('payroll.periods').periods.find((x: any) => x.id === p.id).restoreLock).toBeTruthy();
     const secret = '山田太郎さんの時給1,400円を確認';
     h.owner('payroll.releaseRestoreLock', { periodId: p.id, note: secret, checkedWageRules: true, checkedAllowances: true, checkedDeductions: true, confirmText: '確認しました' });
     const logs = h.ownerOk<any[]>('audit.list', { month: '2026-12' });

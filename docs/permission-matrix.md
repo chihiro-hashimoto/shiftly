@@ -81,7 +81,6 @@
 | `auth.me` | read | スタッフ本人（端末＋氏名選択／PIN） |  |  |  |  | ○ |  |  |
 | `auth.stepUp` | auth | スタッフ本人（端末＋氏名選択／PIN） |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `backup.list` | read | Google 所有者 |  |  | ○ |  |  |  |  |
-| `backup.restore` | system | Google 所有者 |  |  |  | ○ |  | ○ | 除外（理由は下表） |
 | `backup.run` | system | Google 所有者 |  |  | ○ |  |  | ○ | 除外（理由は下表） |
 | `breaks.adminDeclare` | edit | 管理者（Google 所有者・管理者モード）／委任スタッフ | `attendance_edit` | 必要 | ○ |  |  | ○ | ○ |
 | `breaks.declare` | edit | スタッフ本人（端末＋氏名選択／PIN） | `punch_self` |  |  |  | ○ | ○ | ○ |
@@ -115,6 +114,8 @@
 | `leave.mine` | read | スタッフ本人（端末＋氏名選択／PIN） | `leave_view_self` |  |  |  |  |  |  |
 | `leave.overview` | read | 管理者（Google 所有者・管理者モード）／委任スタッフ | `leave_manage` | 必要 | ○ |  |  |  |  |
 | `leave.take` | edit | 管理者（Google 所有者・管理者モード）／委任スタッフ | `leave_manage` | 必要 | ○ |  |  | ○ | ○ |
+| `maintenance.begin` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
+| `maintenance.finish` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `notifications.list` | read | 管理者（Google 所有者・管理者モード）／委任スタッフ | `notifications_view` |  | ○ |  |  |  |  |
 | `notifications.scan` | internal | Google 所有者 |  |  | ○ |  |  | ○ | 除外（理由は下表） |
 | `notifications.update` | edit | 管理者（Google 所有者・管理者モード）／委任スタッフ | `notifications_view` |  | ○ |  |  | ○ | ○ |
@@ -165,14 +166,10 @@
 | `staff.bootstrap` | read | 登録端末 |  |  |  |  |  |  |  |
 | `staff.enroll` | auth | 公開（未認証可） |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `system.dailyJob` | internal | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
-| `system.finishUpdate` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `system.info` | read | Google 所有者 |  |  | ○ |  |  |  |  |
 | `system.initialize` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `system.integrityCheck` | read | Google 所有者 |  |  | ○ |  |  |  |  |
-| `system.migrate` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
-| `system.prepareUpdate` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `system.resetSetupPairing` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
-| `system.setMaintenance` | system | Google 所有者 |  |  |  |  |  | ○ | 除外（理由は下表） |
 | `system.status` | read | 公開（未認証可） |  |  |  |  |  |  |  |
 | `system.storageCheck` | read | Google 所有者 |  |  |  |  |  |  |  |
 
@@ -205,14 +202,11 @@
 | `export.shifts` | output | 出力（同上） |
 | `export.wageLedger` | output | 出力（同上） |
 | `attendance.punch` | punch | 打刻の時刻はサーバーの時刻で、打刻原本は追記だけ（復元でも再投入される）。ただし、退勤の打刻に休憩の申告（画面で選んだ内容。既存の申告を置き換える）が付いている場合は、世代を照合する（editWhen）。復元でスタッフのセッションは失効し、ログインし直す |
-| `backup.restore` | system | 復元そのもの（Google 所有者だけ。確認の入力が必要。実行時に世代を進める） |
 | `backup.run` | system | バックアップの作成（現在のデータを複製するだけ） |
-| `system.finishUpdate` | system | 更新の完了（整合性の確認と版の記録。Setup の工程） |
+| `maintenance.begin` | system | Google 所有者の保守作業の開始（業務の更新を止め、バックアップと内容の記録を作るだけ。画面のデータを使わない） |
+| `maintenance.finish` | system | Google 所有者の保守作業の終了（開始時の記録と照合し、全セッションを失効して画面の世代を新しく発行する。画面のデータを使わない） |
 | `system.initialize` | system | 初期化（冪等。既存のデータは変えない） |
-| `system.migrate` | system | DB の構造の移行（Setup の更新の工程。画面のデータを使わない） |
-| `system.prepareUpdate` | system | 更新の準備（メンテナンスの開始とバックアップ。Setup の工程） |
 | `system.resetSetupPairing` | system | Setup との接続のリセット（新しい接続の準備だけ） |
-| `system.setMaintenance` | system | メンテナンスの切り替え（Setup の工程） |
 
 ### ハンドラ内の追加制約（自己操作・昇格の防止）
 

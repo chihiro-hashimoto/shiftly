@@ -1,29 +1,26 @@
 /**
  * 出力・人件費分析・予算・通知・バックアップ/復元
- * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ・復元
+ * F21 通知 / F22 人件費分析 / F23 予算 / F24 CSV・Excel / F26 バックアップ
+ * （アプリ内のデータの復元は v1.3 では提供しない。D-027 B案。Google 所有者の保守作業: handlers/maintenance.ts）
  */
 import { defineOps } from '../api';
-import { actorId, advanceEpoch, audit, EPOCH_KEY, has, isGoogleOwner, isOwner, metaValue, nowIso, payrollRestoreLocks, setMeta, setPayrollRestoreLocks, settings, staff, today, type Ctx } from '../context';
-import { ApiError, E } from '../errors';
+import { actorId, audit, has, isGoogleOwner, isOwner, nowIso, settings, staff, today, type Ctx } from '../context';
+import { E } from '../errors';
 import * as v from '../validate';
-import type { AttendanceCorrection, BackupHistory, Budget, Credential, Employee, OvertimeRequest, NotificationRow, PayrollPeriod, PayrollResult, PaySlip, Shift, WorkSession } from '../../shared/types';
+import type { AttendanceCorrection, BackupHistory, Budget, Credential, Employee, OvertimeRequest, NotificationRow, PayrollPeriod, PayrollResult, Shift, WorkSession } from '../../shared/types';
 import { toCsv, type Cell } from '../../shared/csv';
 import { buildXlsx, toBase64, type XSheet } from '../../shared/xlsx';
 import { utf8 } from '../../shared/crypto';
 import { activeEmployees, correctionDate, durationLabel, employeesInPeriod, latestResult, reviewStatusOf, sessionsFor, payrollInput } from '../services';
 import { applyTimeBasis } from '../../shared/worktime';
-import { plan as migrationPlan } from '../migrations';
 import { sessionView } from './attendance';
 import { addDays, dayOfWeek, formatMinutes, localDateTime, type LocalDate } from '../../shared/time';
 import { computePayroll } from '../../shared/payroll';
 import { allocateLaborCost, budgetStatus, monthRange, shiftToSession } from '../../shared/analytics';
 import { canSeeIndividualPay } from '../../shared/permissions';
 import { detectAttendanceNotifications, detectLeaveNotifications, newOnly, type NotificationDraft } from '../../shared/notifications';
-import { SCHEMA_VERSION, TABLES, type TableName } from '../schema';
-import { revokeAdminSessions, revokeSessionsWhere } from '../auth';
-import { integrityCheck } from './system';
+import { SCHEMA_VERSION } from '../schema';
 import type { LeaveGrant, LeaveTransaction, WageRule, SalaryRule, TransportRule } from '../../shared/types';
-import { UnitOfWork } from '../store';
 
 // ------------------------------------------------------------------ 出力
 type Format = 'csv' | 'xlsx';
@@ -469,62 +466,6 @@ function pruneBackups(ctx: Ctx, kind: BackupHistory['kind']) {
   }
 }
 
-/**
- * 復元で各表をどう扱うか（Codex 監査19 の分析による。D-025）。
- * 復元の指摘が表ごとに繰り返されたのは、引き継ぐ表を個別に足していたため。全表の扱いをここで明示し、型（Record<TableName, …>）で
- * 全表の指定を必須にする（表を追加したときに扱いを決め忘れない）。基本方針: 業務の入力・設定はバックアップの時点に戻し、
- * 起きた事実・履歴・安全や賃金に関わる状態は巻き戻さない
- * - restore: バックアップの時点に戻す（業務の入力・設定。確定済みの給与がある期間は payrollRestoreLocks で停止し、計算結果の全体を照合）
- * - append: 現行にあって候補にない行を追加する（追記だけの事実・履歴。ID で突合）
- * - carry: 現行の行で候補を上書きし、候補だけにある行は残す（認証・権限・端末、申請と確認、給与の確定データ、バックアップの履歴など）
- * - revoke: 復元後にすべて失効させる（セッション）
- * - skip: 候補のまま（内部の処理記録）
- */
-type RestorePolicy = 'restore' | 'append' | 'carry' | 'revoke' | 'skip';
-type RowKey = (r: Record<string, unknown>) => string;
-const byId: RowKey = (r) => String(r.id);
-export const RESTORE_POLICY: Record<TableName, { policy: RestorePolicy; key?: RowKey; why: string }> = {
-  store_settings: { policy: 'restore', why: '店舗設定（入力）' },
-  employees: { policy: 'carry', why: 'スタッフ・退職を巻き戻さない' },
-  employment_history: { policy: 'restore', why: '雇用条件（入力。編集できる）' },
-  credentials: { policy: 'carry', key: (r) => `${String(r.employeeId)}|${String(r.kind)}`, why: 'PIN・管理用パスコードを巻き戻さない' },
-  permissions: { policy: 'carry', key: (r) => String(r.employeeId), why: '委任権限を巻き戻さない' },
-  devices: { policy: 'carry', why: '端末の失効を巻き戻さない' },
-  device_enrollments: { policy: 'carry', why: '使用済み・発行済みの端末登録コードを巻き戻さない（使い捨てのコードを再び使えるようにしない）' },
-  sessions: { policy: 'revoke', why: '復元後はすべて失効' },
-  wage_rules: { policy: 'restore', why: '給与条件（入力）' },
-  salary_rules: { policy: 'restore', why: '給与条件（入力）' },
-  attendance_events: { policy: 'append', why: '打刻原本（追記だけの事実）' },
-  attendance_corrections: { policy: 'carry', why: '勤怠修正と確認状態' },
-  manual_breaks: { policy: 'append', why: '手動登録の休憩（追記だけの事実）' },
-  shifts: { policy: 'restore', why: 'シフト（入力）' },
-  shift_patterns: { policy: 'restore', why: '勤務パターン（入力）' },
-  shift_history: { policy: 'append', why: 'シフトの変更履歴（追記だけの履歴）' },
-  leave_grants: { policy: 'append', why: '有給の付与（追記だけ。法定の付与の記録を失わない）' },
-  leave_transactions: { policy: 'append', why: '有給の取得・調整（追記だけの事実。取得した有給を消さない）' },
-  transport_rules: { policy: 'restore', why: '給与条件（入力）' },
-  allowances: { policy: 'restore', why: '給与条件（入力）' },
-  deductions: { policy: 'restore', why: '控除（入力）' },
-  payroll_adjustments: { policy: 'restore', why: '給与調整（入力）' },
-  payroll_periods: { policy: 'carry', why: '給与の確定データ' },
-  payroll_results: { policy: 'carry', why: '給与の確定データ（確定・訂正のリビジョン）' },
-  pay_slips: { policy: 'carry', why: '発行済みの明細' },
-  budgets: { policy: 'restore', why: '予算（入力）' },
-  notifications: { policy: 'restore', why: 'アプリ内通知（入力。再スキャンで作り直せる）' },
-  audit_logs: { policy: 'append', why: '監査ログ（追記だけ）' },
-  backup_history: { policy: 'carry', why: 'バックアップの履歴（削除済みを利用可能に戻さない）' },
-  system_metadata: { policy: 'restore', why: '候補の値を使い、稼働状態のキーだけ別に引き継ぐ' },
-  request_idempotency: { policy: 'append', why: '冪等性キー（追記だけ。処理済みの要求を再実行させない）' },
-  operation_journal: { policy: 'skip', why: '書き込みの処理記録（候補の DB 自体の記録）' },
-  migration_history: { policy: 'skip', why: '候補の DB の移行の記録' },
-  exports: { policy: 'append', why: '出力の履歴（追記だけ。個人情報を含む出力の記録を失わない）' },
-  admin_credentials: { policy: 'carry', why: '管理者パスワードを巻き戻さない' },
-  admin_sessions: { policy: 'revoke', why: '復元後はすべて失効' },
-  break_declarations: { policy: 'carry', why: '休憩の申告と確認' },
-  overtime_requests: { policy: 'carry', why: '早出・残業申請と実労働の確認' },
-  overtime_request_history: { policy: 'append', why: '申請の履歴（追記だけ）' },
-};
-
 defineOps([
   {
     name: 'backup.run',
@@ -543,154 +484,5 @@ defineOps([
     mutating: false,
     allowInMaintenance: true,
     handler: (ctx) => ctx.uow.list<BackupHistory>('backup_history').sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
-  },
-  {
-    name: 'backup.restore',
-    kind: 'system',
-    // 復元は稼働中の DB を切り替える復旧の操作のため、Google 所有者（Shiftly-Admin）に限定する。店舗 iPad の管理者モードでは実行できない
-    // （requirements.md: Google 所有者は構築・更新・復旧。D-015。Codex 監査18 #2）
-    auth: 'owner',
-    reauth: true,
-    mutating: true,
-    allowInMaintenance: true,
-    handler: (ctx, raw) => {
-      const a = v.obj(raw);
-      const b = ctx.uow.get<BackupHistory>('backup_history', v.id(a, 'backupId'));
-      if (!b || b.status !== 'ok' || !b.driveFileId) throw E.notFound('バックアップ');
-      if (v.str(a, 'confirmText', { max: 20 }) !== '復元する') throw E.invalid('確認のため「復元する」と入力してください');
-      if (b.schemaVersion > SCHEMA_VERSION) throw E.invalid('新しいバージョンのバックアップは復元できません（アプリを更新してください）');
-      // 1) 復元前バックアップ
-      const pre = runBackup(ctx, 'manual', `復元前の自動バックアップ（復元元 ${b.id}）`);
-      if (pre.status !== 'ok') throw E.conflict('復元前のバックアップに失敗したため中止しました');
-      ctx.uow.flush();
-      // 2) 復元候補を作成（稼働中の DB はまだ切り替えない）
-      const cand = ctx.p.database.prepareRestoreCopy(b.driveFileId);
-      const uowC = new UnitOfWork(cand.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
-      const ctxC: Ctx = { ...ctx, uow: uowC };
-      let restored = 0;
-      try {
-        // 版の基準（4c で使う）: 前回までの復元で記録した最大の版と、復元前・候補の戻す表・引き継ぐ表の全行の版の最大
-        let versionFloor = Number(metaValue(ctx, 'restoreVersionFloor') ?? '0') || 0;
-        for (const def of TABLES) {
-          const pol = RESTORE_POLICY[def.name].policy;
-          if (pol !== 'restore' && pol !== 'carry') continue;
-          for (const u of [ctx.uow, uowC]) for (const r of u.list<{ version: number }>(def.name)) versionFloor = Math.max(versionFloor, Number(r.version) || 0);
-        }
-        // 3) 追記だけの事実・履歴（RESTORE_POLICY が append の表）は、時刻ではなく ID で突合し、候補にない行をすべて再投入
-        //    （バックアップと同じ秒に保存された打刻も取りこぼさない）
-        for (const def of TABLES) {
-          if (RESTORE_POLICY[def.name].policy !== 'append') continue;
-          const have = new Set(uowC.list<{ id: string }>(def.name).map((r) => r.id));
-          for (const r of ctx.uow.list<Record<string, unknown>>(def.name)) {
-            if (!have.has(r.id as string)) {
-              uowC.insert(def.name, r as never);
-              restored++;
-            }
-          }
-        }
-        // 4) スタッフ・認証情報・権限・端末は現行の状態を引き継ぐ（PIN・管理用パスコード・委任権限・退職・端末失効を巻き戻さない）
-        //    v1.3: 管理者パスワード、勤怠修正（確認状態）・休憩の申告・早出残業申請（承認・実労働の確認）も現行を引き継ぐ
-        //    （復元で承認済みの実労働や確認結果が失われ、賃金の計算が変わることを防ぐ）
-        //    給与の確定データ・バックアップの履歴・端末登録コードなども、RESTORE_POLICY の carry として同じ規則で引き継ぐ
-        //    版は復元前・候補のどちらよりも大きくする（小さくすると、復元前に開いていた画面からの古い内容の上書きが
-        //    版の照合を通ってしまう。D-025 R1。独立した点検 R1-1）
-        const carry = (t: TableName, key: RowKey) => {
-          const candRows = new Map(uowC.list<Record<string, unknown>>(t).map((r) => [key(r), r]));
-          for (const cur of ctx.uow.list<Record<string, unknown>>(t)) {
-            const c = candRows.get(key(cur));
-            const version = Math.max(Number(cur.version) || 0, Number(c?.version) || 0) + 1;
-            uowC.putForRestore(t, { ...cur, id: c ? c.id : cur.id, version } as never);
-          }
-        };
-        // 給与の確定データ（期間・計算結果のリビジョン・明細）も現行を引き継ぐ。バックアップ後に確定・訂正・発行した給与を
-        // 復元で消さない（同じ期間の再確定・支払い済みの期間の再処理を防ぐ。Codex 監査8 #1）
-        // 確定済みの給与（確定・発行・訂正の履歴）がある期間は、すべて停止する。復元後の給与条件（時給・手当・控除など）が
-        // 確定時と一致するかを機械的には照合できないため、管理者が条件を確認するまで確定・訂正・明細の発行をしない
-        // （確定結果がバックアップと同じで給与条件だけが異なる場合も含む。Codex 監査9 #1・監査10）
-        const locks = payrollRestoreLocks(ctx);
-        const lock = { restoredAt: nowIso(ctx), backupId: b.id };
-        for (const r of ctx.uow.list<PayrollResult>('payroll_results')) if (r.status === 'confirmed' || r.status === 'issued' || r.status === 'superseded') locks[r.periodId] = lock;
-        for (const sl of ctx.uow.list<PaySlip>('pay_slips')) locks[sl.periodId] = lock;
-        setPayrollRestoreLocks(ctxC, locks);
-        for (const def of TABLES) {
-          const pol = RESTORE_POLICY[def.name];
-          if (pol.policy === 'carry') carry(def.name, pol.key ?? byId);
-        }
-        // 旧スキーマのバックアップは、候補を現在のスキーマに移行してから整合性を確認する（列・テーブルの追加のみ）
-        const candSv = Number(metaValue(ctxC, 'schemaVersion') ?? '0');
-        if (candSv < SCHEMA_VERSION) {
-          for (const m of migrationPlan(candSv, SCHEMA_VERSION)) {
-            if (m.destructive) throw E.conflict('破壊的な移行が必要なバックアップは、この画面から復元できません');
-            m.up(ctxC);
-          }
-          setMeta(ctxC, 'schemaVersion', String(SCHEMA_VERSION));
-        }
-        // 4b) 稼働状態（メンテナンス・進行中の更新・稼働中のアプリの版）は現行を引き継ぐ
-        //     （更新前バックアップの「メンテナンス解除」の値で、確認前に打刻が再開しないように。Codex 監査6 #2）
-        for (const key of ['maintenance', 'pendingUpdate', 'appVersion'] as const) {
-          const cur = metaValue(ctx, key);
-          if (cur !== null) setMeta(ctxC, key, cur);
-        }
-        // 4c) 版を復元をまたいで単調に増やす（D-025 R1。Codex 監査22 #2）。戻した表（restore）と引き継いだ表（carry）の全行を、
-        //     これまでに使われた最大の版（復元前・候補の全行と、前回までの復元で記録した最大の版）+ 1 にそろえる。
-        //     復元を何回・どの順で行っても、復元前に開いていた画面が持つ版とは重ならない（古い内容の保存は版の照合で拒否される）
-        const nextVersion = versionFloor + 1;
-        setMeta(ctxC, 'restoreVersionFloor', String(nextVersion));
-        for (const def of TABLES) {
-          const pol = RESTORE_POLICY[def.name].policy;
-          if (pol !== 'restore' && pol !== 'carry') continue;
-          for (const r of uowC.list<Record<string, unknown> & { id: string; version: number }>(def.name)) {
-            if (Number(r.version) !== nextVersion) uowC.putForRestore(def.name, { ...r, version: nextVersion } as never);
-          }
-        }
-        // 5) 全セッション（スタッフ・管理者）失効・バックアップ履歴は現行を引き継ぐ
-        revokeSessionsWhere(ctxC, () => true);
-        revokeAdminSessions(ctxC, () => true, 'restored');
-        uowC.flush();
-        // 6) 候補の整合性を確認してから切り替える。不合格なら稼働中の DB はそのまま
-        const check = integrityCheck(ctxC);
-        if (!check.ok) throw new ApiError('RESTORE_INTEGRITY_FAILED', `復元候補の整合性確認に失敗したため、復元を中止しました（稼働中のデータは変更していません）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
-      } catch (e) {
-        try {
-          ctx.p.database.discard(cand.candidateId);
-        } catch {
-          /* 候補の破棄に失敗しても稼働中の DB には影響しない */
-        }
-        throw e;
-      }
-      // 7) 切替（候補は検証済み）。切替の直前に復元世代を進める（D-026）。世代を進めた後に切替が失敗しても、
-      //    復元前に開いた画面の古い世代は以後すべて拒否される（安全側）。切替は世代を進めた後にだけ行うため、
-      //    新しい DB が古い世代の要求を受け入れることはない。復元と通常の更新はロックで排他する
-      let sw: { previousId: string };
-      try {
-        advanceEpoch(ctx.p);
-        sw = ctx.p.database.activate(cand.candidateId);
-      } catch (e) {
-        // 切替の前に失敗した場合は候補を破棄する（稼働中になった DB は破棄しない: discard が拒否する）。世代はすでに進んでいてもよい（安全側）
-        try {
-          ctx.p.database.discard(cand.candidateId);
-        } catch {
-          /* 破棄できない場合も稼働中の DB には影響しない */
-        }
-        throw e;
-      }
-      // 切替の後にも世代を進める（D-026。再点検 #1）: 世代を進めた後・切替の前に旧 DB を読んだ画面（切替の前の世代を固定）も、
-      // 古い画面として拒否する。進められない場合は世代の記録を消し、初期化（shiftlyAuthorize）で作り直すまで画面からの更新を止める（安全側）
-      try {
-        advanceEpoch(ctx.p);
-      } catch {
-        try {
-          ctx.p.secrets.delete(EPOCH_KEY);
-        } catch {
-          /* 記録を消せない場合も、切替は完了している */
-        }
-      }
-      ctx.uow.adapter.reset?.();
-      const uow2 = new UnitOfWork(ctx.uow.adapter, { now: () => ctx.now, newId: (pf) => `${pf}_${ctx.p.randomHex(10)}` });
-      const ctx2: Ctx = { ...ctx, uow: uow2 };
-      audit(ctx2, 'backup.restore', 'backup', b.id, `復元 新DB=${cand.candidateId} 旧DB=${sw.previousId} 再投入=${restored}`);
-      uow2.flush();
-      return { restoredFrom: b.id, preservedRowsReinserted: restored, previousDatabaseId: sw.previousId, integrity: integrityCheck(ctx2), note: '全スタッフ・管理者のセッションを失効しました。スタッフ・PIN・管理者パスワード・権限・端末・勤怠修正の確認状態・休憩の申告・早出残業申請・給与の確定結果と明細・有給の付与と取得・メンテナンスの状態は復元前の状態を引き継いでいます（給与条件・シフト・控除などの入力はバックアップの時点に戻ります）' };
-    },
   },
 ]);

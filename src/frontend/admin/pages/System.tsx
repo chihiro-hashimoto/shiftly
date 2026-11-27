@@ -1,6 +1,6 @@
-/** システム情報・整合性チェック・アップデート（管理者向け） F35/F36/F37 */
+/** システム情報・整合性チェック・保守作業の案内（管理者向け）。アプリの自動更新・自動ロールバックは v1.3 では提供しない（D-027 B案） */
 import { useState } from 'react';
-import { ErrorBox, Field, Loading, Modal, Panel, useAction, useClient, useLoad } from '../../components/ui';
+import { ErrorBox, Field, Loading, Panel, useAction, useClient, useLoad } from '../../components/ui';
 import { validateAdminPassword } from '../../../shared/crypto';
 
 /** 管理画面のグリッド内で横幅を超えないようにする（表は .table-wrap 内でスクロール） */
@@ -13,6 +13,10 @@ interface SystemInfo {
   appVersion: string | null;
   codeVersion: string;
   maintenance: boolean;
+  /** Google 所有者の保守作業の状態（D-027） */
+  maintenanceWork?: { active: boolean; startedAt: string | null; readable: boolean };
+  /** 画面の世代の記録があるか（ない場合は業務の更新が止まっている） */
+  epochAvailable?: boolean;
   initializedAt: string | null;
   platform: string;
   storage: { limit: number | null; usage: number } | null;
@@ -23,15 +27,6 @@ interface Integrity {
   checkedAt: string;
   counts: { employees: number };
 }
-interface MigrateResult {
-  applied: string[];
-  requiresApproval: string[];
-}
-interface FinishResult {
-  appVersion: string;
-  integrity: Integrity;
-}
-
 function fmtDateTime(iso: string | null | undefined): string {
   return iso ? iso.slice(0, 16).replace('T', ' ') : '—';
 }
@@ -45,20 +40,10 @@ const PLATFORM_LABEL: Record<string, string> = { gas: 'Google Apps Script', mock
 export function SystemPage() {
   const client = useClient();
   const info = useLoad(() => client.call<SystemInfo>('system.info'), []);
-  const [releaseOpen, setReleaseOpen] = useState(false);
-  const { busy, run } = useAction();
   const i = info.data;
   const rate = i?.storage && i.storage.limit ? i.storage.usage / i.storage.limit : null;
   const schemaMismatch = i ? i.schemaVersion !== i.expectedSchemaVersion : false;
   const versionMismatch = i ? i.appVersion !== i.codeVersion : false;
-
-  const release = async () => {
-    const r = await run(() => client.call<{ maintenance: boolean }>('system.setMaintenance', { on: false }), 'メンテナンスを解除しました');
-    if (r) {
-      setReleaseOpen(false);
-      info.reload();
-    }
-  };
 
   return (
     <div style={PAGE_STYLE}>
@@ -66,14 +51,14 @@ export function SystemPage() {
       {info.error && <ErrorBox message={info.error} onRetry={info.reload} />}
       {i && (
         <>
-          {i.maintenance && (
+          {(i.maintenance || i.maintenanceWork?.active) && (
             <div className="callout callout-warn" role="status">
-              <strong>メンテナンス中です。</strong>スタッフの打刻・更新操作は停止しています。アップデートが中断した場合は下の「更新が中断した場合」の手順を実行してください。更新が完了しているのにメンテナンスが続いている場合は、手動で解除できます。
-              <div style={{ marginTop: 8 }}>
-                <button className="btn btn-sm" onClick={() => setReleaseOpen(true)} disabled={busy}>
-                  メンテナンスを解除
-                </button>
-              </div>
+              <strong>保守作業中です。</strong>スタッフの打刻・データの更新は停止しています{i.maintenanceWork?.startedAt ? `（開始: ${fmtDateTime(i.maintenanceWork.startedAt)}）` : ''}。打刻は紙のタイムカードに記録してください。再開は Google 所有者が保守作業の終了（Shiftly-Staff のエディタの shiftlyMaintenanceFinish）で行います。この画面からは解除できません。
+            </div>
+          )}
+          {i.epochAvailable === false && !i.maintenanceWork?.active && (
+            <div className="callout callout-bull" role="status">
+              <strong>データの更新を停止しています。</strong>画面の世代の記録を確認できません。Google 所有者が保守作業（運用手順書「保守作業」）を行うと再開します。
             </div>
           )}
           <AdminPasswordPanel />
@@ -81,7 +66,7 @@ export function SystemPage() {
             <div className="kpi">
               <div className="label">アプリのバージョン</div>
               <div className="value">{i.appVersion ?? '—'}</div>
-              <div className="sub">{versionMismatch ? <span style={{ color: 'var(--warn)' }}>プログラムは {i.codeVersion}（更新が完了していない可能性）</span> : `プログラム ${i.codeVersion}`}</div>
+              <div className="sub">{versionMismatch ? <span style={{ color: 'var(--warn)' }}>プログラムは {i.codeVersion}（記録と一致しません。Google 所有者に確認してください）</span> : `プログラム ${i.codeVersion}`}</div>
             </div>
             <div className="kpi">
               <div className="label">データベースの構造（スキーマ版）</div>
@@ -89,12 +74,12 @@ export function SystemPage() {
                 v{i.schemaVersion}
                 <span className="small muted"> / 期待 v{i.expectedSchemaVersion}</span>
               </div>
-              <div className="sub">{schemaMismatch ? <span style={{ color: 'var(--bull)' }}>不一致: DB 更新が必要です</span> : '一致しています'}</div>
+              <div className="sub">{schemaMismatch ? <span style={{ color: 'var(--bull)' }}>不一致: Google 所有者に確認してください（自動では更新しません）</span> : '一致しています'}</div>
             </div>
             <div className="kpi">
-              <div className="label">メンテナンス</div>
-              <div className="value" style={{ color: i.maintenance ? 'var(--warn)' : 'var(--board-deep)' }}>{i.maintenance ? 'メンテナンス中' : '通常稼働'}</div>
-              <div className="sub">{i.maintenance ? 'スタッフの書き込みを停止中' : 'スタッフは通常どおり利用できます'}</div>
+              <div className="label">保守作業</div>
+              <div className="value" style={{ color: i.maintenance || i.maintenanceWork?.active ? 'var(--warn)' : 'var(--board-deep)' }}>{i.maintenance || i.maintenanceWork?.active ? '保守作業中' : '通常稼働'}</div>
+              <div className="sub">{i.maintenance || i.maintenanceWork?.active ? 'データの更新を停止中' : 'スタッフは通常どおり利用できます'}</div>
             </div>
             <div className="kpi">
               <div className="label">Google ドライブの容量</div>
@@ -126,36 +111,7 @@ export function SystemPage() {
 
       <IntegrityPanel />
 
-      <div className="two-col">
-        <UpdateGuide />
-        <ResumeUpdate onChanged={info.reload} />
-      </div>
-
-      {releaseOpen && (
-        <Modal
-          title="メンテナンスを解除しますか？"
-          onClose={() => setReleaseOpen(false)}
-          footer={
-            <>
-              <button className="btn" onClick={() => setReleaseOpen(false)}>
-                キャンセル
-              </button>
-              <button className="btn btn-primary" onClick={release} disabled={busy}>
-                解除する
-              </button>
-            </>
-          }
-        >
-          <div className="stack" style={{ gap: 10 }}>
-            <p>スタッフの打刻・更新操作を再開します。</p>
-            {(schemaMismatch || versionMismatch) && (
-              <div className="callout callout-bull small">
-                データベースの構造またはアプリのバージョンが一致していません。更新が完了していない状態で解除すると、データが正しく保存されない可能性があります。先に「更新が中断した場合」の手順を実行することをおすすめします。
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
+      <MaintenanceGuide />
     </div>
   );
 }
@@ -210,136 +166,29 @@ function IntegrityResult({ r }: { r: Integrity }) {
           </table>
         </div>
       )}
-      {!r.ok && <p className="small muted">解消できない場合は、バックアップからの復元（「バックアップ」ページ）を検討してください。</p>}
+      {!r.ok && <p className="small muted">解消できない場合は、Google 所有者に連絡してください。データの復元は安全性確保のため、Google所有者による保守作業として行います。</p>}
     </div>
   );
 }
 
-function UpdateGuide() {
+/** 保守作業の案内（D-027 B案。v1.3 は「正常時は自動・異常時は手動」） */
+function MaintenanceGuide() {
   return (
-    <Panel title="アップデートの手順">
+    <Panel title="アップデート・データの復元（保守作業）">
       <div className="stack" style={{ gap: 10 }}>
         <p className="small">
-          アップデートは、管理者のパソコンから <strong>「Shiftly Setup」</strong>を開いて実行します。この画面から新しいバージョンを取得することはありません。
+          v1.3 では、アプリの自動更新・自動ロールバック・アプリ内のデータの復元を行いません。<strong>データの復元は安全性確保のため、Google所有者による保守作業として行います。</strong>アプリの更新も同じく、Google 所有者が保守作業として行います。
         </p>
-        <ol className="small" style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 4 }}>
-          <li><strong>更新前バックアップ</strong>: メンテナンス状態にしてスタッフの書き込みを止め、現在のデータをバックアップします（失敗した場合は更新を中止）。</li>
-          <li><strong>コード更新</strong>: アプリのプログラムを新しいバージョンに差し替えます。</li>
-          <li><strong>DB 更新</strong>: 必要に応じてデータベースの構造を更新します。</li>
-          <li><strong>動作確認</strong>: 整合性チェックを行い、問題がなければメンテナンスを解除します。</li>
-        </ol>
         <ul className="small" style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 4 }}>
-          <li>失敗した場合は、Shiftly Setup から以前のバージョンへ<strong>ロールバック</strong>できます。データは更新前バックアップ（「バックアップ」ページの「更新前」）から復元できます。</li>
-          <li>列の削除などデータが失われる可能性のある<strong>破壊的な DB 変更は、管理者の承認なしには実行しません</strong>。</li>
-          <li>営業時間外など、スタッフが打刻しない時間帯に実行してください。</li>
+          <li>保守作業の間は、スタッフの打刻・データの更新・定期処理が止まります。打刻は紙のタイムカードに記録してください。</li>
+          <li>保守作業の終了時に、全スタッフ・管理者のログインが解除されます。作業前に開いていた画面は読み込み直してください。</li>
+          <li>手順は運用手順書（docs/operations-guide.md「保守作業」）にあります。</li>
         </ul>
       </div>
     </Panel>
   );
 }
 
-function ResumeUpdate({ onChanged }: { onChanged: () => void }) {
-  const client = useClient();
-  const { busy, run } = useAction();
-  const [mig, setMig] = useState<MigrateResult | null>(null);
-  const [approve, setApprove] = useState(false);
-  const [fin, setFin] = useState<FinishResult | null>(null);
-  const [acceptIssues, setAcceptIssues] = useState(false);
-
-  const migrate = async (approveDestructive: boolean) => {
-    const r = await run(() => client.call<MigrateResult>('system.migrate', { approveDestructive }));
-    if (r) {
-      setMig(r);
-      setApprove(false);
-      setFin(null);
-      onChanged();
-    }
-  };
-  const finish = async () => {
-    const r = await run(() => client.call<FinishResult>('system.finishUpdate', { acceptIntegrityIssues: acceptIssues }), '更新を完了しました');
-    if (r) {
-      setFin(r);
-      onChanged();
-    }
-  };
-  const needsApproval = !!mig && mig.requiresApproval.length > 0;
-
-  return (
-    <Panel title="更新が中断した場合">
-      <div className="stack" style={{ gap: 12 }}>
-        <p className="small">
-          Shiftly Setup での更新が途中で止まった場合（メンテナンスのまま・スキーマ版が不一致など）は、次の順に実行してください。通常は操作不要です。
-        </p>
-        <div style={{ borderLeft: '3px solid var(--line)', paddingLeft: 12 }}>
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <strong className="small">1. DB 更新を再実行</strong>
-            <button className="btn btn-sm" onClick={() => migrate(false)} disabled={busy}>
-              DB 更新を再実行
-            </button>
-          </div>
-          <p className="small muted">データベースの構造を最新にします。破壊的な変更が含まれる場合は実行せず、内容を表示します。</p>
-          {mig && !needsApproval && (
-            <div className="callout callout-board small" style={{ marginTop: 6 }}>
-              {mig.applied.length ? (
-                <>
-                  適用した変更:
-                  <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                    {mig.applied.map((x, idx) => (
-                      <li key={idx}>{x}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                'データベースの構造はすでに最新です（適用した変更はありません）。'
-              )}
-            </div>
-          )}
-          {needsApproval && (
-            <div className="callout callout-bull small" style={{ marginTop: 6 }}>
-              <strong>次の変更はデータが失われる可能性があるため、承認が必要です（まだ実行していません）。</strong>
-              <ul style={{ margin: '4px 0 8px', paddingLeft: 20 }}>
-                {mig.requiresApproval.map((x, idx) => (
-                  <li key={idx}>{x}</li>
-                ))}
-              </ul>
-              <p>実行前に「バックアップ」ページで更新前バックアップがあることを確認してください。</p>
-              <label className="check" style={{ marginTop: 6 }}>
-                <input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)} />
-                <span>上記の変更内容を確認し、実行を承認します</span>
-              </label>
-              <div style={{ marginTop: 8 }}>
-                <button className="btn btn-danger btn-sm" onClick={() => migrate(true)} disabled={!approve || busy}>
-                  承認して DB 更新を実行
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-        <div style={{ borderLeft: '3px solid var(--line)', paddingLeft: 12 }}>
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <strong className="small">2. 更新を完了</strong>
-            <button className="btn btn-sm btn-primary" onClick={finish} disabled={busy || needsApproval}>
-              更新を完了する
-            </button>
-          </div>
-          <p className="small muted">整合性チェックを行い、アプリのバージョンを記録してメンテナンスを解除します。問題が見つかった場合はメンテナンスを継続します。</p>
-          <label className="check" style={{ marginTop: 6 }}>
-            <input type="checkbox" checked={acceptIssues} onChange={(e) => setAcceptIssues(e.target.checked)} />
-            <span className="small">整合性チェックで問題が見つかっても完了する（表示された問題の内容を確認済み。スキーマ版の不一致は対象外）</span>
-          </label>
-          {fin && (
-            <div style={{ marginTop: 6 }}>
-              <p className="small">バージョン {fin.appVersion} として更新を完了しました。</p>
-              <IntegrityResult r={fin.integrity} />
-            </div>
-          )}
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-// ------------------------------------------------------------------ 管理者パスワード（v1.3。Google 所有者のみ設定・再設定）
 function AdminPasswordPanel() {
   const client = useClient();
   const st = useLoad(() => client.call<{ configured: boolean; setBy: string | null; passwordChangedAt: string | null; locked: boolean; lockedUntil: string | null; activeSessions: number; idleTimeoutSec: number }>('adminAuth.status'), []);
