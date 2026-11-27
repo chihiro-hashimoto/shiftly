@@ -101,9 +101,11 @@ interface Snapshot {
   meta: { envId: string | null; initializedAt: string | null; payrollRestoreLocks: Record<string, PayrollRestoreLock> };
 }
 
+/** 行の内容のハッシュ。数値でない数（NaN・±Infinity）は null と区別する（JSON では null になり、空欄からの変更を見逃すため。独立した点検 2 回目 #3） */
 function rowHash(ctx: Ctx, row: Record<string, unknown>): string {
   const keys = Object.keys(row).sort();
-  return ctx.p.sha256Hex(JSON.stringify(keys.map((k) => [k, row[k] ?? null]))).slice(0, 32);
+  const enc = (v: unknown) => (typeof v === 'number' && !Number.isFinite(v) ? `__number:${String(v)}` : (v ?? null));
+  return ctx.p.sha256Hex(JSON.stringify(keys.map((k) => [k, enc(row[k])]))).slice(0, 32);
 }
 
 /**
@@ -133,6 +135,7 @@ function tableHashes(ctx: Ctx): { tables: Snapshot['tables']; issues: string[] }
           }
           if (k !== part) issues.push(`${def.name}: 行（${id}）がシート（${part}）の年月と一致しません`);
         }
+        for (const [c, val] of Object.entries(r)) if (typeof val === 'number' && !Number.isFinite(val)) issues.push(`${def.name}: 行（${id}）の列 ${c} が数値ではありません`);
         const key = `${part ?? ''}|${id}`;
         (m[key] ??= []).push(rowHash(ctx, r));
         seen.set(id, (seen.get(id) ?? 0) + 1);
@@ -205,6 +208,15 @@ function fromAscii(b: Bytes): string {
   return s;
 }
 
+function snapshotReadable(ctx: Ctx, fileId: string): boolean {
+  try {
+    readSnapshot(ctx, fileId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readSnapshot(ctx: Ctx, fileId: string): Snapshot {
   const bytes = ctx.p.files.readFile(fileId);
   if (!bytes) throw new ApiError('MAINTENANCE_CHECK_FAILED', '保守の開始時の記録（Google ドライブの 00_System の「Shiftly_maintenance_snapshot」）を読み込めないため、業務を再開できません（保守中のままです）。時間をおいて再実行してください。記録を失った場合は shiftlyMaintenanceRestart（開始のやり直し。確定済みの給与はすべて照合の対象になります）を参照してください', 409);
@@ -238,10 +250,18 @@ defineOps([
       const want = restart ? '保守を開始し直す' : '保守を開始する';
       if (v.str(a, 'confirmText', { max: 20 }) !== want) throw E.invalid(`確認のため「${want}」と入力してください`);
       const cur = maintenanceState(ctx.p);
+      // 開始のやり直しは、開始時の記録が本当に使えない場合だけ（保守の記録の破損・記録の ID がない・記録のファイルを読めない）。
+      // 記録を読める場合は拒否する（手で消した守る記録を新しい基準に取り込んで再開することを防ぐ。独立した点検 2 回目 #1）
+      if (restart && cur && cur !== 'broken' && cur.snapshotFileId && snapshotReadable(ctx, cur.snapshotFileId))
+        throw E.conflict('開始時の記録を読み込めるため、開始のやり直しはできません。shiftlyMaintenanceFinish の案内に従って作業を元に戻し、終了してください');
       if (!restart && cur) {
         if (cur !== 'broken' && cur.snapshotFileId && cur.backupId) throw E.conflict(`保守作業はすでに開始しています（開始: ${cur.startedAt}）`);
         if (cur !== 'broken' && cur.snapshotFileId) {
-          // 開始時の記録はある（バックアップだけが失敗した）: 記録はそのまま使い、バックアップだけをやり直す
+          // 開始時の記録はある（バックアップだけが失敗した）: 記録はそのまま使い、バックアップだけをやり直す。
+          // その間に DB を変更していた場合は、バックアップが「開始時」の内容にならないため止める（独立した点検 2 回目 #5）
+          const d0 = compareWithSnapshot(ctx, readSnapshot(ctx, cur.snapshotFileId));
+          if (d0.violations.length || d0.metaIssues.length || d0.changedTables.length)
+            throw new ApiError('MAINTENANCE_CHECK_FAILED', `開始の後に DB が変更されているため、開始時のバックアップを作り直せません（業務の更新は止めたままです）。変更を元に戻してから再実行してください: ${d0.changedTables.slice(0, 5).join(', ')}`, 409);
           const b = runBackup(ctx, 'manual', '保守作業の開始時のバックアップ');
           ctx.uow.flush();
           if (b.status !== 'ok') throw beginBackupFailed();
@@ -299,6 +319,11 @@ defineOps([
         throw new ApiError('MAINTENANCE_CHECK_FAILED', `DB の整合性の確認で問題が見つかったため、業務を再開していません（保守中のままです）: ${check.issues.slice(0, 5).join(' / ')}`, 409);
       // 2) 開始時の記録との照合（守る表の行の削除・変更、環境の記録の変更があれば再開しない）
       const snap = readSnapshot(ctx, st.snapshotFileId);
+      if (snap.takenAt !== st.startedAt) throw new ApiError('MAINTENANCE_CHECK_FAILED', '開始時の記録が、この保守作業のものではありません（業務を再開していません）', 409);
+      // 未完了の書き込み処理（ジャーナル）が残っていると、再開の後に照合していない書き込みが行われる。全月のシートで確かめる（独立した点検 2 回目 #2）
+      const pendingJournal = ctx.uow.list<{ state: string }>('operation_journal').filter((j) => j.state === 'started' || j.state === 'failed').length;
+      if (pendingJournal)
+        throw new ApiError('MAINTENANCE_CHECK_FAILED', `未完了・失敗の書き込み処理の記録（operation_journal）が ${pendingJournal} 件あるため、業務を再開していません（保守中のままです）。手で追加・変更した記録があれば元に戻してください`, 409);
       const diff = compareWithSnapshot(ctx, snap);
       if (diff.violations.length || diff.metaIssues.length) {
         const detail = [

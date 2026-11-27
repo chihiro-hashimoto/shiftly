@@ -92,12 +92,12 @@ describe('v1.3 で提供しない操作（D-027）: サーバー側の拒否', (
   });
 });
 
-const built = existsSync('dist/gas/core/Code.js') && existsSync('dist/gas/admin/Code.js') && existsSync('dist/gas/setup/Code.js');
+const built = existsSync('dist/gas/core/Code.js') && existsSync('dist/gas/admin/Code.js') && existsSync('dist/gas/setup/Code.js') && existsSync('dist/gas/setup/Release.js');
 
 describe.skipIf(!built)('v1.3 で提供しない機能（D-027）: 配布物に含まれない・GAS の経路でも拒否する', () => {
   /** 延期した処理にだけ現れる名前（処理の本体・画面の操作の文言） */
   const MARKERS = ['prepareRestoreCopy', 'applyUpdateInner', 'rollbackCodeInner', 'acceptIntegrityIssues', 'approveDestructive', 'RESTORE_POLICY', 'pendingRollback', 'restore_candidate', 'このバックアップから復元', '復元を実行', 'DB 更新を再実行', '直前のバージョンに戻す', 'メンテナンスを解除'];
-  const FILES = ['dist/gas/core/Code.js', 'dist/gas/core/staff.html', 'dist/gas/admin/Code.js', 'dist/gas/admin/admin.html', 'dist/gas/setup/Code.js', 'dist/gas/setup/setup.html'];
+  const FILES = ['dist/gas/core/Code.js', 'dist/gas/core/staff.html', 'dist/gas/admin/Code.js', 'dist/gas/admin/admin.html', 'dist/gas/setup/Code.js', 'dist/gas/setup/setup.html', 'dist/gas/setup/Release.js'];
   for (const f of FILES) {
     it(`${f} に延期した処理が含まれない`, () => {
       const text = readFileSync(f, 'utf8');

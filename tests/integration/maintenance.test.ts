@@ -568,11 +568,13 @@ describe('独立した点検（D-027 の 1 回目）の反例: 照合の迂回�
     expect(code(h.owner('maintenance.begin', BEGIN))).toBe('MAINTENANCE_BEGIN_FAILED');
     files.copyDatabase = copy;
     // 失敗の後の手作業（打刻の削除）は、基準（失敗の前に作った記録）との照合で検出される
+    // （独立した点検 2 回目 #5: バックアップのやり直しの前にも照合し、変更があればバックアップを作り直さない）
     const nov = h.env.adapter.sheets.get('attendance_events__2026_11')!;
     const [removed] = nov.splice(nov.findIndex((r) => r.includes('clock_out')), 1);
-    h.ownerOk('maintenance.begin', BEGIN);
+    expect(code(h.owner('maintenance.begin', BEGIN))).toBe('MAINTENANCE_CHECK_FAILED');
     expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
     nov.push(removed!);
+    h.ownerOk('maintenance.begin', BEGIN);
     h.ownerOk('maintenance.finish', FINISH);
   });
 
@@ -617,5 +619,65 @@ describe('独立した点検（D-027 の 1 回目）の反例: 照合の迂回�
     h.owner('system.initialize', { storeName: 'テスト店舗', envId: 'env_test' });
     expect(h.currentEpoch()).toBeNull();
     expect(code(h.owner('settings.update', { storeName: 'x' }, { epoch: null }))).not.toBe('OK');
+  });
+});
+
+describe('独立した点検（D-027 の 2 回目）の反例', () => {
+  function confirmedStore() {
+    const h = new Harness();
+    h.setupStore();
+    const a = h.addStaff('山田', '482913', { rate: 1200 });
+    h.punchAt(a, '482913', '2026-11-02', '09:00', 'clock_in');
+    h.punchAt(a, '482913', '2026-11-02', '14:00', 'clock_out');
+    const p = h.ownerOk('payroll.openPeriod', { periodKey: '2026-11' });
+    h.ownerOk('deductions.upsert', { employeeId: a, periodId: p.id, status: 'explicit_none' });
+    h.setNow('2026-12-01', '06:00');
+    const c = h.ownerOk('payroll.compute', { periodId: p.id });
+    const acks = c.employees[0].issues.filter((i: any) => i.severity === 'confirm').map((i: any) => i.key);
+    h.ownerOk('payroll.confirm', { periodId: p.id, acknowledgements: acks });
+    return { h, a, p };
+  }
+
+  it('#1: 開始時の記録を読み込める間は「開始のやり直し」を受け付けない（手で消した守る記録を基準に取り込んで再開しない）', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const nov = h.env.adapter.sheets.get('attendance_events__2026_11')!;
+    nov.splice(nov.findIndex((r) => r.includes('clock_out')), 1);
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+    expect(code(h.owner('maintenance.begin', { confirmText: '保守を開始し直す', restart: true }))).toBe('CONFLICT');
+    expect(code(h.owner('maintenance.finish', FINISH))).toBe('MAINTENANCE_CHECK_FAILED');
+    expect(code(h.owner('settings.update', { storeName: '保守中' }))).toBe('MAINTENANCE');
+  });
+
+  it('#2: 先の月のジャーナルのシートに未完了の書き込みの記録を置いた場合は再開しない（再開の後に照合していない書き込みをさせない）', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const u = uowOf(h);
+    u.insert('operation_journal', { op: 'payroll.correct', state: 'started', detail: '[]' } as never, 'jnl');
+    u.flush();
+    // 保存した行を 2027-01 のシートへ移す（直近 2 か月の再適用の範囲の外）
+    const rows: unknown[][] = [];
+    for (const [name, sheet] of h.env.adapter.sheets) {
+      if (!name.startsWith('operation_journal__')) continue;
+      const i = sheet.findIndex((r) => r.includes('started'));
+      if (i >= 0) rows.push(...sheet.splice(i, 1));
+    }
+    expect(rows.length).toBe(1);
+    h.env.adapter.sheets.set('operation_journal__2027_01', rows as never);
+    const r = h.owner('maintenance.finish', FINISH);
+    expect(code(r)).toBe('MAINTENANCE_CHECK_FAILED');
+    expect((r as any).error.message).toContain('operation_journal');
+  });
+
+  it('#3: 数値の列を、空欄から数値でない値に変えた場合も変更として検出し、再開しない', () => {
+    const { h } = confirmedStore();
+    h.ownerOk('maintenance.begin', BEGIN);
+    const st = h.env.adapter.sheets.get('store_settings')!;
+    const col = TABLES.find((t) => t.name === 'store_settings')!.columns.findIndex(([c]) => c === 'employerCostRatePercent');
+    expect(col).toBeGreaterThanOrEqual(0);
+    st[0]![col] = 'abc';
+    const r = h.owner('maintenance.finish', FINISH);
+    expect(code(r)).toBe('MAINTENANCE_CHECK_FAILED');
+    expect((r as any).error.message).toContain('数値ではありません');
   });
 });
