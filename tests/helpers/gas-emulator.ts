@@ -57,6 +57,8 @@ export interface GasFns {
   /** 互換（v1.2 までの関数名） */
   kioskApi: (...a: unknown[]) => any;
   shiftlyAuthorize: (...a: unknown[]) => any;
+  /** ブラウザでの初期化（A案・D-029） */
+  shiftlyWebInitialize: (...a: unknown[]) => any;
   shiftlyDailyJob: (...a: unknown[]) => any;
   shiftlyResetAdminPairing: (...a: unknown[]) => any;
   shiftlyConfirmStorageNotCreated: (...a: unknown[]) => any;
