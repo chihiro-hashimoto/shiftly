@@ -6,7 +6,7 @@
 |---|---|---|---|
 | **Shiftly-Staff**（Core。v1.2 までの名称は Shiftly-Kiosk） | GAS Web アプリ | 実行=デプロイユーザー（Google 所有者）／アクセス=全員（匿名） | 店舗 iPad の画面（スタッフ画面・管理者モード）＋**業務データへの唯一の更新経路**（Core API）。日次トリガー（バックアップ・通知検出） |
 | **Shiftly-Admin** | GAS Web アプリ | 実行=Google 所有者／アクセス=自分のみ | Google 所有者の管理画面（PC・スマホ。任意）。業務データに直接触れず、Core へ HMAC 署名付きで転送。構築・更新・復旧・管理者パスワードの設定はこちら |
-| **Shiftly Setup** | GAS Web アプリ | 自己ホスト: 実行=管理者・自分のみ／ホスト型: 実行=アクセスしたユーザー | Apps Script API で Staff/Admin を作成・配置・デプロイ・更新・ロールバック |
+| **Shiftly Setup** | GAS Web アプリ | **共通ホスト型（A案で標準。D-029）: 開発者が公開、実行=アクセスしたユーザー・アクセス=Google アカウントを持つ全員**／自己ホスト（開発者・検証用）: 実行=管理者・自分のみ | Apps Script API で、利用者のアカウントの中に Staff/Admin を作成・配置・デプロイ（初回の構築だけ。v1.3 では更新・ロールバックしない） |
 | 業務 DB | Google スプレッドシート（1ファイル） | Core のみ（drive.file） | `Shiftly/01_Database` |
 | ファイル | Google Drive | Core のみ（drive.file） | `Shiftly/00_System〜05_Backup` |
 
@@ -18,6 +18,7 @@
 管理者 PC ─ google.script.run(adminApi) ─▶ Admin ─ UrlFetch ─┘
 Setup ─ UrlFetch(Apps Script API, 管理者の OAuth トークン) ─▶ Staff/Admin プロジェクト
      └ UrlFetch doPost {kind:'ping'|'pair'|'owner(role=setup)'} ─▶ Core
+所有者のブラウザ ─ Staff/Admin のテスト用 URL（/dev#shiftly-init=…）─ google.script.run(shiftlyWebInitialize / shiftlyAuthorize) ─▶ 初期化・接続（A案。D-029）
 ```
 
 ## 2. ソースコード構成
@@ -76,3 +77,18 @@ tests/          unit / integration / security / e2e / helpers（harness, gas-emu
 - 正常時は自動・異常時は手動。アプリ内の自動復元・稼働中の DB の切替・自動更新・更新に伴う DB の自動移行・自動ロールバックは配布物に含めない（`DEFERRED_OPS` でどの経路からも拒否）。Core は DB を切り替えず、DB の ID は初回の構築で決まったもの 1 つ
 - 障害時は Google 所有者の保守作業: `maintenance.begin`（Script Properties の保守の記録で全員の更新系を停止 → 開始時のバックアップ → 全行の内容のハッシュを 00_System に記録）→ 所有者が稼働中の DB を手で直す（値のみ貼り付け）→ `maintenance.finish`（整合性 → 数式のセルの確認（Sheets API の数式と値の読み比べ。D-027 追補）→ 守る表の照合（R1）→ 変更があれば確定済みの給与を停止（R2）→ 全セッションの失効 → 画面の世代の再発行 → 記録の削除）。開始時の記録は保守の記録より先に作る（ロックの内側）。開始時の記録を確認できない場合に今の DB を新しい基準にする「開始のやり直し」は提供しない（D-027 追補）
 - Setup は初回の構築だけを行う。記録ファイルは保存済み ID で直接照会し、Drive の検索は全ページを取得する。完了には Setup の記録ファイルの点検と、プロジェクトの重複の所有者の確認が必要
+
+## 導入方法の A案: 共通ホスト型 Setup（D-029）
+
+```
+利用者のブラウザ ─▶ 共通 Shiftly Setup（開発者のアカウントに 1 つ。実行=アクセスしているユーザー）
+   │  Google の承認（開発者の標準 Cloud プロジェクトの OAuth クライアント。スコープは Setup の最小限）
+   │  Setup のコードは「利用者の権限」で動く。記録は利用者の UserProperties と利用者の Drive だけ
+   ├─ Apps Script API（利用者のトークン）─▶ 利用者のアカウントに Shiftly-Staff・Shiftly-Admin を作成・配置・デプロイ
+   └─ 所有者がテスト用 URL（/dev）を開いて承認 → 初期化（Staff: Drive のフォルダ・DB・日次の予約）・接続（Admin）
+```
+
+- 利用者が行う Google 側の設定は Apps Script API の利用者設定のオンだけ（Google の仕様）。Cloud プロジェクト・OAuth の同意画面・Apps Script API の有効化（プロジェクト側）は、開発者が共通 Setup の標準 Cloud プロジェクトで 1 回だけ行う（docs/google-api-setup.md「開発者向け」）
+- Staff・Admin は利用者の既定の Cloud プロジェクトのまま（スコープ・動作は従来と同じ）。Staff の `drive.file` で作成した DB に、Setup（別の OAuth クライアント）はアクセスしない（Setup で DB を作らない理由）
+- 共通 Setup の利用者の間の分離: Script Properties・Script Cache・Script Lock を使わない（src/gas/setup.ts・`createGasCrypto`）
+- 配置物: `dist/gas/setup-hosted/`（コードは `dist/gas/setup/` と同一。マニフェストだけが異なる。例外のログなし）

@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Wordmark } from '../components/brand';
 import { QrCode } from '../components/qr';
-import type { PublicState, StepResult } from '../../setup/installer';
+import { USER_SETTINGS_URL, type PublicState, type StepResult } from '../../setup/installer';
 import './setup.css';
 
 export interface SetupTransport {
@@ -92,6 +92,9 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
 
   const needStore = st && !st.storeName;
   const nextStep = st?.steps.find((s) => s.status !== 'done');
+  // まだ構築を始めていない（Setup の記録がない）: 構築の内容と確認事項を表示する（A案・D-029）
+  const notStarted = !!st && !st.envId && !st.complete;
+  const apiOff = res?.error?.code === 'USER_API_DISABLED';
   return (
     <div className="setup">
       {notice && <div className="sample-banner">{notice}</div>}
@@ -109,6 +112,8 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
           )}
           {st?.ownerEmail && <p className="small muted">Google アカウント: {st.ownerEmail}　／　環境ID: {st.envId}</p>}
         </section>
+
+        {notStarted && <BuildPlan email={st.currentEmail} />}
 
         {err && <div className="callout callout-bull" role="alert">{err}</div>}
         {!st && !err && <div className="loading-block"><div className="spinner" />状態を確認しています…</div>}
@@ -141,6 +146,11 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                     <div className="callout callout-bull" role="alert">
                       <strong>{res.error.message}</strong>
                       <div className="small">対処方法: {res.error.fix}</div>
+                      {apiOff && (
+                        <a className="btn btn-sm" style={{ marginTop: 8 }} href={USER_SETTINGS_URL} target="_blank" rel="noopener noreferrer">
+                          Google の設定画面を開く
+                        </a>
+                      )}
                       {res.error.confirm && (
                         <label className="row small" style={{ marginTop: 8 }}>
                           <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
@@ -169,6 +179,16 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                           <li key={t}>{t}</li>
                         ))}
                       </ol>
+                      {res.waitingFor.initUrl && (
+                        <a className="btn btn-primary btn-sm" style={{ marginTop: 8 }} href={res.waitingFor.initUrl} target="_blank" rel="noopener noreferrer">
+                          {res.waitingFor.step === 'admin.authorize' ? 'Google の権限を承認して接続' : 'Google の権限を承認して初期化'}
+                        </a>
+                      )}
+                      {res.waitingFor.initUrl && res.waitingFor.openUrl && (
+                        <p className="small" style={{ margin: '10px 0 0' }}>
+                          うまくいかない場合: 下のボタンでスクリプトエディタを開き、関数の選択欄で「shiftlyAuthorize」を選んで「実行」→ 権限を確認して「許可」→ この画面で「確認して続行」を押してください。
+                        </p>
+                      )}
                       {res.waitingFor.openUrl && (
                         <a className="btn btn-sm" style={{ marginTop: 8 }} href={res.waitingFor.openUrl} target="_blank" rel="noopener noreferrer">
                           スクリプトエディタを開く
@@ -176,10 +196,16 @@ export function SetupApp({ transport = gasSetupTransport, notice }: { transport?
                       )}
                     </div>
                   )}
+                  {busy && (
+                    <div className="loading-block small" role="status">
+                      <div className="spinner" />
+                      {nextStep ? `「${nextStep.label}」を実行しています…（Google の処理に数十秒かかることがあります。画面を閉じないでください）` : '実行しています…'}
+                    </div>
+                  )}
                   <div className="row">
                     {res?.error ? (
                       <button className="btn btn-primary btn-lg" disabled={busy || (!!res.error.confirm && !confirmed)} onClick={() => void exec('retry', res.error!.step, res.error!.confirm ? confirmed : undefined)}>
-                        {busy ? '実行中…' : res.error.confirm ? '確認したので再実行' : '再実行'}
+                        {busy ? '実行中…' : res.error.confirm ? '確認したので再実行' : apiOff ? '設定が完了したので再確認' : '再実行'}
                       </button>
                     ) : (
                       <button className="btn btn-primary btn-lg" disabled={busy || (!!needStore && !storeName.trim())} onClick={() => void exec('run')}>
@@ -224,6 +250,15 @@ function Complete({ st }: { st: PublicState }) {
           )}
         </div>
       )}
+      <section className="callout" aria-label="次に行うこと">
+        <strong>次に行うこと</strong>
+        <ol className="small" style={{ margin: '6px 0 0', paddingLeft: 20 }}>
+          <li>下の「管理画面を開く」で管理画面を開き、「システム・保守」で<strong>管理者パスワード</strong>（12 文字以上）を設定します（店舗 iPad の「管理者ページ」に入るためのパスワードです）。</li>
+          <li>「店舗設定」「スタッフ・権限」で、営業時間・締め日・スタッフ・給与条件を登録します（実データの登録は、導入手順書の公開前の確認を終えてから）。</li>
+          <li>「店舗端末」で<strong>登録コード</strong>を発行します。</li>
+          <li>店舗 iPad の Safari で下の QR コードを読み取り、共有メニューの「ホーム画面に追加」で追加して、登録コードを入力します（iPad では Google にログインしないでください）。</li>
+        </ol>
+      </section>
       <div className="s-urls">
         <div>
           <h3>管理者用（管理画面）</h3>
@@ -242,6 +277,51 @@ function Complete({ st }: { st: PublicState }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** 構築を始める前に、構築先のアカウント・作成するもの・保存先・必要な権限・確認事項を表示する（A案・D-029） */
+function BuildPlan({ email }: { email: string | null }) {
+  return (
+    <section className="panel" style={{ marginBottom: 20 }} aria-label="構築の内容">
+      <div className="panel-head">
+        <h2>構築の内容</h2>
+      </div>
+      <div className="panel-body stack small">
+        <p>
+          <strong>構築先の Google アカウント:</strong> {email ?? '確認できません（画面を再読み込みしてください）'}
+          <br />
+          <span className="muted">店舗の Google 所有者のアカウントであることを確認してください。違う場合は、このタブを閉じ、正しいアカウントだけでログインしたブラウザ（シークレットウィンドウ等）で開き直してください。</span>
+        </p>
+        <div>
+          <strong>あなたの Google アカウントの中に作成するもの</strong>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+            <li>Google ドライブの「Shiftly」フォルダとデータベース（スプレッドシート）・バックアップ</li>
+            <li>Apps Script のプロジェクト 2 つ（Shiftly-Staff: 店舗 iPad 用の本体／Shiftly-Admin: 管理画面）</li>
+            <li>Setup の記録ファイル（Google ドライブの「Shiftly Setup Registry.json」）</li>
+          </ul>
+        </div>
+        <p>
+          <strong>保存先:</strong> 勤怠・給与・スタッフの情報は、あなたの Google ドライブだけに保存します。Shiftly Setup の提供者（開発者）の Google ドライブには保存しません。Setup の進み具合の記録（店舗名・アカウント・作成したプロジェクトの ID）は、あなたの Google ドライブと、Setup の中のあなた専用の保存領域（Google のユーザーごとの保存領域）に保存します。費用はかかりません。
+        </p>
+        <div>
+          <strong>Google の確認画面で許可を求める権限</strong>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+            <li>Apps Script のプロジェクトの作成・コードの配置・デプロイ（Shiftly-Staff・Shiftly-Admin を作るため）</li>
+            <li>Shiftly が作成したファイルだけの Google ドライブの操作（データベース・記録ファイル。ほかのファイルは見ません）</li>
+            <li>外部への接続（Google の API と、作成した Shiftly-Staff への接続）・メールアドレスの確認（アカウントの取り違えの防止）</li>
+          </ul>
+        </div>
+        <div>
+          <strong>始める前の確認</strong>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+            <li>途中で Google の確認画面が数回表示されます。内容を確認してから「許可」を押してください（Shiftly が代わりに許可することはありません）。</li>
+            <li>「Google Apps Script API」がオフの場合は、案内に従って Google の設定画面でオンにします（1 回だけ）。</li>
+            <li>画面で課金（クレジットカード）の登録を求められた場合は中止し、提供者に連絡してください。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
   );
 }
 

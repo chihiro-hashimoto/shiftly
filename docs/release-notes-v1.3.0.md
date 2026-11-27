@@ -19,7 +19,11 @@ Shiftly は、店舗の勤怠・シフト・給与・人件費を、店舗の Go
 
 ## 3. 初回の導入
 
-docs/installer-guide.md「0.5 初めて Google Apps Script（GAS）を使う方へ」の手順 A〜F（Apps Script API・Google Cloud のプロジェクト・Setup の作成とデプロイ・自動構築・管理者パスワード・店舗設定・スタッフ・給与条件・iPad の登録）。
+**A案（docs/decisions.md D-029）**: 開発者が公開する共通の Shiftly Setup の URL を開き、Google の承認画面で許可して、店舗名を入力するだけで、利用者自身の Google アカウントの中に Shiftly を構築します（docs/installer-guide.md「A」）。利用者の Google Cloud の作業・コードの貼り付け・手動のデプロイは不要です。Apps Script API がオフの場合は、画面の案内で Google の設定画面を開いてオンにします（Google の仕様）。Shiftly-Staff・Shiftly-Admin の権限の承認と初期化は、ブラウザで開く画面で行います（うまくいかない場合はスクリプトエディタで実行）。完了画面から管理者パスワードの設定・店舗 iPad の登録に進みます。
+
+- 共通 Setup は**限定公開**（OAuth の公開ステータス「テスト」・テストユーザー）で提供し、OAuth の審査の完了後に一般公開します（docs/google-api-setup.md「5」）
+- 共通 Setup の動作（ブラウザでの承認と初期化・利用者の間の分離）は **Google の実環境で未検証**です（docs/live-verification.md「0.2」L41〜L49。一般の利用者への公開の前に必須）
+- 自分で Setup を配置する従来の方法（自己ホスト型）は、開発者・検証用として docs/installer-guide.md「0.5」に残します
 
 ## 4. 方針（B案: 正常時は自動・異常時は手動）
 
@@ -40,7 +44,7 @@ docs/installer-guide.md「0.5 初めて Google Apps Script（GAS）を使う方�
 
 ## 7. 実環境検証の結果
 
-（**リリースの作成時に記入**。docs/live-verification.md の「0.1 公開前の必須検証」14 項目と L24〜L26 の結果。2026-11-27 時点では Google 実環境・iPad 実機とも**未実施**。自動テスト（モック・GAS エミュレーション・Chromium の E2E）は合格）
+（**リリースの作成時に記入**。docs/live-verification.md の「0.1 公開前の必須検証」14 項目と L24〜L26、共通 Setup の L41〜L49 の結果。2026-11-27 時点では Google 実環境・iPad 実機とも**未実施**。自動テスト（モック・GAS エミュレーション・Chromium の E2E）は合格）
 
 ## 8. 障害が起きたとき
 
@@ -56,7 +60,7 @@ docs/incident-response.md（紙のタイムカード・データの確認・保�
 
 | ファイル | 内容 |
 |---|---|
-| `shiftly-gas-bundle.zip` | GAS の配布物（`setup/` を Shiftly Setup に配置。`core/`・`admin/` は Setup が自動で配置し、手動アップデートでも使う） |
+| `shiftly-gas-bundle.zip` | GAS の配布物（`setup-hosted/` を開発者が共通 Setup として配置（docs/deployment-guide.md「6」）。`setup/` は自己ホスト型。`core/`・`admin/` は Setup が自動で配置し、手動アップデートでも使う） |
 | `shiftly-preview.zip` | モックのプレビュー（架空のデータ。Google に接続しない。**本番では使わない**）。リポジトリで `npm ci && npm run build:preview && npm run preview` → http://127.0.0.1:4173/ （zip は同じ内容の静的ファイル。ローカルの Web サーバーで `preview.html` を開く） |
 | 初回導入ガイド | docs/installer-guide.md |
 | リリースノート | この文書 |

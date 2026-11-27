@@ -9,13 +9,20 @@
  * Apps Script API の呼び出しには、Setup に紐づく標準 Cloud プロジェクトで API を有効化しておく必要がある。
  *
  * 秘密情報（ペアリングコード・Setup 鍵）は UserProperties のみに保存し、Drive のレジストリファイルには書かない。
+ *
+ * 共通の Setup（A案・D-029。開発者が B のホスト型で公開し、複数の利用者が開く）での利用者の間の分離:
+ *  - 記録・秘密情報は UserProperties（Google アカウントごと・このスクリプトごとに分かれる）と、利用者自身の Google ドライブだけに保存する
+ *  - Script Properties・Script Cache（全利用者で共有）は使わない（createGasPlatform ではなく createGasCrypto を使う。テストで確認）
+ *  - 同時実行の防止は LockService.getUserLock（利用者ごと）
+ *  - OAuth トークン（ScriptApp.getOAuthToken）はサーバー側の UrlFetch でだけ使い、画面・ログ・記録に出さない
+ *  - 例外のログ（exceptionLogging）は共通の Setup のマニフェストでは NONE（開発者の Cloud のログに利用者の情報を残さない）
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { AppsScriptApi, type Http } from '../setup/apps-script-api';
 import { Installer, type InstallerDeps, type Registry, type ReleaseBundle, type SecretRegistry } from '../setup/installer';
-import { createGasPlatform, fromJavaBytes, listAllDriveFiles } from '../backend/gas/platform';
+import { createGasCrypto, listAllDriveFiles } from '../backend/gas/platform';
 import { signOwnerEnvelope } from '../backend/auth';
-import { fromHex, toHex } from '../shared/crypto';
+import { fromHex } from '../shared/crypto';
 
 declare const SHIFTLY_RELEASE: ReleaseBundle;
 declare const Drive: any;
@@ -131,7 +138,7 @@ export function registryReport(envId: string): { ok: boolean; issues: string[] }
 
 function deps(): InstallerDeps {
   const up = PropertiesService.getUserProperties();
-  const p = createGasPlatform();
+  const p = createGasCrypto();
   return {
     api: new AppsScriptApi(http),
     release: SHIFTLY_RELEASE,
@@ -216,7 +223,7 @@ function deps(): InstallerDeps {
       }
     },
     randomHex: (n) => p.randomHex(n),
-    sha256Hex: (s) => toHex(fromJavaBytes(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8) as unknown as number[])),
+    sha256Hex: (s) => p.sha256Hex(s),
     now: () => new Date().toISOString(),
     postCore: postJson,
     callCoreAsSetup: (url, keyHex, req) => postJson(url, { kind: 'owner', envelope: signOwnerEnvelope(p, fromHex(keyHex), JSON.stringify(req), 'setup') }),

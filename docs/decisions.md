@@ -203,3 +203,25 @@
 - 公開前に直す問題は、初回の構築ができない・打刻できない・業務データの消失・個人情報や給与の漏えい・認証と認可の不成立・重大な給与の誤り・バックアップの不成立・配布物の秘密の情報に限る。それ以外は公開後の改善の候補（P0〜P3。docs/incident-response.md「6」）
 - 進め方: 工程 A（最終確認）→ B（最低限の Google 実環境検証。ユーザーの操作）→ C（導入・手動アップデート・障害対応の手順。docs/installer-guide.md「0.5」・docs/update-rollback.md「2」・docs/incident-response.md）→ D（ユーザーの最終のマージの承認の後、PR #2 → PR #1 → main）→ E（ユーザーによる GitHub の所有権の移譲。Transfer ownership）→ F（移譲の後の main から GitHub Release と配布物・SHA-256）→ G（本番の Google 所有者による構築）→ H（限定先行運用）
 - Codex 監査: 累計 24 回。25 回目は実施しない（新たな承認なしに追加の監査をしない）。24 回目の判定（マージ不可）の後の B案による変更について、独立した再監査による合格は取得していないことを明記する
+
+## D-029 導入方法の A案: 共通ホスト型 Setup（2026-11-27、ユーザーの正式な仕様変更）
+
+- 決定: 開発者が共通の Shiftly Setup を 1 つ公開し（ホスト型。実行=アクセスしているユーザー、アクセス=Google アカウントを持つ全員）、利用者は URL を開いて Google の通常の承認画面で許可するだけで、**利用者自身の Google アカウントの中に** Shiftly-Staff・Shiftly-Admin・Google ドライブの Shiftly フォルダと DB を自動で構築する。保守機能の B案（D-027「正常時は自動・異常時は手動」）とは別の判断で、両方を維持する
+- 利用者の Google Cloud の作業（プロジェクトの作成・API の有効化・OAuth の同意画面・プロジェクト番号の入力）とコードの貼り付け・マニフェストの編集・手動のデプロイは不要にする。**利用者が行う技術的な操作は、Apps Script API の利用者設定のオン（Google の仕様上必要。ユーザー了承済み）だけ**を目標とする
+- 中央管理型の DB にはしない。勤怠・給与・個人情報は利用者の Google ドライブだけに保存し、開発者の Drive に保存しない。Staff・Admin の Cloud プロジェクトは利用者の既定のプロジェクト（従来どおり）
+- **スクリプトエディタの省略（Staff・Admin の初期化）**: Apps Script API の `scripts.run` は使わない（呼び出し側とスクリプトが同じ標準 Cloud プロジェクトを共有する必要があり、利用者のプロジェクトを開発者の Cloud プロジェクトに紐づけ直すことになる。また `scripts.run` ではトリガーを作れない。いずれも Google の公式資料の記載。検索結果の要約で確認し、原文の再確認はネットワークの制限のため未実施）。代わりに、Setup が Apps Script API のデプロイの一覧から HEAD（最新のコード）のテスト用 URL（`…/dev`。プロジェクトの編集者＝所有者だけが開ける）を取得し、所有者がブラウザで開く → Google の承認画面で許可 → 初期設定の画面の「初期化する」で `shiftlyWebInitialize` を実行する。Admin も同じく `/dev` で「接続する」（`shiftlyAuthorize`）。テスト用 URL が取得できない・うまくいかない場合は、従来どおりスクリプトエディタで `shiftlyAuthorize` を実行する（代わりの方法として常に表示）
+- **初期化の権限（匿名に与えない）**: `shiftlyWebInitialize` は ①`Session.getActiveUser()` が空でなく `getEffectiveUser()` と一致（匿名の公開 URL からの呼び出しは空になるため拒否）②Setup が発行した確認コード（64 桁の 16 進。平文は Setup の UserProperties だけ。Core の bootstrap にはハッシュだけ。URL のフラグメントで渡すため Google のサーバーに送られない）が一致 ③ブラウザでの初期化がまだ完了していない、をすべて満たす場合だけ実行する。失敗が 1 時間に 10 回で受け付けを止める。実効ユーザーだけに依存しない。Google の承認を迂回しない（承認は所有者が Google の画面で行う）
+- **共通 Setup の利用者の間の分離**: Setup の記録・秘密情報は UserProperties（利用者ごと・スクリプトごと）と利用者の Drive だけ。Script Properties・Script Cache・Script Lock（全利用者で共有）は使わない（`createGasCrypto`。バンドルに参照がないことをテストで確認）。同時実行の防止は User Lock。OAuth トークンはサーバーの UrlFetch でだけ使う。共通 Setup のマニフェストは例外のログを NONE（開発者の Cloud のログに利用者の情報を残さない）。アカウントの取り違えは従来の所有者の照合（guardAccount）に加え、構築の前に「構築先の Google アカウント」を表示する
+- **API の失敗の分類**: 401・403 をすべて「API が無効」とは扱わない。USER_API_DISABLED（利用者の設定。設定画面へのリンクと「設定が完了したので再確認」を表示）／PROJECT_API_DISABLED（Setup の Cloud プロジェクト。開発者に連絡）／UNAUTHENTICATED（401。再読み込みして承認）／SCOPE（権限の一部だけを許可）／PERMISSION（その他の 403）／QUOTA
+- **維持するもの**: 重複作成の防止・結果不明時の停止（D-025・D-026）、構築の完了の条件（Setup の記録ファイルの点検と、プロジェクトの重複の所有者の確認。D-027）。プロジェクトの重複の確認は、Setup の権限（drive.file）でプロジェクトを一覧できるかが未検証のため、自動化していない（所有者が https://script.google.com/home で確認してチェック。L18）。自動化は実環境の結果（L43 ④）の後に判断する
+- **OAuth の審査**: 共通 Setup は開発者の標準 Cloud プロジェクトの OAuth クライアントで、`script.projects`・`script.deployments`・`script.external_request`・`drive.file`・`userinfo.email` を要求する。センシティブなスコープを含むため、一般公開には Google の OAuth 審査（確認）が必要と判断している（各スコープの分類は Cloud Console の表示で開発者が確認する。**要確認**）。審査が完了するまでは**限定公開**（公開ステータス「テスト」＋テストユーザー最大 100 人。承認は 7 日で失効）とし、一般公開しない。未確認アプリの警告を無条件に無視させない（案内は、提供者が開発者本人であることを確認できる限定公開の利用者に限る）
+- 未検証（Google 実環境での確認が必要。docs/live-verification.md L41〜L49）: HEAD のテスト用 URL の取得、`/dev` での承認画面の表示と初期化、`/dev` での getActiveUser、Web アプリの文脈でのトリガーの登録、2 つの Google アカウントでの分離、承認の失効と再承認、未確認アプリの警告の表示。**実環境で確認するまで、エディタ操作の省略・利用者間の分離を検証済みとして扱わない**
+
+## D-030 GitHub Pages での案内ページとデモの公開（2026-11-27、ユーザーの指示「GitHub Pages で公開するところまで進めてください」）
+
+- 前提の変化: D-002・D-011 で Pages を採用しなかった理由は「非公開リポジトリでは無料で使えない」だった。2026-11-27 07:46 の時点で、リポジトリ `chihiro-hashimoto/shiftly` が**公開（public）**になっていることを確認した（作業セッションでは公開設定を変更していない）。仕様（Private・一般公開の禁止）との関係は**ユーザーの明示の確認待ち**（公開の設定はユーザーの判断。Private に戻す場合、無料プランでは Pages を使えない）
+- 決定: Pages には静的なページだけを公開する。①案内ページ（site/index.html。製品の説明・はじめ方・データの扱い・現在の状態。共通 Setup の URL は site/config.json に設定したときだけリンクにする。Apps Script の Web アプリの URL 以外は受け付けない）②架空のデータだけで動くデモ（dist/preview の複製。Google に接続しない）。GAS の配布物・業務データ・秘密情報は公開物に含めない（scripts/build-pages.mjs の点検と tests/integration/pages.test.ts）
+- 共通 Setup 本体は GAS の Web アプリで、Pages では動かさない（D-029）。業務データは引き続き利用者の Google ドライブだけ
+- 反映: .github/workflows/pages.yml（main と作業ブランチへの push、手動実行）。Settings → Pages の Source を「GitHub Actions」にする操作と、作業ブランチからのデプロイの許可（環境 github-pages の保護規則）は、リポジトリの管理者（ユーザー）が行う。main への統合の後は作業ブランチの指定を外す
+- 所有権の移譲（D-028 工程 E）の後は、Pages の URL が移譲先のアカウントの github.io に変わる（移譲先で Pages を有効にし直す）
+- プライバシーポリシー・利用規約（OAuth の審査に必要）は、運営者の名前・連絡先などの提供を受けてから作る（未作成）

@@ -20,8 +20,9 @@
     "build:preview": "node scripts/build-frontend.mjs --preview",
     "preview": "node scripts/serve-preview.mjs",
     "test:e2e": "playwright test --trace off",
-    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run build:gas && npm run build:preview && npm run test:integration && npm run test:security && npm run test:e2e",
-    "docs": "node scripts/gen-docs.mjs"
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run build:gas && npm run build:preview && npm run build:pages && npm run test:integration && npm run test:security && npm run test:e2e",
+    "docs": "node scripts/gen-docs.mjs",
+    "build:pages": "node scripts/build-pages.mjs"
   },
   "dependencies": {
     "qrcode-generator": "2.0.4",

@@ -20,7 +20,7 @@ const m = versionTs.match(/APP_VERSION = '([^']+)'/);
 if (!m || m[1] !== pkg.version) throw new Error(`APP_VERSION (${m?.[1]}) と package.json (${pkg.version}) が一致しません`);
 
 const PROJECTS = {
-  core: { entry: 'src/gas/core.ts', global: 'ShiftlyCore', fns: ['doGet', 'doPost', 'staffApi', 'kioskApi', 'shiftlyAuthorize', 'shiftlyDailyJob', 'shiftlyResetAdminPairing', 'shiftlyConfirmStorageNotCreated', 'shiftlyMaintenanceBegin', 'shiftlyMaintenanceFinish', 'shiftlyMaintenanceStatus', 'shiftlyResetSetupPairing'], html: ['staff'], manifest: 'core.json' },
+  core: { entry: 'src/gas/core.ts', global: 'ShiftlyCore', fns: ['doGet', 'doPost', 'staffApi', 'kioskApi', 'shiftlyAuthorize', 'shiftlyWebInitialize', 'shiftlyDailyJob', 'shiftlyResetAdminPairing', 'shiftlyConfirmStorageNotCreated', 'shiftlyMaintenanceBegin', 'shiftlyMaintenanceFinish', 'shiftlyMaintenanceStatus', 'shiftlyResetSetupPairing'], html: ['staff'], manifest: 'core.json' },
   admin: { entry: 'src/gas/admin.ts', global: 'ShiftlyAdmin', fns: ['doGet', 'adminApi', 'adminWhoAmI', 'shiftlyAuthorize'], html: ['admin'], manifest: 'admin.json' },
   setup: { entry: 'src/gas/setup.ts', global: 'ShiftlySetup', fns: ['doGet', 'setupApi'], html: ['setup'], manifest: 'setup-selfhosted.json' },
 };
@@ -70,6 +70,12 @@ writeFileSync(join(out, 'setup', 'Release.js'), `/* 自動生成: Shiftly ${pkg.
 writeFileSync(join(out, 'release.json'), JSON.stringify({ version: pkg.version, hashes: release.hashes }, null, 2));
 // ホスト型 Setup 用マニフェストも出力
 writeFileSync(join(out, 'setup', 'appsscript.hosted.json.txt'), readFileSync(resolve(root, 'gas/manifests/setup-hosted.json'), 'utf8'));
+// 共通の Setup（A案・D-029。開発者が公開するホスト型）の配置用一式: コードは自己ホスト型と同一で、マニフェストだけが異なる
+// （実行: アクセスしているユーザー／アクセス: Google アカウントを持つ全員／例外のログ: なし）。開発者が clasp push で配置する
+const hostedDir = join(out, 'setup-hosted');
+mkdirSync(hostedDir, { recursive: true });
+for (const f of ['Code.js', 'Release.js', 'setup.html']) writeFileSync(join(hostedDir, f), readFileSync(join(out, 'setup', f)));
+writeFileSync(join(hostedDir, 'appsscript.json'), readFileSync(resolve(root, 'gas/manifests/setup-hosted.json'), 'utf8'));
 
 // 秘密情報混入チェック（簡易）
 for (const name of Object.keys(PROJECTS)) {

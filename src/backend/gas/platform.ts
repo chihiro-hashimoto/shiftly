@@ -129,15 +129,16 @@ class GasFiles implements FileStore, DatabaseControl {
   }
 }
 
-export function createGasPlatform(): Platform {
-  const files = new GasFiles();
+/**
+ * 乱数・ハッシュ・HMAC だけの GAS 実装（Script Properties・Script Cache・Drive に触れない）。
+ * 共通の Setup（ホスト型。複数の Google アカウントが使う）は、利用者の間で共有される Script Properties・Script Cache を使わない
+ * ため、createGasPlatform ではなくこちらを使う（A案・D-029）
+ */
+export function createGasCrypto(): Pick<Platform, 'now' | 'randomHex' | 'hmacSha256' | 'sha256Hex'> {
   return {
-    storageReport: () => storageReport(),
-    kind: 'gas',
     now: () => Date.now(),
     randomHex: (n: number) => {
       // Utilities.getUuid() は UUID v4（122bit の乱数）。必要バイト数を満たすまで連結し SHA-256 で整形
-      // 【要確認】getUuid の乱数源の暗号学的品質は公式に明記されていない（docs/security.md）
       let acc = '';
       while (acc.length < n * 2 + 64) acc += Utilities.getUuid().replace(/-/g, '');
       const digest = fromJavaBytes(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, acc) as unknown as number[]);
@@ -146,6 +147,21 @@ export function createGasPlatform(): Platform {
     },
     hmacSha256: (key: Bytes, data: Bytes) => fromJavaBytes(Utilities.computeHmacSha256Signature(toJavaBytes(data), toJavaBytes(key)) as unknown as number[]),
     sha256Hex: (s: string) => toHex(fromJavaBytes(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8) as unknown as number[])),
+  };
+}
+
+export function createGasPlatform(): Platform {
+  const files = new GasFiles();
+  const crypto = createGasCrypto();
+  return {
+    storageReport: () => storageReport(),
+    kind: 'gas',
+    // 乱数・ハッシュ・HMAC は createGasCrypto と同じ実装（A案・D-029 で共通化。処理は変えていない）
+    now: crypto.now,
+    // 【要確認】getUuid の乱数源の暗号学的品質は公式に明記されていない（docs/security.md）
+    randomHex: crypto.randomHex,
+    hmacSha256: crypto.hmacSha256,
+    sha256Hex: crypto.sha256Hex,
     withLock: <T>(timeoutMs: number, fn: () => T): T => {
       const lock = LockService.getScriptLock();
       if (!lock.tryLock(timeoutMs)) throw new Error('他の処理が実行中です。少し待ってから再度お試しください');
