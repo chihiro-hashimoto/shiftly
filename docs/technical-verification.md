@@ -63,7 +63,7 @@
 |---|---|---|
 | Core API 全体（約85操作）の業務フロー | tests/integration/flow.test.ts | 合格 |
 | 認証・認可・IDOR・リプレイ・総当たり | tests/security/api-security.test.ts | 合格 |
-| Setup 状態機械（重複防止・中断再開・取り違え防止・改ざん検知・更新・ロールバック） | tests/integration/installer.test.ts | 合格 |
+| Setup 状態機械（重複防止・中断再開・取り違え防止・改ざん検知・完了の条件。更新・ロールバックは v1.3 では提供しない。D-027） | tests/integration/installer.test.ts | 合格 |
 | ビルド済み GAS バンドルの動作（Sheets/Drive/Properties/Cache/Lock/Utilities を模擬） | tests/integration/gas-emulation.test.ts | 合格（**模擬環境であり Google 実環境ではない**） |
 | 給与計算（手計算の独立期待値） | tests/unit/payroll.golden.test.ts | 合格 |
 | Staff/Setup 画面（Chromium、iPad 横縦・PC・スマホ幅） | tests/e2e | 合格（**WebKit・iPad 実機ではない**） |

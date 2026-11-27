@@ -1,13 +1,14 @@
 # HANDOFF（セッション引き継ぎ）
 
 > 新しいセッションは、まずこのファイルを読み、次に `docs/implementation-status.md`・`docs/decisions.md`・`AGENTS.md` を読むこと。
-> 元の指示は統合マスタープロンプト v1.2 と追加仕様変更指示 v1.3。要点は `docs/requirements.md` にあり、再入力は不要。
+> 元の指示は統合マスタープロンプト v1.2 と追加仕様変更指示 v1.3、リリース範囲適正化指示（B案、2026-11-27、D-027）。要点は `docs/requirements.md` にあり、再入力は不要。
 
 ## 現在の工程
 - **前提（2026-11-26、ユーザー確認）: まだ公開しておらず、利用している店舗はない**。v1.3 が最初に導入する版。v1.2 で運用中の店舗を前提とした対応は該当なし。更新・ロールバックは次の版の前に Google の実環境で検証する（docs/decisions.md D-024）
 - v1.2: 工程 A〜L 完了（F01〜F37 の実装・モック／エミュレーション検証・E2E・独立レビュー R-1・Codex 監査 C-1）
 - **v1.3（2026-11-25）**: 実装・テスト・文書更新を完了（F38〜F41 を追加。docs/requirements.md「v1.3 の変更」）。Codex 監査 C-2（累計 2 回目）は docs/review-log.md を参照
-- 残: Google 実環境・iPad 実機での検証（ユーザーの実機・検証用アカウントが必要。docs/live-verification.md）
+- **B案（2026-11-27、D-027）**: v1.3 は「正常時は自動・異常時は手動」。アプリ内の自動復元・稼働中の DB の自動切替・自動更新・更新に伴う DB の自動移行・自動ロールバックを v1.3 から除外（処理を削除、DEFERRED_OPS で全経路を拒否）。データの復元は Google 所有者の保守作業（maintenance.begin / finish）。C-24 の A1・A3・A4 は機能を修正、A2 は仕様変更で実行経路を除外（docs/review-log.md「C-24 の対応」）。41 機能の分類: 初回 37・一部手動 2（F26・F35）・延期 2（F36・F37）
+- 残: Google 実環境・iPad 実機での検証（ユーザーの実機・検証用アカウントが必要。docs/live-verification.md「1.5 v1.3（B案）の検証の進め方」）
 
 ## リポジトリ / ブランチ / PR / CI
 - リポジトリ: https://github.com/chihiro-hashimoto/shiftly（Private）
@@ -23,16 +24,16 @@
 
 ## 確定済み仕様（主なもの）
 - 構成: Shiftly-Staff（= Core。v1.2 までの名称 Shiftly-Kiosk。匿名アクセス・Google 所有者として実行、DB 唯一の更新経路。店舗 iPad の画面と管理者モード）＋ Shiftly-Admin（Google 所有者のみ、HMAC 署名で Core へ転送）＋ Shiftly Setup（Apps Script API で自動構築）。詳細は docs/architecture.md と docs/decisions.md
-- 認証（v1.3）: Google 所有者（構築・更新・復旧＝バックアップからの復元を含む・管理者パスワードの設定）／ 管理者モード（店舗 iPad の「管理者ページ」＋管理者パスワード、無操作 5 分、重要操作は再認証）／ スタッフ（氏名＋PIN。PIN は任意。未設定は本人未確認）。docs/security.md
+- 認証（v1.3）: Google 所有者（構築・保守作業（データの復元・更新は手動）・管理者パスワードの設定）／ 管理者モード（店舗 iPad の「管理者ページ」＋管理者パスワード、無操作 5 分、重要操作は再認証）／ スタッフ（氏名＋PIN。PIN は任意。未設定は本人未確認）。docs/security.md
 - スコープ: Core は drive.file / script.external_request / script.scriptapp / userinfo.email。Sheets・Drive は高度なサービスで扱う（SpreadsheetApp は使わない）
 - 給与: docs/payroll-specification.md（BigInt 有理数、未設定条件があれば確定禁止、法令ルールセットを版管理）。v1.3: シフト基準（§2.5）・予定休憩は取得確認したもののみ控除（§2.6）
 
 ## 実装済み機能 ID（モックで検証済み。実環境は未検証）
-- F01〜F41 のすべてについて実装あり（F38〜F41 は v1.3）。状況は docs/implementation-status.md
+- F01〜F41 のうち、v1.3 の対象（初回 37・一部手動 2）を実装（F38〜F41 は v1.3）。F36・F37 と、F26 の自動復元・F35 の更新に伴う移行は延期（実装済みとして数えない）。状況は docs/implementation-status.md
 - 未実装として明示しているもの: 変形労働時間制等、時間単位年休、標準報酬日額方式、出来高払の割増、日割の規定、環境間のデータ移行の自動化
 
 ## 未解決・未確認
-1. Google 実環境での検証: ユーザーが検証用アカウントで実施（手順と記録表: docs/live-verification.md。v1.3 の L14〜L17 を追加）。結果待ち
+1. Google 実環境での検証: ユーザーが検証用アカウントで実施（手順と記録表: docs/live-verification.md。B案で L11・L12・L17 を対象外とし、L18〜L23（構築の完了の条件・失敗時の停止・記録ファイル・バックアップ・保守作業・手動の復元）を追加）。結果待ち
 2. iPad 実機（Safari、ホーム画面）での検証: **ユーザーの実機が必要**（管理者モードの終了動作・PIN 入力・休憩確認ダイアログを含む）
 3. （解決）Codex 監査1 #8: v1.3 の休憩仕様で対応（docs/review-log.md、D-017）
 4. 未確定の業務条件（docs/requirements.md「未確定事項」）は管理者が設定画面で登録する
@@ -46,19 +47,26 @@
 - いずれもモック・エミュレーション・Chromium での検証。**Google 実環境・iPad 実機・WebKit では未検証**
 
 ## 次に実行する作業
-1. Codex 監査 C-24（D-026 の確認。承認された 1 回）は**マージ不可**（A 4 件: 高 3・中 1。C-23 の 4 件は解消、R2 は成り立つ、R1・S1 は複合の障害・記録の喪失で反例）。**未対応**。根本原因（別々に保存した値の組み合わせと、値がないことからの推測への依存）と修正の方針（DB の ID と世代を 1 つの値で書く・世代をランダムな識別子にする・Setup の記録は保存済みのファイル ID を優先・一覧は全ページ）を docs/review-log.md C-24 に記録。修正の実施と再監査には、ユーザーの承認が必要（第 25 回以降の監査は未承認）
-2. ユーザーから実環境検証の記録（docs/live-verification.md の表）を受け取り、technical-verification.md に反映・NG を修正
+1. ユーザーが B案の結果（docs/review-log.md「C-24 の対応」、PR #2）を確認する。Codex の再監査（25 回目）は未承認（実施する場合はユーザーの承認が必要）
+2. ユーザーから実環境検証の記録（docs/live-verification.md の表。L1〜L10・L13〜L16・L18〜L23）を受け取り、technical-verification.md に反映・NG を修正
 3. PR の統合方法をユーザーが決定（上記）
+4. 次期以降の候補（約束しない）: アプリ内の復元（稼働中の DB の切替）・Setup による更新・ロールバック・更新に伴う DB の移行（docs/update-rollback.md「2」）
 
 ## レビュー
 - 独立レビュー R-1（Claude エージェント、Codex ではない）: 指摘 12 件をすべて修正（docs/review-log.md）
 - Codex 監査 C-1: 指摘 15 件。14 件修正、#8 は v1.3 で対応（docs/review-log.md、原文 docs/reviews/codex-audit-1.md）
 - Codex 監査 C-2（v1.3 実装後）: 指摘 10 件をすべて修正（docs/review-log.md、原文 docs/reviews/codex-audit-2.md）
 
+## D-027 の要点（引き継ぎ）
+- v1.3 で提供しない操作は src/backend/api.ts の DEFERRED_OPS（登録すると読み込み時にエラー）。Setup の鍵は読み取りだけ。setupApi の更新・ロールバックは拒否
+- 保守作業: src/backend/handlers/maintenance.ts（MAINTENANCE_TABLES で全表の扱いを型で必須）。保守の記録は Script Properties の SHIFTLY_MAINTENANCE（ある間は全員の更新系を停止）。エディタ関数 shiftlyMaintenanceBegin / Finish / Status
+- 画面の世代は乱数で、発行は初めての構築と保守作業の終了だけ（issueEpoch）。既存の環境では自動で作り直さない
+- Setup の記録ファイルは保存済み ID で直接照会（src/gas/setup.ts）。Drive の検索は listAllDriveFiles（全ページ）。完了には registryReport と所有者のプロジェクトの確認が必要
+
 ## D-026 の要点（引き継ぎ）
 - 全 API 操作に分類（kind）を型で必須。画面からの業務更新（edit。45 操作）は共通の入口で復元世代を照合（STALE_VIEW）。照合しない操作は src/backend/epoch-exemptions.ts に理由を登録（テストの固定の一覧と一致が必要）。分類の一覧は docs/permission-matrix.md（自動生成）
-- 復元世代は Script Properties（SHIFTLY_RESTORE_EPOCH）。画面は最初の世代を固定し、異なる世代で「画面を読み込み直してください」
-- 初回の構築の作成物の状態と失敗の扱いは docs/creation-matrix.md。結果不明は確認・関連付けまで作らない。完了前に作成物の整合性を検証（プロジェクトの重複は未確認として完了画面で案内）
+- 画面の世代は Script Properties（SHIFTLY_RESTORE_EPOCH。名前は互換のため維持）。画面は最初の世代を固定し、異なる世代で「画面を読み込み直してください」
+- 初回の構築の作成物の状態と失敗の扱いは docs/creation-matrix.md。結果不明は確認・関連付けまで作らない。完了前に作成物の整合性を検証（プロジェクトの重複は自動では確かめられないため、所有者の確認を完了の条件にした。D-027）
 - 新しい操作を追加するときは kind を決め、edit 以外の更新系なら除外の理由を登録する。新しい外部の作成物を追加するときは creation-matrix の状態管理に従う
 
 ## 累計 Codex 監査回数
@@ -86,4 +94,4 @@
   - 21 回目: 2026-11-26、対象 `f2a8f59`（20 回目の言い換え版）。**判定なしで中断**（同じ理由。docs/review-log.md C-21）
   - 22 回目: 2026-11-26、対象 `3f8cdc9`（範囲を絞った判定: C-19 の指摘と R1・R2・S1）。**判定はマージ不可**。C-19 の 3 件は解消。マージ前 4 件（高 2 / 中 2）は、ユーザーの指示により仕組みで閉じる形で修正（docs/review-log.md C-22）
   - 23 回目: 2026-11-26、対象 `271ebdf`（C-22 の対応の確認。範囲を絞った判定）。**判定はマージ不可**。C-22 の 3 件解消・1 件未解消、R2 は成り立つ。マージ前 4 件（高 1 / 中 3）は未対応（docs/review-log.md C-23）
-  - 24 回目: 2026-11-27、対象 `5d209d7`（C-23 の構造的な対応・D-026 の確認。範囲を絞った判定）。**判定はマージ不可**。C-23 の 4 件は解消、R2 は成り立つ。A 4 件（高 3 / 中 1）は未対応（docs/review-log.md C-24）
+  - 24 回目: 2026-11-27、対象 `5d209d7`（C-23 の構造的な対応・D-026 の確認。範囲を絞った判定）。**判定はマージ不可**。C-23 の 4 件は解消、R2 は成り立つ。A 4 件（高 3 / 中 1）は、ユーザーの B案の指示により対応（A1・A3・A4 は機能を修正、A2 は仕様変更で実行経路を除外。Codex による再確認は未実施。docs/review-log.md「C-24 の対応」）

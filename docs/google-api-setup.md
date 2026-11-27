@@ -31,7 +31,7 @@ Apps Script のデフォルトプロジェクトでは API を手動で有効化
 | スコープ | 用途 |
 |---|---|
 | `script.projects` | Shiftly-Staff / Shiftly-Admin の作成・コード配置・バージョン作成 |
-| `script.deployments` | Web アプリのデプロイ作成・更新（URL 維持）・ロールバック |
+| `script.deployments` | Web アプリのデプロイの作成・照会（初回の構築。v1.3 では更新・ロールバックに使わない。D-027） |
 | `script.external_request` | Apps Script API・Core への HTTPS 呼び出し |
 | `drive.file` | Setup のレジストリファイル（進捗・リソース ID）の保存（Setup が作成したファイルのみ） |
 | `userinfo.email` | 管理者アカウントの確認（取り違え防止） |

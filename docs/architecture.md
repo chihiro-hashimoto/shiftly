@@ -27,9 +27,9 @@ src/
   shared/     ドメイン（純粋関数）: time, attendance, labor, wage, payroll, money, leave, period,
               analytics, notifications, permissions, crypto, sha256, csv, xlsx, payslip, types
   backend/    Core API: api.ts（ルーター）, auth.ts, context.ts, store.ts（UnitOfWork/ジャーナル）,
-              schema.ts, services.ts, handlers/*, migrations.ts, mock.ts（メモリ環境）
+              schema.ts, services.ts, handlers/*（maintenance.ts: 保守作業）, mock.ts（メモリ環境）
     gas/      GAS 実装: platform.ts（Utilities/Lock/Properties/Cache/Drive）, sheets-adapter.ts
-  setup/      apps-script-api.ts（REST クライアント）, installer.ts（状態機械・更新・ロールバック）
+  setup/      apps-script-api.ts（REST クライアント）, installer.ts（初回の構築の状態機械。v1.3 では更新・ロールバックを含まない。D-027）
   gas/        GAS エントリ: core.ts, admin.ts, setup.ts（ビルド時にトップレベル関数を生成）
   frontend/   React: staff/（店舗 iPad・管理者モード）, admin/（pages/）, setup/, components/, styles/, preview/（モック）, entries/
 gas/manifests/  appsscript.json（core / admin / setup 自己ホスト / setup ホスト型）
@@ -62,7 +62,7 @@ tests/          unit / integration / security / e2e / helpers（harness, gas-emu
 - React + TypeScript + Vite。GAS 用は JS/CSS をインライン化した単一 HTML（HtmlService の iframe で表示）
 - 業務データは React の state（メモリ）のみ。localStorage は端末トークン（`shiftly.device.v1`）のみ
 - Staff（src/frontend/staff）: 無操作タイムアウト（既定60秒）、タブ非表示・bfcache 復元・pagehide でセッション終了、打刻後自動ログアウト。PIN は氏名選択時に PIN なしでログインを試し、必要な場合のみ入力
-- 管理者モード（v1.3）: Staff 画面右上「管理者ページ」→ 管理者パスワード → `AdminApp`（embedded）を表示。管理者トークンはメモリ上のみ。無操作 5 分・タブ非表示・再読み込み・ログアウトで終了し、サーバー側でも失効。URL の履歴を操作しない（戻る操作で管理画面に戻らない）。Google 所有者限定のページ（システム・更新）は表示しない
+- 管理者モード（v1.3）: Staff 画面右上「管理者ページ」→ 管理者パスワード → `AdminApp`（embedded）を表示。管理者トークンはメモリ上のみ。無操作 5 分・タブ非表示・再読み込み・ログアウトで終了し、サーバー側でも失効。URL の履歴を操作しない（戻る操作で管理画面に戻らない）。Google 所有者限定のページ（システム・保守）は表示しない
 - Admin のページは店舗 iPad の「管理メニュー」でも、委任された権限の範囲で表示（サーバー側で同じ権限を検証）
 - プレビュー: ブラウザ内で Core をメモリ上に起動（`src/frontend/preview`）。Google には接続しない
 
@@ -71,3 +71,8 @@ tests/          unit / integration / security / e2e / helpers（harness, gas-emu
 - 内部は UTC epoch ms、表示・計算は Asia/Tokyo（UTC+9 固定の演算。Intl に依存しない）
 - GAS プロジェクト（appsscript.json）・スプレッドシート（作成時に設定）とも Asia/Tokyo。保存値は `+09:00` 付き ISO 文字列で、タイムゾーン設定の不一致の影響を受けない
 - 「打刻日時 / 営業日 / 労働日 / 法定休日 / 週 / 給与期間」を区別（docs/payroll-specification.md §2）
+
+## v1.3 のリリース範囲と保守作業（D-027）
+- 正常時は自動・異常時は手動。アプリ内の自動復元・稼働中の DB の切替・自動更新・更新に伴う DB の自動移行・自動ロールバックは配布物に含めない（`DEFERRED_OPS` でどの経路からも拒否）。Core は DB を切り替えず、DB の ID は初回の構築で決まったもの 1 つ
+- 障害時は Google 所有者の保守作業: `maintenance.begin`（Script Properties の保守の記録で全員の更新系を停止 → 開始時のバックアップ → 全行の内容のハッシュを 00_System に記録）→ 所有者が稼働中の DB を手で直す → `maintenance.finish`（整合性 → 守る表の照合（R1）→ 変更があれば確定済みの給与を停止（R2）→ 全セッションの失効 → 画面の世代の再発行 → 記録の削除）
+- Setup は初回の構築だけを行う。記録ファイルは保存済み ID で直接照会し、Drive の検索は全ページを取得する。完了には Setup の記録ファイルの点検と、プロジェクトの重複の所有者の確認が必要
